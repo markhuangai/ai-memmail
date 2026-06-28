@@ -587,9 +587,26 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let mut next = config().redacted();
-        next.database.host = "db.changed.test".to_string();
-        next.ai.model = "changed-model".to_string();
+        let get_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/config")
+                    .header(COOKIE, cookie.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_response.status(), StatusCode::OK);
+        let body = response_body(get_response).await;
+        let mut next: ConfigResponse = serde_json::from_value(body).unwrap();
+        assert_eq!(next.config.database.password, "********");
+        assert_eq!(next.config.ai.api_secret, "********");
+
+        next.config.database.host = "db.changed.test".to_string();
+        next.config.ai.model = "changed-model".to_string();
         let response = app
             .oneshot(
                 Request::builder()
@@ -597,7 +614,7 @@ mod tests {
                     .uri("/api/config")
                     .header(COOKIE, cookie)
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&next).unwrap()))
+                    .body(Body::from(serde_json::to_vec(&next.config).unwrap()))
                     .unwrap(),
             )
             .await
