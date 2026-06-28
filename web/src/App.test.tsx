@@ -242,7 +242,7 @@ describe("App", () => {
     });
   });
 
-  it("edits AI, prompt, and logging settings", async () => {
+  it("edits database, AI, prompt, and logging settings", async () => {
     const savedBodies: string[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation((path, init) => {
       if (path === "/api/status") {
@@ -263,6 +263,21 @@ describe("App", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^settings$/i }));
+    fireEvent.change(screen.getByLabelText(/postgres host/i), {
+      target: { value: "postgres.changed.test" }
+    });
+    fireEvent.change(screen.getByLabelText(/postgres port/i), {
+      target: { value: "15432" }
+    });
+    fireEvent.change(screen.getByLabelText(/postgres user/i), {
+      target: { value: "changed_user" }
+    });
+    fireEvent.change(screen.getByLabelText(/postgres password/i), {
+      target: { value: "changed-password" }
+    });
+    fireEvent.change(screen.getByLabelText(/postgres database/i), {
+      target: { value: "changed_db" }
+    });
     fireEvent.change(screen.getByLabelText(/ai api url/i), {
       target: { value: "https://ai.changed.test/v1" }
     });
@@ -285,6 +300,13 @@ describe("App", () => {
 
     await waitFor(() => expect(savedBodies).toHaveLength(1));
     const saved = JSON.parse(savedBodies[0]) as AppConfig;
+    expect(saved.database).toMatchObject({
+      host: "postgres.changed.test",
+      port: 15432,
+      username: "changed_user",
+      password: "changed-password",
+      database: "changed_db"
+    });
     expect(saved.ai.AI_API_URL).toBe("https://ai.changed.test/v1");
     expect(saved.ai.AI_MODEL).toBe("model-changed");
     expect(saved.prompts).toMatchObject({
@@ -351,6 +373,7 @@ describe("App", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^settings$/i }));
     expect(screen.getByLabelText(/ai model/i)).toHaveValue("gpt-test");
+    expect(screen.getByLabelText(/postgres host/i)).toHaveValue("postgres");
   });
 
   it("shows save errors and logs out", async () => {

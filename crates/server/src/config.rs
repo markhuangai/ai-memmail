@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub const REDACTED_SECRET: &str = "********";
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("failed to read config {path}: {source}")]
@@ -37,7 +39,11 @@ pub struct AppConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DatabaseConfig {
-    pub url: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    pub database: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -180,9 +186,15 @@ impl AppConfig {
         if self.version != 1 {
             return Err(ConfigError::Invalid("version must be 1".to_string()));
         }
-        if self.database.url.trim().is_empty() {
-            return Err(ConfigError::Invalid("database.url is required".to_string()));
+        validate_required(&self.database.host, "database.host")?;
+        if self.database.port == 0 {
+            return Err(ConfigError::Invalid(
+                "database.port must be greater than zero".to_string(),
+            ));
         }
+        validate_required(&self.database.username, "database.username")?;
+        validate_required(&self.database.password, "database.password")?;
+        validate_required(&self.database.database, "database.database")?;
         if !matches!(
             self.logging.level.as_str(),
             "debug" | "info" | "warn" | "error"
@@ -213,6 +225,7 @@ impl AppConfig {
 
     pub fn redacted(&self) -> Self {
         let mut clone = self.clone();
+        clone.database.password = redact(&clone.database.password);
         clone.ai.api_secret = redact(&clone.ai.api_secret);
         for server in clone.mcp_servers.values_mut() {
             for (key, value) in server.env.iter_mut() {
@@ -230,6 +243,39 @@ impl AppConfig {
         }
         clone
     }
+
+    pub fn preserve_redacted_secrets(&mut self, current: &Self) {
+        preserve_if_redacted(&mut self.database.password, &current.database.password);
+        preserve_if_redacted(&mut self.ai.api_secret, &current.ai.api_secret);
+
+        for (name, server) in &mut self.mcp_servers {
+            if let Some(current_server) = current.mcp_servers.get(name) {
+                for (key, value) in &mut server.env {
+                    if let Some(current_value) = current_server.env.get(key) {
+                        preserve_if_redacted(value, current_value);
+                    }
+                }
+            }
+        }
+
+        for mailbox in &mut self.mailboxes {
+            if let Some(current_mailbox) = current
+                .mailboxes
+                .iter()
+                .find(|candidate| candidate.id == mailbox.id)
+            {
+                preserve_if_redacted(&mut mailbox.imap.password, &current_mailbox.imap.password);
+                preserve_if_redacted(&mut mailbox.smtp.password, &current_mailbox.smtp.password);
+            }
+        }
+    }
+}
+
+fn validate_required(value: &str, field: &str) -> Result<(), ConfigError> {
+    if value.trim().is_empty() {
+        return Err(ConfigError::Invalid(format!("{field} is required")));
+    }
+    Ok(())
 }
 
 fn validate_mailbox(
@@ -291,7 +337,13 @@ fn redact(value: &str) -> String {
     if value.is_empty() {
         String::new()
     } else {
-        "********".to_string()
+        REDACTED_SECRET.to_string()
+    }
+}
+
+fn preserve_if_redacted(next: &mut String, current: &str) {
+    if next == REDACTED_SECRET {
+        *next = current.to_string();
     }
 }
 
@@ -303,7 +355,11 @@ mod tests {
         AppConfig {
             version: 1,
             database: DatabaseConfig {
-                url: "postgres://user:pass@postgres/db".to_string(),
+                host: "postgres".to_string(),
+                port: 5432,
+                username: "user".to_string(),
+                password: "db-secret".to_string(),
+                database: "ai_memmail".to_string(),
             },
             logging: LoggingConfig {
                 level: "info".to_string(),
@@ -391,6 +447,7 @@ mod tests {
     #[test]
     fn redacts_secrets_without_changing_shape() {
         let redacted = valid_config().redacted();
+        assert_eq!(redacted.database.password, "********");
         assert_eq!(redacted.ai.api_secret, "********");
         assert_eq!(
             redacted.mcp_servers["dense_mem"].env["DENSE_MEM_API_KEY"],
@@ -398,6 +455,29 @@ mod tests {
         );
         assert_eq!(redacted.mailboxes[0].imap.password, "********");
         assert_eq!(redacted.mailboxes[0].smtp.password, "********");
+    }
+
+    #[test]
+    fn preserves_redacted_secrets_before_saving() {
+        let current = valid_config();
+        let mut next = current.redacted();
+        next.database.host = "db.changed.test".to_string();
+        next.mcp_servers.get_mut("dense_mem").unwrap().env.insert(
+            "DENSE_MEM_MCP_URL".to_string(),
+            "http://changed.test".to_string(),
+        );
+        next.preserve_redacted_secrets(&current);
+
+        assert_eq!(next.database.password, "db-secret");
+        assert_eq!(next.ai.api_secret, "secret");
+        assert_eq!(next.mcp_servers["dense_mem"].env["DENSE_MEM_API_KEY"], "dm");
+        assert_eq!(
+            next.mcp_servers["dense_mem"].env["DENSE_MEM_MCP_URL"],
+            "http://changed.test"
+        );
+        assert_eq!(next.mailboxes[0].imap.password, "imap-secret");
+        assert_eq!(next.mailboxes[0].smtp.password, "smtp-secret");
+        assert_eq!(next.database.host, "db.changed.test");
     }
 
     #[test]
@@ -419,12 +499,44 @@ mod tests {
             .contains("version"));
 
         let mut config = valid_config();
-        config.database.url.clear();
+        config.database.host.clear();
         assert!(config
             .validate()
             .unwrap_err()
             .to_string()
-            .contains("database.url"));
+            .contains("database.host"));
+
+        let mut config = valid_config();
+        config.database.port = 0;
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("database.port"));
+
+        let mut config = valid_config();
+        config.database.username.clear();
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("database.username"));
+
+        let mut config = valid_config();
+        config.database.password.clear();
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("database.password"));
+
+        let mut config = valid_config();
+        config.database.database.clear();
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("database.database"));
 
         let mut config = valid_config();
         config.logging.level = "trace".to_string();

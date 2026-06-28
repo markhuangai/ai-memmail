@@ -1,2 +1,0 @@
-export CONTROL_PANEL_KEY="replace-with-local-panel-key"
-export AI_MEMMAIL_CONFIG="config/live.local.yaml"

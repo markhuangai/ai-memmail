@@ -37,23 +37,23 @@ Run the full local stack from source:
 docker compose up --build
 ```
 
-The control panel is served at `http://127.0.0.1:18080` by default; override it
-with `CONTROL_PANEL_PORT=8080` if needed. PostgreSQL is exposed on
-`127.0.0.1:15432` by default to avoid conflicts with a host Postgres install;
-override it with `POSTGRES_PORT=5432` if needed.
+The control panel is served at `http://127.0.0.1:18080` by default. PostgreSQL
+is exposed on `127.0.0.1:15432` by default to avoid conflicts with a host
+Postgres install. To change either host port, edit the port forwarding in
+`docker-compose.yml`.
 
-For live development with real credentials, create untracked files from the
-examples:
-
-```bash
-cp .ai-cred.example .ai-cred
-cp config/live.local.example.yaml config/live.local.yaml
-```
-
-Then run:
+For live development with real credentials, edit the ignored
+`config/local.yaml` file directly, then run:
 
 ```bash
 scripts/live-e2e.sh
+```
+
+`scripts/live-e2e.sh` uses `CONTROL_PANEL_KEY=live-e2e-local` by default for
+local testing. Override it when needed:
+
+```bash
+CONTROL_PANEL_KEY="replace-with-local-key" scripts/live-e2e.sh
 ```
 
 ## v1 Architecture
@@ -125,7 +125,6 @@ files must stay untracked.
 
 Ignored local files include:
 
-- `.ai-cred`
 - `.env.local`
 - `config/local.yaml`
 - `config/live.local.yaml`
@@ -139,7 +138,11 @@ Example shape:
 version: 1
 
 database:
-  url: "postgres://ai_memmail:ai_memmail@postgres:5432/ai_memmail"
+  host: postgres
+  port: 5432
+  username: ai_memmail
+  password: ai_memmail
+  database: ai_memmail
 
 logging:
   level: info
@@ -256,7 +259,7 @@ The backend coverage gate excludes the binary entrypoint and live PostgreSQL
 adapter from the percentage calculation; migration SQL and retention logic are
 unit-tested, while the live adapter is validated through Docker/local testing.
 GitHub CI runs deterministic unit checks only. Live AI and E2E tests are local
-only and use untracked credentials from `.ai-cred` or `config/live.local.yaml`.
+only and use untracked credentials from `config/local.yaml`.
 
 ## Docker
 

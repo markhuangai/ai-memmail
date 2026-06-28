@@ -218,6 +218,10 @@ function Overview({ summary, config }: { summary: ReturnType<typeof summarizeCon
             <dd>{config.prompts.safety_scan}</dd>
           </div>
           <div>
+            <dt>Postgres</dt>
+            <dd>{config.database.host}:{config.database.port}</dd>
+          </div>
+          <div>
             <dt>Log retention</dt>
             <dd>{config.logging.retention_days} days</dd>
           </div>
@@ -632,6 +636,69 @@ function SettingsPanel({
   return (
     <section className="panel">
       <div className="form-grid">
+        <label>
+          Postgres host
+          <input
+            value={config.database.host}
+            onChange={(event) =>
+              setConfig({
+                ...config,
+                database: { ...config.database, host: event.target.value }
+              })
+            }
+          />
+        </label>
+        <label>
+          Postgres port
+          <input
+            type="number"
+            min="1"
+            value={config.database.port}
+            onChange={(event) =>
+              setConfig({
+                ...config,
+                database: { ...config.database, port: Number(event.target.value) }
+              })
+            }
+          />
+        </label>
+        <label>
+          Postgres user
+          <input
+            value={config.database.username}
+            onChange={(event) =>
+              setConfig({
+                ...config,
+                database: { ...config.database, username: event.target.value }
+              })
+            }
+          />
+        </label>
+        <label>
+          Postgres password
+          <input
+            type="password"
+            value={config.database.password}
+            onChange={(event) =>
+              setConfig({
+                ...config,
+                database: { ...config.database, password: event.target.value }
+              })
+            }
+          />
+        </label>
+        <label>
+          Postgres database
+          <input
+            value={config.database.database}
+            onChange={(event) =>
+              setConfig({
+                ...config,
+                database: { ...config.database, database: event.target.value }
+              })
+            }
+          />
+        </label>
         <label>
           AI API URL
           <input

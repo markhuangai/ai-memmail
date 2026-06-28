@@ -3,7 +3,11 @@ import type { AppConfig } from "./types";
 export const sampleConfig: AppConfig = {
   version: 1,
   database: {
-    url: "postgres://ai_memmail:ai_memmail@postgres:5432/ai_memmail"
+    host: "postgres",
+    port: 5432,
+    username: "ai_memmail",
+    password: "********",
+    database: "ai_memmail"
   },
   logging: {
     level: "info",

@@ -1,3 +1,4 @@
+use crate::config::DatabaseConfig;
 use crate::logging::{ActionEvent, ActionLogger, LogLevel};
 
 #[derive(Debug, thiserror::Error)]
@@ -14,9 +15,15 @@ pub struct PgStore {
 }
 
 impl PgStore {
-    pub async fn connect(database_url: &str) -> Result<Self, StorageError> {
-        let (client, connection) =
-            tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;
+    pub async fn connect(config: &DatabaseConfig) -> Result<Self, StorageError> {
+        let mut postgres_config = tokio_postgres::Config::new();
+        postgres_config
+            .host(&config.host)
+            .port(config.port)
+            .user(&config.username)
+            .password(&config.password)
+            .dbname(&config.database);
+        let (client, connection) = postgres_config.connect(tokio_postgres::NoTls).await?;
         tokio::spawn(async move {
             if let Err(error) = connection.await {
                 tracing::error!(%error, "postgres connection task failed");

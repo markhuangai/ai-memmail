@@ -125,7 +125,11 @@ mod tests {
         AppConfig {
             version: 1,
             database: DatabaseConfig {
-                url: "postgres://user:pass@localhost/db".to_string(),
+                host: "postgres".to_string(),
+                port: 5432,
+                username: "user".to_string(),
+                password: "db-secret".to_string(),
+                database: "ai_memmail".to_string(),
             },
             logging: LoggingConfig {
                 level: "info".to_string(),

@@ -104,7 +104,9 @@ impl AppState {
         self.config.read().expect("config lock poisoned").redacted()
     }
 
-    fn replace_config(&self, config: AppConfig) -> Result<(), ConfigError> {
+    fn replace_config(&self, mut config: AppConfig) -> Result<(), ConfigError> {
+        let current = self.config.read().expect("config lock poisoned").clone();
+        config.preserve_redacted_secrets(&current);
         config.save(&self.config_path)?;
         *self.config.write().expect("config lock poisoned") = config;
         Ok(())
@@ -293,7 +295,11 @@ mod tests {
         AppConfig {
             version: 1,
             database: DatabaseConfig {
-                url: "postgres://user:pass@localhost/db".to_string(),
+                host: "postgres".to_string(),
+                port: 5432,
+                username: "user".to_string(),
+                password: "db-secret".to_string(),
+                database: "ai_memmail".to_string(),
             },
             logging: LoggingConfig {
                 level: "info".to_string(),
@@ -450,6 +456,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_body(response).await;
+        assert_eq!(body["config"]["database"]["password"], "********");
         assert_eq!(body["config"]["ai"]["AI_API_SECRET"], "********");
         assert_eq!(
             body["config"]["mailboxes"][0]["imap"]["password"],
@@ -555,6 +562,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_config_preserves_redacted_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        let state = test_state(path.clone());
+        let app = router(state);
+        let login_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"key":"panel-key"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cookie = login_response
+            .headers()
+            .get(SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let mut next = config().redacted();
+        next.database.host = "db.changed.test".to_string();
+        next.ai.model = "changed-model".to_string();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri("/api/config")
+                    .header(COOKIE, cookie)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&next).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let saved = AppConfig::load(&path).unwrap();
+        assert_eq!(saved.database.host, "db.changed.test");
+        assert_eq!(saved.database.password, "db-secret");
+        assert_eq!(saved.ai.api_secret, "secret");
+        assert_eq!(saved.mailboxes[0].imap.password, "imap-secret");
+        assert_eq!(saved.mailboxes[0].smtp.password, "smtp-secret");
+    }
+
+    #[tokio::test]
     async fn update_config_rejects_invalid_payload() {
         let dir = tempfile::tempdir().unwrap();
         let app = router(test_state(dir.path().join("config.yaml")));
@@ -579,7 +637,7 @@ mod tests {
             .to_string();
 
         let mut next = config();
-        next.database.url.clear();
+        next.database.host.clear();
         let response = app
             .oneshot(
                 Request::builder()
@@ -594,7 +652,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response_body(response).await;
-        assert!(body["error"].as_str().unwrap().contains("database.url"));
+        assert!(body["error"].as_str().unwrap().contains("database.host"));
     }
 
     #[test]
