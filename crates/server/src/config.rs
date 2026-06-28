@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -330,7 +330,19 @@ fn validate_prompt_path(path: &Path, field: &str) -> Result<(), ConfigError> {
             "{field} must be relative to prompts.root"
         )));
     }
+    if path.components().any(is_prompt_escape_component) {
+        return Err(ConfigError::Invalid(format!(
+            "{field} must not contain parent directory components"
+        )));
+    }
     Ok(())
+}
+
+fn is_prompt_escape_component(component: Component<'_>) -> bool {
+    matches!(
+        component,
+        Component::ParentDir | Component::Prefix(_) | Component::RootDir
+    )
 }
 
 fn redact(value: &str) -> String {
@@ -442,6 +454,24 @@ mod tests {
         config.prompts.safety_scan = "/tmp/prompt.md".into();
         let error = config.validate().unwrap_err().to_string();
         assert!(error.contains("prompts.safety_scan must be relative"));
+    }
+
+    #[test]
+    fn rejects_prompt_paths_with_parent_components() {
+        let mut config = valid_config();
+        config.prompts.safety_scan = "../config/local.yaml".into();
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("prompts.safety_scan must not contain parent"));
+
+        let mut config = valid_config();
+        config.ai.review.prompt_path = "reviews/../secret.md".into();
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("ai.review.prompt_path must not contain parent"));
+
+        let mut config = valid_config();
+        config.mailboxes[0].agent.system_prompt_path = "../agent.md".into();
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("mailboxes[].agent.system_prompt_path must not contain parent"));
     }
 
     #[test]
