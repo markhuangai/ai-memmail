@@ -1,8 +1,8 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use axum::extract::State;
 use axum::http::header::{COOKIE, SET_COOKIE};
@@ -18,6 +18,7 @@ use crate::config::{AppConfig, ConfigError};
 use crate::worker;
 
 const SESSION_COOKIE: &str = "ai_memmail_session";
+const SESSION_TTL_SECONDS: u64 = 86_400;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -30,7 +31,7 @@ pub struct AppState {
 
 #[derive(Clone, Default)]
 struct SessionStore {
-    tokens: Arc<Mutex<HashSet<String>>>,
+    tokens: Arc<Mutex<HashMap<String, SystemTime>>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -114,11 +115,15 @@ impl AppState {
 
     fn create_session(&self) -> String {
         let token = Uuid::new_v4().to_string();
+        let now = SystemTime::now();
         self.sessions
             .tokens
             .lock()
             .expect("session lock poisoned")
-            .insert(token.clone());
+            .insert(
+                token.clone(),
+                now + Duration::from_secs(SESSION_TTL_SECONDS),
+            );
         token
     }
 
@@ -131,11 +136,10 @@ impl AppState {
     }
 
     fn has_session(&self, token: &str) -> bool {
-        self.sessions
-            .tokens
-            .lock()
-            .expect("session lock poisoned")
-            .contains(token)
+        let now = SystemTime::now();
+        let mut tokens = self.sessions.tokens.lock().expect("session lock poisoned");
+        tokens.retain(|_, expires_at| *expires_at > now);
+        tokens.contains_key(token)
     }
 }
 
@@ -159,8 +163,9 @@ async fn login(State(state): State<AppState>, Json(request): Json<LoginRequest>)
         return ApiError::unauthorized("invalid control panel key").into_response();
     }
     let token = state.create_session();
-    let cookie =
-        format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400");
+    let cookie = format!(
+        "{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL_SECONDS}"
+    );
     (
         StatusCode::OK,
         [(SET_COOKIE, cookie)],
@@ -485,6 +490,51 @@ mod tests {
             body["config"]["mcp_servers"]["dense_mem"]["env"]["DENSE_MEM_MCP_URL"],
             "http://dense-mem"
         );
+    }
+
+    #[tokio::test]
+    async fn login_cookie_uses_server_session_ttl() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = router(test_state(dir.path().join("config.yaml")));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"key":"panel-key"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cookie = response
+            .headers()
+            .get(SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(cookie.contains(&format!("Max-Age={SESSION_TTL_SECONDS}")));
+    }
+
+    #[test]
+    fn expired_sessions_are_rejected_and_pruned() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path().join("config.yaml"));
+        let active = state.create_session();
+        let expired = state.create_session();
+        {
+            let mut tokens = state.sessions.tokens.lock().expect("session lock poisoned");
+            tokens.insert(expired.clone(), SystemTime::now() - Duration::from_secs(1));
+        }
+
+        assert!(!state.has_session(&expired));
+        assert!(state.has_session(&active));
+        assert!(!state
+            .sessions
+            .tokens
+            .lock()
+            .expect("session lock poisoned")
+            .contains_key(&expired));
     }
 
     #[tokio::test]
