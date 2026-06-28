@@ -120,12 +120,32 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText(/imap port/i), {
       target: { value: "1993" }
     });
+    fireEvent.change(screen.getByLabelText(/imap user/i), {
+      target: { value: "imap-user" }
+    });
+    fireEvent.change(screen.getByLabelText(/imap password/i), {
+      target: { value: "imap-password" }
+    });
+    fireEvent.change(screen.getByLabelText(/imap folder/i), {
+      target: { value: "Support" }
+    });
+    fireEvent.click(screen.getByLabelText(/imap tls/i));
     fireEvent.change(screen.getByLabelText(/smtp host/i), {
       target: { value: "smtp.changed.test" }
+    });
+    fireEvent.change(screen.getByLabelText(/smtp port/i), {
+      target: { value: "2525" }
+    });
+    fireEvent.change(screen.getByLabelText(/smtp user/i), {
+      target: { value: "smtp-user" }
+    });
+    fireEvent.change(screen.getByLabelText(/smtp password/i), {
+      target: { value: "smtp-password" }
     });
     fireEvent.change(screen.getByLabelText(/smtp from/i), {
       target: { value: "ops@example.com" }
     });
+    fireEvent.click(screen.getByLabelText(/smtp starttls/i));
     fireEvent.change(screen.getByLabelText(/agent prompt/i), {
       target: { value: "ops-agent.md" }
     });
@@ -140,8 +160,22 @@ describe("App", () => {
       enabled: false,
       address: "ops@example.com",
       safety_forward_to: ["review@example.com", "lead@example.com"],
-      imap: { host: "imap.changed.test", port: 1993 },
-      smtp: { host: "smtp.changed.test", from: "ops@example.com" },
+      imap: {
+        host: "imap.changed.test",
+        port: 1993,
+        username: "imap-user",
+        password: "imap-password",
+        folder: "Support",
+        tls: false
+      },
+      smtp: {
+        host: "smtp.changed.test",
+        port: 2525,
+        username: "smtp-user",
+        password: "smtp-password",
+        from: "ops@example.com",
+        starttls: false
+      },
       agent: {
         system_prompt_path: "ops-agent.md",
         default_forward_to: ["lead@example.com"]

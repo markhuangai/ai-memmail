@@ -359,6 +359,7 @@ function Mailboxes({
               IMAP port
               <input
                 type="number"
+                min="1"
                 value={mailbox.imap.port}
                 onChange={(event) =>
                   patchMailbox(mailbox.id, (next) => ({
@@ -369,6 +370,56 @@ function Mailboxes({
               />
             </label>
             <label>
+              IMAP user
+              <input
+                value={mailbox.imap.username}
+                onChange={(event) =>
+                  patchMailbox(mailbox.id, (next) => ({
+                    ...next,
+                    imap: { ...next.imap, username: event.target.value }
+                  }))
+                }
+              />
+            </label>
+            <label>
+              IMAP password
+              <input
+                type="password"
+                value={mailbox.imap.password}
+                onChange={(event) =>
+                  patchMailbox(mailbox.id, (next) => ({
+                    ...next,
+                    imap: { ...next.imap, password: event.target.value }
+                  }))
+                }
+              />
+            </label>
+            <label>
+              IMAP folder
+              <input
+                value={mailbox.imap.folder}
+                onChange={(event) =>
+                  patchMailbox(mailbox.id, (next) => ({
+                    ...next,
+                    imap: { ...next.imap, folder: event.target.value }
+                  }))
+                }
+              />
+            </label>
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={mailbox.imap.tls}
+                onChange={(event) =>
+                  patchMailbox(mailbox.id, (next) => ({
+                    ...next,
+                    imap: { ...next.imap, tls: event.target.checked }
+                  }))
+                }
+              />
+              IMAP TLS
+            </label>
+            <label>
               SMTP host
               <input
                 value={mailbox.smtp.host}
@@ -376,6 +427,45 @@ function Mailboxes({
                   patchMailbox(mailbox.id, (next) => ({
                     ...next,
                     smtp: { ...next.smtp, host: event.target.value }
+                  }))
+                }
+              />
+            </label>
+            <label>
+              SMTP port
+              <input
+                type="number"
+                min="1"
+                value={mailbox.smtp.port}
+                onChange={(event) =>
+                  patchMailbox(mailbox.id, (next) => ({
+                    ...next,
+                    smtp: { ...next.smtp, port: Number(event.target.value) }
+                  }))
+                }
+              />
+            </label>
+            <label>
+              SMTP user
+              <input
+                value={mailbox.smtp.username}
+                onChange={(event) =>
+                  patchMailbox(mailbox.id, (next) => ({
+                    ...next,
+                    smtp: { ...next.smtp, username: event.target.value }
+                  }))
+                }
+              />
+            </label>
+            <label>
+              SMTP password
+              <input
+                type="password"
+                value={mailbox.smtp.password}
+                onChange={(event) =>
+                  patchMailbox(mailbox.id, (next) => ({
+                    ...next,
+                    smtp: { ...next.smtp, password: event.target.value }
                   }))
                 }
               />
@@ -391,6 +481,19 @@ function Mailboxes({
                   }))
                 }
               />
+            </label>
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={mailbox.smtp.starttls}
+                onChange={(event) =>
+                  patchMailbox(mailbox.id, (next) => ({
+                    ...next,
+                    smtp: { ...next.smtp, starttls: event.target.checked }
+                  }))
+                }
+              />
+              SMTP STARTTLS
             </label>
             <label>
               Agent prompt

@@ -306,6 +306,9 @@ fn validate_mailbox(
             mailbox.id
         )));
     }
+    if mailbox.enabled {
+        validate_enabled_mailbox_connection(mailbox)?;
+    }
     validate_prompt_path(
         &mailbox.agent.system_prompt_path,
         "mailboxes[].agent.system_prompt_path",
@@ -317,6 +320,31 @@ fn validate_mailbox(
                 mailbox.id, server
             )));
         }
+    }
+    Ok(())
+}
+
+fn validate_enabled_mailbox_connection(mailbox: &MailboxConfig) -> Result<(), ConfigError> {
+    let prefix = format!("mailbox {}", mailbox.id);
+    validate_required(&mailbox.address, &format!("{prefix} address"))?;
+    validate_required(&mailbox.imap.host, &format!("{prefix} imap.host"))?;
+    validate_port(mailbox.imap.port, &format!("{prefix} imap.port"))?;
+    validate_required(&mailbox.imap.username, &format!("{prefix} imap.username"))?;
+    validate_required(&mailbox.imap.password, &format!("{prefix} imap.password"))?;
+    validate_required(&mailbox.imap.folder, &format!("{prefix} imap.folder"))?;
+    validate_required(&mailbox.smtp.host, &format!("{prefix} smtp.host"))?;
+    validate_port(mailbox.smtp.port, &format!("{prefix} smtp.port"))?;
+    validate_required(&mailbox.smtp.username, &format!("{prefix} smtp.username"))?;
+    validate_required(&mailbox.smtp.password, &format!("{prefix} smtp.password"))?;
+    validate_required(&mailbox.smtp.from, &format!("{prefix} smtp.from"))?;
+    Ok(())
+}
+
+fn validate_port(port: u16, field: &str) -> Result<(), ConfigError> {
+    if port == 0 {
+        return Err(ConfigError::Invalid(format!(
+            "{field} must be greater than zero"
+        )));
     }
     Ok(())
 }
@@ -433,6 +461,14 @@ mod tests {
             }],
             banned_senders: vec![],
         }
+    }
+
+    fn assert_invalid_config(config: AppConfig, expected: &str) {
+        let error = config.validate().unwrap_err().to_string();
+        assert!(
+            error.contains(expected),
+            "expected {error:?} to contain {expected:?}"
+        );
     }
 
     #[test]
@@ -589,35 +625,92 @@ mod tests {
     fn rejects_invalid_mailbox_settings() {
         let mut config = valid_config();
         config.mailboxes[0].id.clear();
-        assert!(config
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("mailboxes[].id"));
+        assert_invalid_config(config, "mailboxes[].id");
 
         let mut config = valid_config();
         config.mailboxes[0].poll_interval_seconds = 0;
-        assert!(config
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("poll_interval_seconds"));
+        assert_invalid_config(config, "poll_interval_seconds");
 
         let mut config = valid_config();
         config.mailboxes[0].safety_forward_to.clear();
-        assert!(config
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("safety_forward_to"));
+        assert_invalid_config(config, "safety_forward_to");
 
         let mut config = valid_config();
         config.mailboxes[0].mcp_servers = vec!["missing".to_string()];
-        assert!(config
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("unknown MCP server"));
+        assert_invalid_config(config, "unknown MCP server");
+    }
+
+    #[test]
+    fn rejects_incomplete_enabled_mailbox_connection_settings() {
+        let mut config = valid_config();
+        config.mailboxes[0].address.clear();
+        assert_invalid_config(config, "mailbox support address is required");
+
+        let mut config = valid_config();
+        config.mailboxes[0].imap.host.clear();
+        assert_invalid_config(config, "mailbox support imap.host is required");
+
+        let mut config = valid_config();
+        config.mailboxes[0].imap.port = 0;
+        assert_invalid_config(
+            config,
+            "mailbox support imap.port must be greater than zero",
+        );
+
+        let mut config = valid_config();
+        config.mailboxes[0].imap.username.clear();
+        assert_invalid_config(config, "mailbox support imap.username is required");
+
+        let mut config = valid_config();
+        config.mailboxes[0].imap.password.clear();
+        assert_invalid_config(config, "mailbox support imap.password is required");
+
+        let mut config = valid_config();
+        config.mailboxes[0].imap.folder.clear();
+        assert_invalid_config(config, "mailbox support imap.folder is required");
+
+        let mut config = valid_config();
+        config.mailboxes[0].smtp.host.clear();
+        assert_invalid_config(config, "mailbox support smtp.host is required");
+
+        let mut config = valid_config();
+        config.mailboxes[0].smtp.port = 0;
+        assert_invalid_config(
+            config,
+            "mailbox support smtp.port must be greater than zero",
+        );
+
+        let mut config = valid_config();
+        config.mailboxes[0].smtp.username.clear();
+        assert_invalid_config(config, "mailbox support smtp.username is required");
+
+        let mut config = valid_config();
+        config.mailboxes[0].smtp.password.clear();
+        assert_invalid_config(config, "mailbox support smtp.password is required");
+
+        let mut config = valid_config();
+        config.mailboxes[0].smtp.from.clear();
+        assert_invalid_config(config, "mailbox support smtp.from is required");
+    }
+
+    #[test]
+    fn allows_disabled_mailbox_drafts_without_connection_settings() {
+        let mut config = valid_config();
+        let mailbox = &mut config.mailboxes[0];
+        mailbox.enabled = false;
+        mailbox.address.clear();
+        mailbox.imap.host.clear();
+        mailbox.imap.port = 0;
+        mailbox.imap.username.clear();
+        mailbox.imap.password.clear();
+        mailbox.imap.folder.clear();
+        mailbox.smtp.host.clear();
+        mailbox.smtp.port = 0;
+        mailbox.smtp.username.clear();
+        mailbox.smtp.password.clear();
+        mailbox.smtp.from.clear();
+
+        assert!(config.validate().is_ok());
     }
 
     #[test]
