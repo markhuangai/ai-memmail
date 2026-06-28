@@ -9,18 +9,20 @@ dashboard served by the Rust web service.
 
 The repository now contains the v1 application foundation:
 
-- Rust workspace with an Axum control-panel API, worker loop skeleton, typed YAML
-  configuration, prompt-file loading, safety policy primitives, structured action
-  logging, and PostgreSQL migrations.
+- Rust workspace with an Axum control-panel API, IMAP polling worker,
+  OpenAI-compatible safety/agent decisions, Dense-Mem MCP recall over HTTP,
+  SMTP reply/forward sending, typed YAML configuration, prompt-file loading,
+  safety policy primitives, structured action logging, and PostgreSQL
+  migrations.
 - React TypeScript control panel for login, mailbox settings, MCP server
   settings, safety lists, AI prompt paths, and logging settings.
 - Source-built Docker runtime with separate `web` and `worker` roles.
 - Backend and frontend unit coverage gates, plus Playwright E2E coverage for the
   control panel.
 
-Concrete IMAP fetch, SMTP send, AI provider, and MCP transport adapters are the
-next implementation step. The foundation intentionally defines their
-configuration, storage, validation, UI, and safety boundaries first.
+PostgreSQL persistence for processing run state is still a foundation-level
+schema and action-log sink; the live worker currently relies on IMAP `UNSEEN`
+plus `Seen` marking for local live processing.
 
 ## Local Setup
 
@@ -55,6 +57,13 @@ local testing. Override it when needed:
 ```bash
 CONTROL_PANEL_KEY="replace-with-local-key" scripts/live-e2e.sh
 ```
+
+The live mail test loads `config/local.yaml`, sends one email scenario at a time,
+runs the real worker path, waits for the expected reply or forward, then moves
+to the next scenario. It covers MCP-backed known-answer reply, explicit
+human-forward routing, prompt-injection quarantine forwarding, and banned-sender
+forwarding. The test derives the forward mailbox credentials from the local
+config in memory; do not commit local credentials.
 
 ## v1 Architecture
 
@@ -255,9 +264,19 @@ scripts/check-frontend.sh
 cd web && npm run e2e
 ```
 
-The backend coverage gate excludes the binary entrypoint and live PostgreSQL
-adapter from the percentage calculation; migration SQL and retention logic are
-unit-tested, while the live adapter is validated through Docker/local testing.
+Run the opt-in live mail E2E directly:
+
+```bash
+AI_MEMMAIL_LIVE_E2E=1 AI_MEMMAIL_CONFIG=config/local.yaml \
+  cargo test -p ai-memmail-server --test live_e2e -- --nocapture
+```
+
+The backend coverage gate excludes the binary entrypoint and raw external
+adapter modules (`ai_external.rs`, `mail_external.rs`) from the percentage
+calculation. Unit tests cover the trait boundaries, parsing, payload mapping,
+fallbacks, and worker decisions; live mail, AI, and MCP behavior is covered by
+the opt-in live E2E because it depends on local credentials and external
+services.
 GitHub CI runs deterministic unit checks only. Live AI and E2E tests are local
 only and use untracked credentials from `config/local.yaml`.
 

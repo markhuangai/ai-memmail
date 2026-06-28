@@ -11,8 +11,10 @@ if [ ! -f "$AI_MEMMAIL_CONFIG" ]; then
   exit 1
 fi
 
-docker compose up --build -d postgres web worker
-trap 'docker compose logs --tail=120 web worker postgres; docker compose down' EXIT
+docker compose up --build -d postgres web
+trap 'docker compose logs --tail=120 web postgres; docker compose stop web postgres; docker compose rm -f web postgres' EXIT
+
+AI_MEMMAIL_LIVE_E2E=1 cargo test -p ai-memmail-server --test live_e2e -- --nocapture
 
 cd web
 npm ci
