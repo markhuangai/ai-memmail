@@ -1,0 +1,145 @@
+version: 1
+
+event_delivery:
+  mode: webhook
+  relay:
+    provider: smee
+    url_secret: GITVIBE_RELAY_URL
+  actions_receiver:
+    enabled: false
+    scheduled_scan: "*/15 * * * *"
+  polling:
+    enabled: false
+    interval_seconds: 300
+
+github_auth:
+  mode: github-app
+
+safety:
+  prompt_injection_gate: true
+
+tests:
+  commands: []
+
+ai:
+  security:
+    web:
+      allowed_domains: []
+  mcp:
+    servers:
+      project-memory:
+        transport: stdio
+        command: npx
+        args: ["-y", "dense-mem-mcp-proxy"]
+        env:
+          DENSE_MEM_API_KEY:
+            from_bundle: DENSE_MEM_API_KEY
+          DENSE_MEM_MCP_URL:
+            from_bundle: DENSE_MEM_MCP_URL
+  profiles:
+    local_proxy:
+      adapter: claude-code-sdk
+      env:
+        ANTHROPIC_API_KEY:
+          from_bundle: GITVIBE_AI_API_KEY
+        ANTHROPIC_BASE_URL:
+          from_bundle: GITVIBE_AI_BASE_URL
+        ANTHROPIC_DEFAULT_OPUS_MODEL: glm-5
+        ANTHROPIC_DEFAULT_SONNET_MODEL: glm-5
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: glm-5
+        ANTHROPIC_MODEL: opus
+        CLAUDE_CODE_SUBAGENT_MODEL: opus
+      model: opus
+      reasoning:
+        effort: high
+      provider_options:
+        anthropic:
+          effort: high
+    codex_5_5_xhigh:
+      adapter: codex-sdk
+      auth_json:
+        from_bundle: CODEX_AUTH_JSON
+      model: gpt-5.5
+      reasoning:
+        effort: xhigh
+        summary: concise
+  role_groups:
+    swarm:
+      synthesizer: codex_5_5_xhigh
+      parallel: 6
+      roles:
+        - role: correctness.md
+          profile: local_proxy
+        - role: security.md
+          profile: local_proxy
+        - role: maintainability.md
+          profile: local_proxy
+        - role: email-flow.md
+          profile: local_proxy
+        - role: ai-agent-policy.md
+          profile: local_proxy
+        - role: prompt-injection-safety.md
+          profile: local_proxy
+        - role: mcp-integration.md
+          profile: local_proxy
+        - role: control-panel-ux.md
+          profile: local_proxy
+        - role: config-contracts.md
+          profile: local_proxy
+        - role: data-integrity.md
+          profile: local_proxy
+        - role: operations-readiness.md
+          profile: local_proxy
+        - role: test-evidence.md
+          profile: local_proxy
+  budgets:
+    default_timeout_minutes: 60
+    review_timeout_minutes: 60
+    implementation_timeout_minutes: 120
+    feedback_timeout_minutes: 120
+    create_pr_timeout_minutes: 15
+    default_max_turns: 200
+    implementation_max_turns: 200
+    feedback_max_turns: 120
+    validation_repair_attempts: 3
+    validation_repair_max_turns: 45
+    pr_feedback_max_iterations: 3
+    request_retry_attempts: 3
+    request_retry_delay_seconds: 60
+  stages:
+    investigate:
+      role_group: swarm
+      mcp:
+        project-memory:
+          required: true
+          tools:
+            - recall_memory
+            - assemble_context
+            - trace_memory
+    validate:
+      role_group: swarm
+      mcp:
+        project-memory:
+          required: true
+          tools:
+            - recall_memory
+            - assemble_context
+            - trace_memory
+    materialize:
+      profile: codex_5_5_xhigh
+      mcp:
+        project-memory:
+          required: true
+          tools:
+            - recall_memory
+            - assemble_context
+            - trace_memory
+    review-matrix:
+      role_group: swarm
+      mcp:
+        project-memory:
+          required: true
+          tools:
+            - recall_memory
+            - assemble_context
+            - trace_memory

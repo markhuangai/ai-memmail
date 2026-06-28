@@ -1,3 +1,7 @@
 .env.gitvibe
 .env.mcp
 .codex
+.ai-cred
+.env.local
+config/local.yaml
+config/live.local.yaml
