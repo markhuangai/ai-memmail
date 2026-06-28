@@ -20,4 +20,4 @@ cargo llvm-cov \
   --workspace \
   --lib \
   --fail-under-lines 90 \
-  --ignore-filename-regex 'rustc-.*library|src/(main|storage).rs'
+  --ignore-filename-regex 'rustc-.*library|src/main.rs'
