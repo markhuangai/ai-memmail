@@ -229,10 +229,7 @@ impl AppConfig {
         clone.ai.api_secret = redact(&clone.ai.api_secret);
         for server in clone.mcp_servers.values_mut() {
             for (key, value) in server.env.iter_mut() {
-                if key.to_ascii_lowercase().contains("key")
-                    || key.to_ascii_lowercase().contains("secret")
-                    || key.to_ascii_lowercase().contains("token")
-                {
+                if is_sensitive_env_name(key) {
                     *value = redact(value);
                 }
             }
@@ -381,6 +378,22 @@ fn redact(value: &str) -> String {
     }
 }
 
+fn is_sensitive_env_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("key")
+        || lower.contains("secret")
+        || lower.contains("token")
+        || lower.contains("password")
+        || lower.contains("passwd")
+        || lower.contains("credential")
+        || lower.contains("private_key")
+        || lower.contains("private-key")
+        || lower.contains("authorization")
+        || lower
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|part| matches!(part, "pass" | "pwd" | "auth"))
+}
+
 fn preserve_if_redacted(next: &mut String, current: &str) {
     if next == REDACTED_SECRET {
         *next = current.to_string();
@@ -521,6 +534,58 @@ mod tests {
         );
         assert_eq!(redacted.mailboxes[0].imap.password, "********");
         assert_eq!(redacted.mailboxes[0].smtp.password, "********");
+    }
+
+    #[test]
+    fn redacts_sensitive_mcp_env_names() {
+        let mut config = valid_config();
+        let server = config.mcp_servers.get_mut("dense_mem").unwrap();
+        server
+            .env
+            .insert("DENSE_MEM_PASSWORD".to_string(), "password".to_string());
+        server
+            .env
+            .insert("DENSE_MEM_PASS".to_string(), "pass".to_string());
+        server
+            .env
+            .insert("DENSE_MEM_PWD".to_string(), "pwd".to_string());
+        server
+            .env
+            .insert("DENSE_MEM_AUTH".to_string(), "auth".to_string());
+        server
+            .env
+            .insert("DENSE_MEM_CREDENTIAL".to_string(), "credential".to_string());
+        server.env.insert(
+            "DENSE_MEM_PRIVATE_KEY".to_string(),
+            "private-key".to_string(),
+        );
+        server
+            .env
+            .insert("HTTP_AUTHORIZATION".to_string(), "bearer-token".to_string());
+        server
+            .env
+            .insert("DENSE_MEM_APIKEY".to_string(), "api-key".to_string());
+        server.env.insert(
+            "DENSE_MEM_MCP_URL".to_string(),
+            "http://dense-mem".to_string(),
+        );
+
+        let redacted = config.redacted();
+        let env = &redacted.mcp_servers["dense_mem"].env;
+        for key in [
+            "DENSE_MEM_API_KEY",
+            "DENSE_MEM_PASSWORD",
+            "DENSE_MEM_PASS",
+            "DENSE_MEM_PWD",
+            "DENSE_MEM_AUTH",
+            "DENSE_MEM_CREDENTIAL",
+            "DENSE_MEM_PRIVATE_KEY",
+            "HTTP_AUTHORIZATION",
+            "DENSE_MEM_APIKEY",
+        ] {
+            assert_eq!(env[key], "********");
+        }
+        assert_eq!(env["DENSE_MEM_MCP_URL"], "http://dense-mem");
     }
 
     #[test]

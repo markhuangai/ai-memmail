@@ -286,7 +286,7 @@ mod tests {
 
     use crate::config::{
         AgentConfig, AiConfig, AiProtocol, DatabaseConfig, ImapConfig, LoggingConfig,
-        MailboxConfig, PromptConfig, ReviewConfig, SmtpConfig,
+        MailboxConfig, McpServerConfig, McpTransport, PromptConfig, ReviewConfig, SmtpConfig,
     };
 
     use super::*;
@@ -321,7 +321,22 @@ mod tests {
                     prompt_path: "review.md".into(),
                 },
             },
-            mcp_servers: BTreeMap::new(),
+            mcp_servers: BTreeMap::from([(
+                "dense_mem".to_string(),
+                McpServerConfig {
+                    transport: McpTransport::Stdio,
+                    command: Some("npx".to_string()),
+                    args: vec![],
+                    env: BTreeMap::from([
+                        ("DENSE_MEM_PASSWORD".to_string(), "mcp-password".to_string()),
+                        (
+                            "DENSE_MEM_MCP_URL".to_string(),
+                            "http://dense-mem".to_string(),
+                        ),
+                    ]),
+                    url: None,
+                },
+            )]),
             mailboxes: vec![MailboxConfig {
                 id: "support".to_string(),
                 address: "support@example.com".to_string(),
@@ -461,6 +476,14 @@ mod tests {
         assert_eq!(
             body["config"]["mailboxes"][0]["imap"]["password"],
             "********"
+        );
+        assert_eq!(
+            body["config"]["mcp_servers"]["dense_mem"]["env"]["DENSE_MEM_PASSWORD"],
+            "********"
+        );
+        assert_eq!(
+            body["config"]["mcp_servers"]["dense_mem"]["env"]["DENSE_MEM_MCP_URL"],
+            "http://dense-mem"
         );
     }
 
