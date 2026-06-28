@@ -1,0 +1,17 @@
+.git
+.git-vibe
+.github
+.codex
+.ai-cred
+.env*
+config/local.yaml
+config/live.local.yaml
+target
+web/node_modules
+web/dist
+web/coverage
+web/test-results
+*.tsbuildinfo
+playwright-report
+test-results
+.coverage

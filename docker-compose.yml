@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ai_memmail
+      POSTGRES_USER: ai_memmail
+      POSTGRES_PASSWORD: ai_memmail
+    ports:
+      - "${POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_memmail -d ai_memmail"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    image: ai-memmail:local
+    build: .
+    environment:
+      AI_MEMMAIL_CONFIG: /app/config/local.yaml
+      AI_MEMMAIL_BIND: 0.0.0.0:8080
+      CONTROL_PANEL_KEY: ${CONTROL_PANEL_KEY:?CONTROL_PANEL_KEY is required}
+    ports:
+      - "${CONTROL_PANEL_PORT:-18080}:8080"
+    volumes:
+      - ./config/local.yaml:/app/config/local.yaml
+      - ./prompts:/app/prompts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    image: ai-memmail:local
+    build: .
+    environment:
+      AI_MEMMAIL_CONFIG: /app/config/local.yaml
+      AI_MEMMAIL_ROLE: worker
+      CONTROL_PANEL_KEY: ${CONTROL_PANEL_KEY:?CONTROL_PANEL_KEY is required}
+    volumes:
+      - ./config/local.yaml:/app/config/local.yaml:ro
+      - ./prompts:/app/prompts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
