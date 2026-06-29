@@ -80,6 +80,25 @@ impl ActionLogger for StdoutLogger {
     }
 }
 
+pub struct FanoutLogger<'a> {
+    first: &'a dyn ActionLogger,
+    second: &'a dyn ActionLogger,
+}
+
+impl<'a> FanoutLogger<'a> {
+    pub fn new(first: &'a dyn ActionLogger, second: &'a dyn ActionLogger) -> Self {
+        Self { first, second }
+    }
+}
+
+#[async_trait]
+impl ActionLogger for FanoutLogger<'_> {
+    async fn log(&self, event: ActionEvent) {
+        self.first.log(event.clone()).await;
+        self.second.log(event).await;
+    }
+}
+
 pub fn action_event(
     level: LogLevel,
     run_id: impl Into<String>,
@@ -154,6 +173,26 @@ mod tests {
                 ))
                 .await;
         }
+    }
+
+    #[tokio::test]
+    async fn fanout_logger_writes_to_both_loggers() {
+        let first = MemoryLogger::default();
+        let second = MemoryLogger::default();
+        let logger = FanoutLogger::new(&first, &second);
+        logger
+            .log(action_event(
+                LogLevel::Info,
+                "run-fanout",
+                "test",
+                "ok",
+                Duration::from_millis(3),
+            ))
+            .await;
+
+        assert_eq!(first.events().len(), 1);
+        assert_eq!(second.events().len(), 1);
+        assert_eq!(first.events()[0], second.events()[0]);
     }
 
     #[test]

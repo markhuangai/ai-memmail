@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use crate::config::DatabaseConfig;
 use crate::logging::{ActionEvent, ActionLogger, LogLevel};
 use crate::mail::{DedupeKey, InboundMessage, OutboundActionKind};
+use crate::safety::SafetyCategory;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -41,11 +42,39 @@ pub trait ProcessingStore: Send + Sync {
         status: &str,
         outbound_action: Option<&OutboundActionKind>,
     ) -> Result<(), StorageError>;
+
+    async fn record_safety_result(
+        &self,
+        key: &DedupeKey,
+        category: &SafetyCategory,
+        reason: &str,
+    ) -> Result<(), StorageError>;
+
+    async fn upsert_sender_review(
+        &self,
+        sender: &str,
+        mailbox_id: &str,
+        reason: &str,
+    ) -> Result<(), StorageError>;
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct MemoryProcessingStore {
     statuses: Arc<Mutex<HashMap<DedupeKey, String>>>,
+    safety_results: Arc<Mutex<HashMap<DedupeKey, StoredSafetyResult>>>,
+    sender_reviews: Arc<Mutex<HashMap<String, SenderReviewRecord>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredSafetyResult {
+    pub category: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SenderReviewRecord {
+    pub mailbox_id: String,
+    pub reason: String,
 }
 
 impl MemoryProcessingStore {
@@ -54,6 +83,22 @@ impl MemoryProcessingStore {
             .lock()
             .expect("memory processing store poisoned")
             .get(key)
+            .cloned()
+    }
+
+    pub fn safety_result(&self, key: &DedupeKey) -> Option<StoredSafetyResult> {
+        self.safety_results
+            .lock()
+            .expect("memory safety result store poisoned")
+            .get(key)
+            .cloned()
+    }
+
+    pub fn sender_review(&self, sender: &str) -> Option<SenderReviewRecord> {
+        self.sender_reviews
+            .lock()
+            .expect("memory sender review store poisoned")
+            .get(sender)
             .cloned()
     }
 }
@@ -214,6 +259,51 @@ impl ProcessingStore for PgStore {
             .await?;
         Ok(())
     }
+
+    async fn record_safety_result(
+        &self,
+        key: &DedupeKey,
+        category: &SafetyCategory,
+        reason: &str,
+    ) -> Result<(), StorageError> {
+        let category = safety_category_value(category);
+        self.client
+            .execute(
+                "UPDATE processing_runs
+                SET safety_category = $1, safety_reason = $2, updated_at = now()
+                WHERE mailbox_id = $3 AND uid_validity = $4 AND uid = $5",
+                &[
+                    &category,
+                    &reason,
+                    &key.mailbox_id,
+                    &(key.uid_validity as i64),
+                    &(key.uid as i64),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn upsert_sender_review(
+        &self,
+        sender: &str,
+        mailbox_id: &str,
+        reason: &str,
+    ) -> Result<(), StorageError> {
+        self.client
+            .execute(
+                "INSERT INTO sender_reviews (sender, mailbox_id, reason, status)
+                VALUES ($1, $2, $3, 'pending')
+                ON CONFLICT (sender) DO UPDATE
+                SET mailbox_id = EXCLUDED.mailbox_id,
+                    reason = EXCLUDED.reason,
+                    status = 'pending',
+                    updated_at = now()",
+                &[&sender, &mailbox_id, &reason],
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -253,6 +343,44 @@ impl ProcessingStore for MemoryProcessingStore {
             .insert(key.clone(), status.to_string());
         Ok(())
     }
+
+    async fn record_safety_result(
+        &self,
+        key: &DedupeKey,
+        category: &SafetyCategory,
+        reason: &str,
+    ) -> Result<(), StorageError> {
+        self.safety_results
+            .lock()
+            .map_err(|_| StorageError::LockPoisoned)?
+            .insert(
+                key.clone(),
+                StoredSafetyResult {
+                    category: safety_category_value(category).to_string(),
+                    reason: reason.to_string(),
+                },
+            );
+        Ok(())
+    }
+
+    async fn upsert_sender_review(
+        &self,
+        sender: &str,
+        mailbox_id: &str,
+        reason: &str,
+    ) -> Result<(), StorageError> {
+        self.sender_reviews
+            .lock()
+            .map_err(|_| StorageError::LockPoisoned)?
+            .insert(
+                sender.to_string(),
+                SenderReviewRecord {
+                    mailbox_id: mailbox_id.to_string(),
+                    reason: reason.to_string(),
+                },
+            );
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -285,6 +413,17 @@ pub fn outbound_action_value(kind: &OutboundActionKind) -> &'static str {
         OutboundActionKind::Reply => "reply",
         OutboundActionKind::Forward => "forward",
         OutboundActionKind::Noop => "noop",
+    }
+}
+
+pub fn safety_category_value(category: &SafetyCategory) -> &'static str {
+    match category {
+        SafetyCategory::Safe => "safe",
+        SafetyCategory::Jailbreak => "jailbreak",
+        SafetyCategory::PromptInjection => "prompt_injection",
+        SafetyCategory::Hacking => "hacking",
+        SafetyCategory::SensitiveExfiltration => "sensitive_exfiltration",
+        SafetyCategory::Unknown => "unknown",
     }
 }
 
@@ -410,6 +549,19 @@ mod tests {
         assert_eq!(outbound_action_value(&OutboundActionKind::Noop), "noop");
     }
 
+    #[test]
+    fn safety_category_values_match_storage_terms() {
+        assert_eq!(
+            safety_category_value(&SafetyCategory::PromptInjection),
+            "prompt_injection"
+        );
+        assert_eq!(
+            safety_category_value(&SafetyCategory::SensitiveExfiltration),
+            "sensitive_exfiltration"
+        );
+        assert_eq!(safety_category_value(&SafetyCategory::Safe), "safe");
+    }
+
     #[tokio::test]
     async fn memory_processing_store_claims_updates_and_skips_finished_messages() {
         let store = MemoryProcessingStore::default();
@@ -455,6 +607,45 @@ mod tests {
         assert_eq!(
             store.status(&key),
             Some(PROCESSING_STATUS_PROCESSING.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_processing_store_records_safety_and_sender_review_state() {
+        let store = MemoryProcessingStore::default();
+        let message = message(44);
+        let key = message.metadata.dedupe_key();
+
+        store
+            .record_safety_result(
+                &key,
+                &SafetyCategory::PromptInjection,
+                "tries to override policy",
+            )
+            .await
+            .unwrap();
+        store
+            .upsert_sender_review(
+                &message.metadata.from_addr,
+                &message.metadata.mailbox_id,
+                "tries to override policy",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.safety_result(&key),
+            Some(StoredSafetyResult {
+                category: "prompt_injection".to_string(),
+                reason: "tries to override policy".to_string()
+            })
+        );
+        assert_eq!(
+            store.sender_review("person@example.com"),
+            Some(SenderReviewRecord {
+                mailbox_id: "support".to_string(),
+                reason: "tries to override policy".to_string()
+            })
         );
     }
 
