@@ -7,13 +7,63 @@ dashboard served by the Rust web service.
 
 ## Current Status
 
-This repository is being initialized in two steps.
+The repository now contains the v1 application foundation:
 
-1. Bootstrap `main` with this README and Git Vibe review configuration.
-2. Build the v1 application foundation on a feature branch from local `main`.
+- Rust workspace with an Axum control-panel API, IMAP polling worker,
+  OpenAI-compatible safety/agent decisions, Dense-Mem MCP recall over HTTP,
+  SMTP reply/forward sending, typed YAML configuration, prompt-file loading,
+  safety policy primitives, structured action logging, and PostgreSQL
+  migrations.
+- React TypeScript control panel for login, mailbox settings, MCP server
+  settings, safety lists, AI prompt paths, and logging settings.
+- Source-built Docker runtime with separate `web` and `worker` roles.
+- Backend and frontend unit coverage gates, plus Playwright E2E coverage for the
+  control panel.
 
-The bootstrap commit does not include the Rust service, React panel, Docker
-runtime, migrations, or test suite yet.
+PostgreSQL persistence for processing run state is still a foundation-level
+schema and action-log sink; the live worker currently relies on IMAP `UNSEEN`
+plus `Seen` marking for local live processing.
+
+## Local Setup
+
+Create a local config and panel key:
+
+```bash
+cp config/config.example.yaml config/local.yaml
+export CONTROL_PANEL_KEY="replace-with-local-key"
+```
+
+Run the full local stack from source:
+
+```bash
+docker compose up --build
+```
+
+The control panel is served at `http://127.0.0.1:18080` by default. PostgreSQL
+is exposed on `127.0.0.1:15432` by default to avoid conflicts with a host
+Postgres install. To change either host port, edit the port forwarding in
+`docker-compose.yml`.
+
+For live development with real credentials, edit the ignored
+`config/local.yaml` file directly, then run:
+
+```bash
+scripts/live-e2e.sh
+```
+
+`scripts/live-e2e.sh` uses `CONTROL_PANEL_KEY=live-e2e-local` by default for
+local testing. Override it when needed:
+
+```bash
+CONTROL_PANEL_KEY="replace-with-local-key" scripts/live-e2e.sh
+```
+
+The live mail test loads `config/local.yaml`, sends one email scenario at a time,
+runs the real worker path, waits for the expected reply or forward, then moves
+to the next scenario. It covers MCP-backed known-answer reply, explicit
+human-forward routing, prompt-injection quarantine forwarding, and banned-sender
+forwarding. The test derives the forward mailbox credentials from the local
+config in memory; do not commit local credentials.
 
 ## v1 Architecture
 
@@ -84,7 +134,6 @@ files must stay untracked.
 
 Ignored local files include:
 
-- `.ai-cred`
 - `.env.local`
 - `config/local.yaml`
 - `config/live.local.yaml`
@@ -98,7 +147,11 @@ Example shape:
 version: 1
 
 database:
-  url: "postgres://ai_memmail:ai_memmail@postgres:5432/ai_memmail"
+  host: postgres
+  port: 5432
+  username: ai_memmail
+  password: ai_memmail
+  database: ai_memmail
 
 logging:
   level: info
@@ -160,16 +213,12 @@ The control panel is a React TypeScript dashboard served by the Rust web
 service. It uses a `CONTROL_PANEL_KEY` login, same-origin API calls, SameSite
 session cookies, and no CORS middleware.
 
-Expected v1 views:
+Implemented foundation views:
 
 - Overview
 - Mailboxes
 - MCP Servers
-- AI Policy
-- Safety Queue
-- Sender Review
-- Banned Senders
-- Activity Logs
+- Safety
 - Settings
 
 ## Logging
@@ -194,26 +243,54 @@ default retention period is 180 days.
 
 ## Testing Policy
 
-v1 requires:
+v1 requires the following local gates:
 
-- backend unit test coverage of at least 90%
+- backend unit test coverage of at least 90% for the unit-testable library
+  surface
 - frontend unit test coverage of at least 90%
-- local Playwright E2E tests
+- Playwright E2E tests for the control panel
 
+Run all deterministic unit gates:
+
+```bash
+scripts/check-unit.sh
+```
+
+Run individual gates:
+
+```bash
+scripts/check-backend.sh
+scripts/check-frontend.sh
+cd web && npm run e2e
+```
+
+Run the opt-in live mail E2E directly:
+
+```bash
+AI_MEMMAIL_LIVE_E2E=1 AI_MEMMAIL_CONFIG=config/local.yaml \
+  cargo test -p ai-memmail-server --test live_e2e -- --nocapture
+```
+
+The backend coverage gate excludes the binary entrypoint and raw external
+adapter modules (`ai_external.rs`, `mail_external.rs`) from the percentage
+calculation. Unit tests cover the trait boundaries, parsing, payload mapping,
+fallbacks, and worker decisions; live mail, AI, and MCP behavior is covered by
+the opt-in live E2E because it depends on local credentials and external
+services.
 GitHub CI runs deterministic unit checks only. Live AI and E2E tests are local
-only and use untracked credentials from `.ai-cred` or `config/live.local.yaml`.
+only and use untracked credentials from `config/local.yaml`.
 
 ## Docker
 
-The local Compose stack will build from source and run:
+The local Compose stack builds from source and runs:
 
 - PostgreSQL
 - `web`
 - `worker`
 
-The production image will be a multi-stage build: Node builds the React control
-panel, Rust builds the service binary, and the runtime image contains only the
-compiled assets needed to run ai-memmail.
+The image is a multi-stage build: Node builds the React control panel, Rust
+builds the service binary, and the runtime image contains only the compiled
+assets needed to run ai-memmail.
 
 ## Git Vibe
 

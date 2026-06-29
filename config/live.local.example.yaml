@@ -1,0 +1,33 @@
+version: 1
+
+database:
+  host: localhost
+  port: 15432
+  username: ai_memmail
+  password: ai_memmail
+  database: ai_memmail
+
+logging:
+  level: debug
+  format: json
+  verbose_actions: true
+  retention_days: 180
+
+prompts:
+  root: "./prompts"
+  safety_scan: "safety-scan.md"
+
+ai:
+  protocol: openai
+  AI_API_URL: "https://api.example/v1"
+  AI_API_SECRET: "replace-with-live-test-secret"
+  AI_MODEL: "replace-with-live-test-model"
+  review:
+    enabled: false
+    prompt_path: "outbound-review.md"
+
+mcp_servers: {}
+
+mailboxes: []
+
+banned_senders: []

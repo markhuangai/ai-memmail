@@ -5,3 +5,11 @@
 .env.local
 config/local.yaml
 config/live.local.yaml
+target/
+web/node_modules/
+web/dist/
+web/coverage/
+*.tsbuildinfo
+playwright-report/
+test-results/
+.coverage/
