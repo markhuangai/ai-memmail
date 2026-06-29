@@ -7,7 +7,7 @@ on:
 
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    runs-on: docker-runner
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.75.0
@@ -19,7 +19,7 @@ jobs:
       - run: cargo llvm-cov --workspace --lib --fail-under-lines 90 --ignore-filename-regex 'rustc-.*library|src/main.rs|src/ai_external.rs|src/mail_external.rs'
 
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: docker-runner
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

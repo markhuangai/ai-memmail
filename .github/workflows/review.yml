@@ -35,7 +35,7 @@ jobs:
     uses: markhuangai/git-vibe/.github/workflows/review.yml@dev
     with:
       pr-number: ${{ github.event.inputs.pr-number }}
-      runner: ubuntu-latest
+      runner: docker-runner
       timeout_minutes: ${{ fromJSON(github.event.inputs.timeout_minutes) }}
       max_turns: ${{ fromJSON(github.event.inputs.max_turns) }}
       source-comment: ${{ github.event.inputs.source-comment }}
