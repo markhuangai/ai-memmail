@@ -31,7 +31,7 @@ jobs:
       contents: read
       discussions: write
       issues: write
-    uses: markhuangai/git-vibe/.github/workflows/materialize.yml@v5.1.1
+    uses: markhuangai/git-vibe/.github/workflows/materialize.yml@dev
     with:
       discussion-number: ${{ github.event.inputs.discussion-number }}
       runner: ubuntu-latest
