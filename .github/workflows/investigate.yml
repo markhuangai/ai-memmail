@@ -31,7 +31,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: read
-    uses: markhuangai/git-vibe/.github/workflows/investigate.yml@v5.1.1
+    uses: markhuangai/git-vibe/.github/workflows/investigate.yml@dev
     with:
       issue-number: ${{ github.event.inputs.issue-number }}
       runner: ubuntu-latest
