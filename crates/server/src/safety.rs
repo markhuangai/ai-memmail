@@ -86,15 +86,58 @@ pub fn build_safety_scan_payload(metadata: &MessageMetadata, plain_text: &str) -
 }
 
 pub fn sender_is_banned(sender: &str, bans: &[BannedSenderConfig]) -> bool {
-    let normalized = sender.trim().to_ascii_lowercase();
-    let domain = normalized.split_once('@').map(|(_, domain)| domain);
+    let sender_addresses = normalized_mailbox_addresses(sender);
     bans.iter().any(|ban| {
         let value = ban.value.trim().to_ascii_lowercase();
         match ban.kind {
-            BannedSenderKind::Email => normalized == value,
-            BannedSenderKind::Domain => domain == Some(value.as_str()),
+            BannedSenderKind::Email => sender_addresses.iter().any(|address| address == &value),
+            BannedSenderKind::Domain => sender_addresses.iter().any(|address| {
+                address.split_once('@').map(|(_, domain)| domain) == Some(value.as_str())
+            }),
         }
     })
+}
+
+fn normalized_mailbox_addresses(sender: &str) -> Vec<String> {
+    let fallback = sender.trim().to_ascii_lowercase();
+    if fallback.is_empty() {
+        return Vec::new();
+    }
+
+    let Ok(parsed) = mailparse::addrparse(sender) else {
+        return vec![fallback];
+    };
+    let mut addresses = Vec::new();
+    for address in parsed.iter() {
+        collect_normalized_mailbox_addresses(address, &mut addresses);
+    }
+    if addresses.is_empty() {
+        vec![fallback]
+    } else {
+        addresses
+    }
+}
+
+fn collect_normalized_mailbox_addresses(
+    address: &mailparse::MailAddr,
+    addresses: &mut Vec<String>,
+) {
+    match address {
+        mailparse::MailAddr::Single(info) => {
+            let normalized = info.addr.trim().to_ascii_lowercase();
+            if !normalized.is_empty() {
+                addresses.push(normalized);
+            }
+        }
+        mailparse::MailAddr::Group(group) => {
+            for info in &group.addrs {
+                let normalized = info.addr.trim().to_ascii_lowercase();
+                if !normalized.is_empty() {
+                    addresses.push(normalized);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -185,7 +228,14 @@ mod tests {
             },
         ];
         assert!(sender_is_banned("BAD@example.com", &bans));
+        assert!(sender_is_banned("Bad Sender <bad@example.com>", &bans));
+        assert!(sender_is_banned("\"Bad Sender\" <BAD@example.com>", &bans));
         assert!(sender_is_banned("person@evil.test", &bans));
+        assert!(sender_is_banned("Known Bad <person@evil.test>", &bans));
+        assert!(!sender_is_banned(
+            "\"bad@example.com\" <person@example.net>",
+            &bans
+        ));
         assert!(!sender_is_banned("person@example.com", &bans));
         assert!(!sender_is_banned("evil.test", &bans));
     }
