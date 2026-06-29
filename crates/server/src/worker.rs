@@ -14,6 +14,17 @@ use crate::safety::{
     decide, sender_is_banned, suspicious_forward_intro, suspicious_forward_subject, SafetyDecision,
     SafetyDisposition,
 };
+use crate::storage::{
+    MemoryProcessingStore, PgStore, ProcessingClaim, ProcessingStore, PROCESSING_STATUS_SEND_FAILED,
+};
+
+#[derive(Debug, thiserror::Error)]
+pub enum WorkerError {
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error(transparent)]
+    Storage(#[from] crate::storage::StorageError),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailboxPollPlan {
@@ -28,16 +39,20 @@ pub enum SenderPrecheck {
     Banned { reason: String },
 }
 
-pub async fn run(config_path: PathBuf) -> Result<(), ConfigError> {
+pub async fn run(config_path: PathBuf) -> Result<(), WorkerError> {
     let logger = StdoutLogger;
     let mail = LiveMailTransport::default();
     let decisions = LiveDecisionEngine::default();
+    let initial_config = AppConfig::load(&config_path)?;
+    initial_config.validate()?;
+    let processing = PgStore::connect(&initial_config.database).await?;
+    processing.migrate().await?;
     loop {
         let started = Instant::now();
         let config = AppConfig::load(&config_path)?;
         config.validate()?;
         let run_id = Uuid::new_v4().to_string();
-        run_once_with(&config, &logger, &run_id, &mail, &decisions).await;
+        run_once_with_store(&config, &logger, &run_id, &mail, &decisions, &processing).await;
         let sleep_for = next_poll_delay(&config);
         logger
             .log(action_event(
@@ -63,7 +78,19 @@ pub async fn run(config_path: PathBuf) -> Result<(), ConfigError> {
 pub async fn run_once(config: &AppConfig, logger: &dyn ActionLogger, run_id: &str) {
     let mail = LiveMailTransport::default();
     let decisions = LiveDecisionEngine::default();
-    run_once_with(config, logger, run_id, &mail, &decisions).await;
+    let processing = MemoryProcessingStore::default();
+    run_once_with_store(config, logger, run_id, &mail, &decisions, &processing).await;
+}
+
+pub async fn run_once_with_processing_store(
+    config: &AppConfig,
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    processing: &dyn ProcessingStore,
+) {
+    let mail = LiveMailTransport::default();
+    let decisions = LiveDecisionEngine::default();
+    run_once_with_store(config, logger, run_id, &mail, &decisions, processing).await;
 }
 
 pub async fn run_once_with(
@@ -72,6 +99,18 @@ pub async fn run_once_with(
     run_id: &str,
     mail: &dyn MailTransport,
     decisions: &dyn DecisionEngine,
+) {
+    let processing = MemoryProcessingStore::default();
+    run_once_with_store(config, logger, run_id, mail, decisions, &processing).await;
+}
+
+pub async fn run_once_with_store(
+    config: &AppConfig,
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    mail: &dyn MailTransport,
+    decisions: &dyn DecisionEngine,
+    processing: &dyn ProcessingStore,
 ) {
     let started = Instant::now();
     let plans = poll_plans(config);
@@ -86,7 +125,7 @@ pub async fn run_once_with(
         .await;
 
     for mailbox in config.mailboxes.iter().filter(|mailbox| mailbox.enabled) {
-        process_mailbox(config, mailbox, logger, run_id, mail, decisions).await;
+        process_mailbox(config, mailbox, logger, run_id, mail, decisions, processing).await;
     }
 }
 
@@ -142,6 +181,7 @@ async fn process_mailbox(
     run_id: &str,
     mail: &dyn MailTransport,
     decisions: &dyn DecisionEngine,
+    processing: &dyn ProcessingStore,
 ) {
     let started = Instant::now();
     match mail.fetch_unseen(mailbox, 10).await {
@@ -158,7 +198,10 @@ async fn process_mailbox(
                 ))
                 .await;
             for message in messages {
-                process_message(config, mailbox, logger, run_id, mail, decisions, message).await;
+                process_message(
+                    config, mailbox, logger, run_id, mail, decisions, processing, message,
+                )
+                .await;
             }
         }
         Err(error) => {
@@ -184,17 +227,23 @@ async fn process_message(
     run_id: &str,
     mail: &dyn MailTransport,
     decisions: &dyn DecisionEngine,
+    processing: &dyn ProcessingStore,
     message: InboundMessage,
 ) {
     let started = Instant::now();
     match precheck_sender(&message.metadata.from_addr, config) {
         SenderPrecheck::Banned { reason } => {
             let action = safety_forward_action(mailbox, &message, &reason);
+            if !claim_before_side_effect(processing, logger, run_id, mail, mailbox, &message).await
+            {
+                return;
+            }
             send_and_mark_seen(
                 mailbox,
                 logger,
                 run_id,
                 mail,
+                processing,
                 &message,
                 action,
                 "banned_sender",
@@ -225,11 +274,15 @@ async fn process_message(
     let safety_decision = decide(&scan);
     if should_forward_for_human_review(&safety_decision) {
         let action = safety_forward_action(mailbox, &message, &safety_decision.reason);
+        if !claim_before_side_effect(processing, logger, run_id, mail, mailbox, &message).await {
+            return;
+        }
         send_and_mark_seen(
             mailbox,
             logger,
             run_id,
             mail,
+            processing,
             &message,
             action,
             "quarantined",
@@ -256,21 +309,39 @@ async fn process_message(
         }
     };
 
-    match decision.action.kind {
+    match &decision.action.kind {
         OutboundActionKind::Noop => {
+            if !claim_before_side_effect(processing, logger, run_id, mail, mailbox, &message).await
+            {
+                return;
+            }
+            update_processing_status(
+                processing,
+                logger,
+                run_id,
+                &message,
+                "noop",
+                Some(&OutboundActionKind::Noop),
+            )
+            .await;
             mark_seen(mailbox, logger, run_id, mail, &message, "noop").await;
         }
         OutboundActionKind::Reply | OutboundActionKind::Forward => {
-            let status = match decision.action.kind {
+            let status = match &decision.action.kind {
                 OutboundActionKind::Reply => "replied",
                 OutboundActionKind::Forward => "forwarded",
                 OutboundActionKind::Noop => unreachable!(),
             };
+            if !claim_before_side_effect(processing, logger, run_id, mail, mailbox, &message).await
+            {
+                return;
+            }
             send_and_mark_seen(
                 mailbox,
                 logger,
                 run_id,
                 mail,
+                processing,
                 &message,
                 decision.action,
                 status,
@@ -285,6 +356,7 @@ async fn send_and_mark_seen(
     logger: &dyn ActionLogger,
     run_id: &str,
     mail: &dyn MailTransport,
+    processing: &dyn ProcessingStore,
     message: &InboundMessage,
     action: OutboundAction,
     status: &'static str,
@@ -303,9 +375,27 @@ async fn send_and_mark_seen(
                     Some(action.reason),
                 ))
                 .await;
+            update_processing_status(
+                processing,
+                logger,
+                run_id,
+                message,
+                status,
+                Some(&action.kind),
+            )
+            .await;
             mark_seen(mailbox, logger, run_id, mail, message, status).await;
         }
         Err(error) => {
+            update_processing_status(
+                processing,
+                logger,
+                run_id,
+                message,
+                PROCESSING_STATUS_SEND_FAILED,
+                Some(&action.kind),
+            )
+            .await;
             logger
                 .log(message_event(
                     LogLevel::Error,
@@ -318,6 +408,103 @@ async fn send_and_mark_seen(
                 ))
                 .await;
         }
+    }
+}
+
+async fn claim_before_side_effect(
+    processing: &dyn ProcessingStore,
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    mail: &dyn MailTransport,
+    mailbox: &MailboxConfig,
+    message: &InboundMessage,
+) -> bool {
+    let started = Instant::now();
+    match processing.claim_message(run_id, message).await {
+        Ok(ProcessingClaim::Claimed) => {
+            logger
+                .log(message_event(
+                    LogLevel::Debug,
+                    run_id,
+                    message,
+                    "processing_claim",
+                    "claimed",
+                    started.elapsed(),
+                    None,
+                ))
+                .await;
+            true
+        }
+        Ok(ProcessingClaim::AlreadyFinished { status }) => {
+            logger
+                .log(message_event(
+                    LogLevel::Info,
+                    run_id,
+                    message,
+                    "processing_claim",
+                    "dedupe_skip",
+                    started.elapsed(),
+                    Some(status),
+                ))
+                .await;
+            mark_seen(mailbox, logger, run_id, mail, message, "dedupe_skip").await;
+            false
+        }
+        Ok(ProcessingClaim::InProgress { status }) => {
+            logger
+                .log(message_event(
+                    LogLevel::Warn,
+                    run_id,
+                    message,
+                    "processing_claim",
+                    "in_progress",
+                    started.elapsed(),
+                    Some(status),
+                ))
+                .await;
+            false
+        }
+        Err(error) => {
+            logger
+                .log(message_event(
+                    LogLevel::Error,
+                    run_id,
+                    message,
+                    "processing_claim",
+                    "failed",
+                    started.elapsed(),
+                    Some(error.to_string()),
+                ))
+                .await;
+            false
+        }
+    }
+}
+
+async fn update_processing_status(
+    processing: &dyn ProcessingStore,
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    message: &InboundMessage,
+    status: &str,
+    outbound_action: Option<&OutboundActionKind>,
+) {
+    let started = Instant::now();
+    if let Err(error) = processing
+        .update_message_status(&message.metadata.dedupe_key(), status, outbound_action)
+        .await
+    {
+        logger
+            .log(message_event(
+                LogLevel::Error,
+                run_id,
+                message,
+                "processing_update",
+                "failed",
+                started.elapsed(),
+                Some(error.to_string()),
+            ))
+            .await;
     }
 }
 
@@ -623,6 +810,69 @@ mod tests {
         }
     }
 
+    enum FakeClaimOutcome {
+        Claimed,
+        InProgress,
+        AlreadyFinished,
+        Fail,
+    }
+
+    struct FakeProcessingStore {
+        claims: Mutex<Vec<FakeClaimOutcome>>,
+        fail_update: bool,
+    }
+
+    impl FakeProcessingStore {
+        fn new(claims: Vec<FakeClaimOutcome>) -> Self {
+            Self {
+                claims: Mutex::new(claims),
+                fail_update: false,
+            }
+        }
+
+        fn with_fail_update(mut self) -> Self {
+            self.fail_update = true;
+            self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ProcessingStore for FakeProcessingStore {
+        async fn claim_message(
+            &self,
+            _run_id: &str,
+            _message: &InboundMessage,
+        ) -> Result<ProcessingClaim, crate::storage::StorageError> {
+            let outcome = self
+                .claims
+                .lock()
+                .map_err(|_| crate::storage::StorageError::LockPoisoned)?
+                .remove(0);
+            match outcome {
+                FakeClaimOutcome::Claimed => Ok(ProcessingClaim::Claimed),
+                FakeClaimOutcome::InProgress => Ok(ProcessingClaim::InProgress {
+                    status: "processing".to_string(),
+                }),
+                FakeClaimOutcome::AlreadyFinished => Ok(ProcessingClaim::AlreadyFinished {
+                    status: "replied".to_string(),
+                }),
+                FakeClaimOutcome::Fail => Err(crate::storage::StorageError::LockPoisoned),
+            }
+        }
+
+        async fn update_message_status(
+            &self,
+            _key: &DedupeKey,
+            _status: &str,
+            _outbound_action: Option<&OutboundActionKind>,
+        ) -> Result<(), crate::storage::StorageError> {
+            if self.fail_update {
+                return Err(crate::storage::StorageError::LockPoisoned);
+            }
+            Ok(())
+        }
+    }
+
     fn fake_decisions(scan: SafetyScanResult, action: OutboundAction) -> FakeDecisionEngine {
         FakeDecisionEngine {
             scan,
@@ -874,6 +1124,186 @@ mod tests {
             .events()
             .iter()
             .any(|event| event.action == "imap_mark_seen" && event.status == "failed"));
+    }
+
+    #[tokio::test]
+    async fn sent_message_is_not_sent_again_when_mark_seen_failed() {
+        let message = inbound(50, "person@example.com", "Question", "Body");
+        let processing = MemoryProcessingStore::default();
+        let first_logger = crate::logging::MemoryLogger::default();
+        let first_mail = FakeMail::new(vec![message.clone()]).with_fail_mark_seen();
+        let decisions = fake_decisions(safe_scan(), reply_action());
+        run_once_with_store(
+            &config(),
+            &first_logger,
+            "run-test",
+            &first_mail,
+            &decisions,
+            &processing,
+        )
+        .await;
+
+        assert_eq!(first_mail.sent().len(), 1);
+        assert!(first_mail.seen().is_empty());
+        assert_eq!(
+            processing.status(&message.metadata.dedupe_key()),
+            Some("replied".to_string())
+        );
+
+        let second_logger = crate::logging::MemoryLogger::default();
+        let second_mail = FakeMail::new(vec![message]);
+        run_once_with_store(
+            &config(),
+            &second_logger,
+            "run-test-2",
+            &second_mail,
+            &decisions,
+            &processing,
+        )
+        .await;
+
+        assert!(second_mail.sent().is_empty());
+        assert_eq!(second_mail.seen()[0].uid, 50);
+        assert!(second_logger
+            .events()
+            .iter()
+            .any(|event| event.action == "processing_claim" && event.status == "dedupe_skip"));
+    }
+
+    #[tokio::test]
+    async fn send_failure_can_be_retried_by_later_poll() {
+        let message = inbound(51, "person@example.com", "Question", "Body");
+        let processing = MemoryProcessingStore::default();
+        let first_logger = crate::logging::MemoryLogger::default();
+        let first_mail = FakeMail::new(vec![message.clone()]).with_fail_send();
+        let decisions = fake_decisions(safe_scan(), reply_action());
+        run_once_with_store(
+            &config(),
+            &first_logger,
+            "run-test",
+            &first_mail,
+            &decisions,
+            &processing,
+        )
+        .await;
+
+        assert!(first_mail.sent().is_empty());
+        assert_eq!(
+            processing.status(&message.metadata.dedupe_key()),
+            Some(PROCESSING_STATUS_SEND_FAILED.to_string())
+        );
+
+        let second_logger = crate::logging::MemoryLogger::default();
+        let second_mail = FakeMail::new(vec![message]);
+        run_once_with_store(
+            &config(),
+            &second_logger,
+            "run-test-2",
+            &second_mail,
+            &decisions,
+            &processing,
+        )
+        .await;
+
+        assert_eq!(second_mail.sent().len(), 1);
+        assert_eq!(second_mail.seen()[0].uid, 51);
+    }
+
+    #[tokio::test]
+    async fn in_progress_claim_defers_message_without_side_effects() {
+        let logger = crate::logging::MemoryLogger::default();
+        let mail = FakeMail::new(vec![inbound(52, "person@example.com", "Question", "Body")]);
+        let decisions = fake_decisions(safe_scan(), reply_action());
+        let processing = FakeProcessingStore::new(vec![FakeClaimOutcome::InProgress]);
+        run_once_with_store(
+            &config(),
+            &logger,
+            "run-test",
+            &mail,
+            &decisions,
+            &processing,
+        )
+        .await;
+
+        assert!(mail.sent().is_empty());
+        assert!(mail.seen().is_empty());
+        assert!(logger
+            .events()
+            .iter()
+            .any(|event| event.action == "processing_claim" && event.status == "in_progress"));
+    }
+
+    #[tokio::test]
+    async fn claim_failure_logs_and_defers_message_without_side_effects() {
+        let logger = crate::logging::MemoryLogger::default();
+        let mail = FakeMail::new(vec![inbound(53, "person@example.com", "Question", "Body")]);
+        let decisions = fake_decisions(safe_scan(), reply_action());
+        let processing = FakeProcessingStore::new(vec![FakeClaimOutcome::Fail]);
+        run_once_with_store(
+            &config(),
+            &logger,
+            "run-test",
+            &mail,
+            &decisions,
+            &processing,
+        )
+        .await;
+
+        assert!(mail.sent().is_empty());
+        assert!(mail.seen().is_empty());
+        assert!(logger
+            .events()
+            .iter()
+            .any(|event| event.action == "processing_claim" && event.status == "failed"));
+    }
+
+    #[tokio::test]
+    async fn already_finished_claim_marks_seen_without_sending() {
+        let logger = crate::logging::MemoryLogger::default();
+        let mail = FakeMail::new(vec![inbound(54, "person@example.com", "Question", "Body")]);
+        let decisions = fake_decisions(safe_scan(), reply_action());
+        let processing = FakeProcessingStore::new(vec![FakeClaimOutcome::AlreadyFinished]);
+        run_once_with_store(
+            &config(),
+            &logger,
+            "run-test",
+            &mail,
+            &decisions,
+            &processing,
+        )
+        .await;
+
+        assert!(mail.sent().is_empty());
+        assert_eq!(mail.seen()[0].uid, 54);
+        assert!(logger
+            .events()
+            .iter()
+            .any(|event| event.action == "processing_claim" && event.status == "dedupe_skip"));
+    }
+
+    #[tokio::test]
+    async fn processing_update_failure_is_logged_after_successful_send() {
+        let logger = crate::logging::MemoryLogger::default();
+        let mail = FakeMail::new(vec![inbound(55, "person@example.com", "Question", "Body")]);
+        let decisions = fake_decisions(safe_scan(), reply_action());
+        let processing =
+            FakeProcessingStore::new(vec![FakeClaimOutcome::Claimed]).with_fail_update();
+        run_once_with_store(
+            &config(),
+            &logger,
+            "run-test",
+            &mail,
+            &decisions,
+            &processing,
+        )
+        .await;
+
+        assert_eq!(mail.sent().len(), 1);
+        assert_eq!(mail.seen()[0].uid, 55);
+        assert!(logger
+            .events()
+            .iter()
+            .any(|event| event.action == "processing_update" && event.status == "failed"));
     }
 
     #[tokio::test]
