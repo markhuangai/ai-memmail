@@ -17,7 +17,8 @@ use crate::safety::{
     SafetyDisposition, SafetyScanResult,
 };
 use crate::storage::{
-    MemoryProcessingStore, PgStore, ProcessingClaim, ProcessingStore, PROCESSING_STATUS_SEND_FAILED,
+    MemoryProcessingStore, PgStore, ProcessingClaim, ProcessingStore,
+    PROCESSING_STATUS_RETRYABLE_FAILED, PROCESSING_STATUS_SEND_FAILED,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -257,6 +258,10 @@ async fn process_message(
         SenderPrecheck::Allowed => {}
     }
 
+    if !claim_before_side_effect(processing, logger, run_id, mail, mailbox, &message).await {
+        return;
+    }
+
     let scan = match decisions.safety_scan(config, mailbox, &message).await {
         Ok(scan) => scan,
         Err(error) => {
@@ -271,15 +276,21 @@ async fn process_message(
                     Some(error.to_string()),
                 ))
                 .await;
+            update_processing_status(
+                processing,
+                logger,
+                run_id,
+                &message,
+                PROCESSING_STATUS_RETRYABLE_FAILED,
+                None,
+            )
+            .await;
             return;
         }
     };
     let safety_decision = decide(&scan);
     if should_forward_for_human_review(&safety_decision) {
         let action = safety_forward_action(mailbox, &message, &safety_decision.reason);
-        if !claim_before_side_effect(processing, logger, run_id, mail, mailbox, &message).await {
-            return;
-        }
         if !record_quarantine_state(
             processing,
             logger,
@@ -290,6 +301,15 @@ async fn process_message(
         )
         .await
         {
+            update_processing_status(
+                processing,
+                logger,
+                run_id,
+                &message,
+                PROCESSING_STATUS_RETRYABLE_FAILED,
+                None,
+            )
+            .await;
             return;
         }
         send_and_mark_seen(
@@ -320,16 +340,21 @@ async fn process_message(
                     Some(error.to_string()),
                 ))
                 .await;
+            update_processing_status(
+                processing,
+                logger,
+                run_id,
+                &message,
+                PROCESSING_STATUS_RETRYABLE_FAILED,
+                None,
+            )
+            .await;
             return;
         }
     };
 
     match &decision.action.kind {
         OutboundActionKind::Noop => {
-            if !claim_before_side_effect(processing, logger, run_id, mail, mailbox, &message).await
-            {
-                return;
-            }
             update_processing_status(
                 processing,
                 logger,
@@ -348,12 +373,19 @@ async fn process_message(
             .await
             {
                 Some(action) => action,
-                None => return,
+                None => {
+                    update_processing_status(
+                        processing,
+                        logger,
+                        run_id,
+                        &message,
+                        PROCESSING_STATUS_RETRYABLE_FAILED,
+                        None,
+                    )
+                    .await;
+                    return;
+                }
             };
-            if !claim_before_side_effect(processing, logger, run_id, mail, mailbox, &message).await
-            {
-                return;
-            }
             let status = outbound_status(&action.kind);
             send_and_mark_seen(
                 mailbox, logger, run_id, mail, processing, &message, action, status,
@@ -775,7 +807,7 @@ fn message_event(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use crate::ai::{AgentDecision, AiError};
     use crate::config::{
@@ -956,6 +988,20 @@ mod tests {
         fail_safety: bool,
         fail_agent: bool,
         fail_review: bool,
+        calls: Arc<Mutex<DecisionCallCounts>>,
+    }
+
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    struct DecisionCallCounts {
+        safety_scan: usize,
+        agent_decision: usize,
+        outbound_review: usize,
+    }
+
+    impl FakeDecisionEngine {
+        fn call_counts(&self) -> DecisionCallCounts {
+            self.calls.lock().expect("decision calls lock").clone()
+        }
     }
 
     #[async_trait::async_trait]
@@ -966,6 +1012,7 @@ mod tests {
             _mailbox: &MailboxConfig,
             _message: &InboundMessage,
         ) -> Result<SafetyScanResult, AiError> {
+            self.calls.lock().expect("decision calls lock").safety_scan += 1;
             if self.fail_safety {
                 return Err(AiError::Provider("safety failed".to_string()));
             }
@@ -978,6 +1025,10 @@ mod tests {
             _mailbox: &MailboxConfig,
             _message: &InboundMessage,
         ) -> Result<AgentDecision, AiError> {
+            self.calls
+                .lock()
+                .expect("decision calls lock")
+                .agent_decision += 1;
             if self.fail_agent {
                 return Err(AiError::Provider("agent failed".to_string()));
             }
@@ -991,6 +1042,10 @@ mod tests {
             _message: &InboundMessage,
             _decision: &AgentDecision,
         ) -> Result<OutboundReviewDecision, AiError> {
+            self.calls
+                .lock()
+                .expect("decision calls lock")
+                .outbound_review += 1;
             if self.fail_review {
                 return Err(AiError::Provider("review failed".to_string()));
             }
@@ -1093,6 +1148,7 @@ mod tests {
             fail_safety: false,
             fail_agent: false,
             fail_review: false,
+            calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
         }
     }
 
@@ -1110,6 +1166,7 @@ mod tests {
             fail_safety: false,
             fail_agent: false,
             fail_review: false,
+            calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
         }
     }
 
@@ -1127,6 +1184,7 @@ mod tests {
             fail_safety: false,
             fail_agent: false,
             fail_review: true,
+            calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
         }
     }
 
@@ -1144,6 +1202,7 @@ mod tests {
             fail_safety: true,
             fail_agent: false,
             fail_review: false,
+            calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
         }
     }
 
@@ -1161,6 +1220,7 @@ mod tests {
             fail_safety: false,
             fail_agent: true,
             fail_review: false,
+            calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
         }
     }
 
@@ -1306,12 +1366,19 @@ mod tests {
         let mut config = config();
         config.ai.review.enabled = true;
         let logger = crate::logging::MemoryLogger::default();
-        let mail = FakeMail::new(vec![inbound(58, "person@example.com", "Hello", "Question")]);
+        let processing = MemoryProcessingStore::default();
+        let message = inbound(58, "person@example.com", "Hello", "Question");
+        let key = message.metadata.dedupe_key();
+        let mail = FakeMail::new(vec![message]);
         let decisions = failing_review_decisions();
-        run_once_with(&config, &logger, "run-test", &mail, &decisions).await;
+        run_once_with_store(&config, &logger, "run-test", &mail, &decisions, &processing).await;
 
         assert!(mail.sent().is_empty());
         assert!(mail.seen().is_empty());
+        assert_eq!(
+            processing.status(&key),
+            Some(PROCESSING_STATUS_RETRYABLE_FAILED.to_string())
+        );
         assert!(logger
             .events()
             .iter()
@@ -1427,12 +1494,27 @@ mod tests {
     #[tokio::test]
     async fn safety_failure_leaves_message_unseen() {
         let logger = crate::logging::MemoryLogger::default();
-        let mail = FakeMail::new(vec![inbound(45, "person@example.com", "Question", "Body")]);
+        let processing = MemoryProcessingStore::default();
+        let message = inbound(45, "person@example.com", "Question", "Body");
+        let key = message.metadata.dedupe_key();
+        let mail = FakeMail::new(vec![message]);
         let decisions = failing_safety_decisions();
-        run_once_with(&config(), &logger, "run-test", &mail, &decisions).await;
+        run_once_with_store(
+            &config(),
+            &logger,
+            "run-test",
+            &mail,
+            &decisions,
+            &processing,
+        )
+        .await;
 
         assert!(mail.sent().is_empty());
         assert!(mail.seen().is_empty());
+        assert_eq!(
+            processing.status(&key),
+            Some(PROCESSING_STATUS_RETRYABLE_FAILED.to_string())
+        );
         assert!(logger
             .events()
             .iter()
@@ -1442,12 +1524,27 @@ mod tests {
     #[tokio::test]
     async fn agent_failure_leaves_message_unseen() {
         let logger = crate::logging::MemoryLogger::default();
-        let mail = FakeMail::new(vec![inbound(46, "person@example.com", "Question", "Body")]);
+        let processing = MemoryProcessingStore::default();
+        let message = inbound(46, "person@example.com", "Question", "Body");
+        let key = message.metadata.dedupe_key();
+        let mail = FakeMail::new(vec![message]);
         let decisions = failing_agent_decisions();
-        run_once_with(&config(), &logger, "run-test", &mail, &decisions).await;
+        run_once_with_store(
+            &config(),
+            &logger,
+            "run-test",
+            &mail,
+            &decisions,
+            &processing,
+        )
+        .await;
 
         assert!(mail.sent().is_empty());
         assert!(mail.seen().is_empty());
+        assert_eq!(
+            processing.status(&key),
+            Some(PROCESSING_STATUS_RETRYABLE_FAILED.to_string())
+        );
         assert!(logger
             .events()
             .iter()
@@ -1587,6 +1684,7 @@ mod tests {
 
         assert!(mail.sent().is_empty());
         assert!(mail.seen().is_empty());
+        assert_eq!(decisions.call_counts(), DecisionCallCounts::default());
         assert!(logger
             .events()
             .iter()
@@ -1611,6 +1709,7 @@ mod tests {
 
         assert!(mail.sent().is_empty());
         assert!(mail.seen().is_empty());
+        assert_eq!(decisions.call_counts(), DecisionCallCounts::default());
         assert!(logger
             .events()
             .iter()
@@ -1635,6 +1734,7 @@ mod tests {
 
         assert!(mail.sent().is_empty());
         assert_eq!(mail.seen()[0].uid, 54);
+        assert_eq!(decisions.call_counts(), DecisionCallCounts::default());
         assert!(logger
             .events()
             .iter()

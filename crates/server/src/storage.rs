@@ -18,6 +18,7 @@ pub enum StorageError {
 
 pub const INIT_SQL: &str = include_str!("../migrations/001_init.sql");
 pub const PROCESSING_STATUS_PROCESSING: &str = "processing";
+pub const PROCESSING_STATUS_RETRYABLE_FAILED: &str = "retryable_failed";
 pub const PROCESSING_STATUS_SEND_FAILED: &str = "send_failed";
 pub const PROCESSING_STALE_AFTER_MINUTES: i32 = 15;
 
@@ -212,7 +213,7 @@ impl ProcessingStore for PgStore {
                     SET run_id = $1::uuid, status = $2, message_id = $3, from_addr = $4,
                         subject = $5, updated_at = now()
                     WHERE mailbox_id = $6 AND uid_validity = $7 AND uid = $8
-                        AND (status = $9 OR (status = $2 AND updated_at < now() - make_interval(mins => $10::int)))
+                        AND (status IN ($9, $10) OR (status = $2 AND updated_at < now() - make_interval(mins => $11::int)))
                     RETURNING status",
                     &[
                         &run_id,
@@ -224,6 +225,7 @@ impl ProcessingStore for PgStore {
                         &(key.uid_validity as i64),
                         &(key.uid as i64),
                         &PROCESSING_STATUS_SEND_FAILED,
+                        &PROCESSING_STATUS_RETRYABLE_FAILED,
                         &PROCESSING_STALE_AFTER_MINUTES,
                     ],
                 )
@@ -393,7 +395,9 @@ impl ActionLogger for PgStore {
 }
 
 pub fn processing_status_can_reclaim(status: &str, stale: bool) -> bool {
-    status == PROCESSING_STATUS_SEND_FAILED || (status == PROCESSING_STATUS_PROCESSING && stale)
+    status == PROCESSING_STATUS_SEND_FAILED
+        || status == PROCESSING_STATUS_RETRYABLE_FAILED
+        || (status == PROCESSING_STATUS_PROCESSING && stale)
 }
 
 pub fn processing_claim_for_existing_status(status: &str) -> ProcessingClaim {
@@ -513,6 +517,10 @@ mod tests {
             false
         ));
         assert!(processing_status_can_reclaim(
+            PROCESSING_STATUS_RETRYABLE_FAILED,
+            false
+        ));
+        assert!(processing_status_can_reclaim(
             PROCESSING_STATUS_PROCESSING,
             true
         ));
@@ -590,24 +598,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_processing_store_reclaims_send_failures() {
+    async fn memory_processing_store_reclaims_retryable_failures() {
         let store = MemoryProcessingStore::default();
-        let message = message(43);
-        let key = message.metadata.dedupe_key();
-
-        store.claim_message("run-test", &message).await.unwrap();
-        store
-            .update_message_status(&key, PROCESSING_STATUS_SEND_FAILED, None)
-            .await
-            .unwrap();
-        assert_eq!(
-            store.claim_message("run-test-2", &message).await.unwrap(),
-            ProcessingClaim::Claimed
-        );
-        assert_eq!(
-            store.status(&key),
-            Some(PROCESSING_STATUS_PROCESSING.to_string())
-        );
+        for (uid, status) in [
+            (43, PROCESSING_STATUS_SEND_FAILED),
+            (44, PROCESSING_STATUS_RETRYABLE_FAILED),
+        ] {
+            let message = message(uid);
+            let key = message.metadata.dedupe_key();
+            store.claim_message("run-test", &message).await.unwrap();
+            store
+                .update_message_status(&key, status, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                store.claim_message("run-test-2", &message).await.unwrap(),
+                ProcessingClaim::Claimed
+            );
+            assert_eq!(
+                store.status(&key),
+                Some(PROCESSING_STATUS_PROCESSING.to_string())
+            );
+        }
     }
 
     #[tokio::test]
