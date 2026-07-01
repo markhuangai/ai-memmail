@@ -15,31 +15,18 @@ services:
       timeout: 5s
       retries: 10
 
-  web:
+  app:
     image: ai-memmail:local
     build: .
     environment:
-      AI_MEMMAIL_CONFIG: /app/config/local.yaml
+      AI_MEMMAIL_CONFIG: /app/config/config.yaml
       AI_MEMMAIL_BIND: 0.0.0.0:8080
+      AI_MEMMAIL_ROLE: ${AI_MEMMAIL_ROLE:-all}
       CONTROL_PANEL_KEY: ${CONTROL_PANEL_KEY:?CONTROL_PANEL_KEY is required}
     ports:
       - "18080:8080"
     volumes:
-      - ./config/local.yaml:/app/config/local.yaml
-      - ./prompts:/app/prompts:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  worker:
-    image: ai-memmail:local
-    build: .
-    environment:
-      AI_MEMMAIL_CONFIG: /app/config/local.yaml
-      AI_MEMMAIL_ROLE: worker
-      CONTROL_PANEL_KEY: ${CONTROL_PANEL_KEY:?CONTROL_PANEL_KEY is required}
-    volumes:
-      - ./config/local.yaml:/app/config/local.yaml:ro
+      - ./config/config.yaml:/app/config/config.yaml
       - ./prompts:/app/prompts:ro
     depends_on:
       postgres:

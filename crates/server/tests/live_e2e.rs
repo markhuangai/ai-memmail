@@ -9,7 +9,7 @@ use ai_memmail_server::mail::{
 use ai_memmail_server::storage::MemoryProcessingStore;
 use ai_memmail_server::worker;
 
-const DEFAULT_CONFIG_PATH: &str = "config/local.yaml";
+const DEFAULT_CONFIG_PATH: &str = "config/config.yaml";
 
 #[tokio::test(flavor = "multi_thread")]
 async fn live_email_processing_scenarios() {

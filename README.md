@@ -16,7 +16,8 @@ The repository now contains the v1 application foundation:
   migrations.
 - React TypeScript control panel for login, mailbox settings, MCP server
   settings, safety lists, AI prompt paths, and logging settings.
-- Source-built Docker runtime with separate `web` and `worker` roles.
+- Source-built Docker runtime that runs the web API and worker side by side by
+  default, with explicit `web` and `worker` roles still available.
 - Backend and frontend unit coverage gates, plus Playwright E2E coverage for the
   control panel.
 
@@ -29,7 +30,7 @@ plus `Seen` marking for local live processing.
 Create a local config and panel key:
 
 ```bash
-cp config/config.example.yaml config/local.yaml
+cp config/config.example.yaml config/config.yaml
 export CONTROL_PANEL_KEY="replace-with-local-key"
 ```
 
@@ -45,7 +46,7 @@ Postgres install. To change either host port, edit the port forwarding in
 `docker-compose.yml`.
 
 For live development with real credentials, edit the ignored
-`config/local.yaml` file directly, then run:
+`config/config.yaml` file directly, then run:
 
 ```bash
 scripts/live-e2e.sh
@@ -58,7 +59,7 @@ local testing. Override it when needed:
 CONTROL_PANEL_KEY="replace-with-local-key" scripts/live-e2e.sh
 ```
 
-The live mail test loads `config/local.yaml`, sends one email scenario at a time,
+The live mail test loads `config/config.yaml`, sends one email scenario at a time,
 runs the real worker path, waits for the expected reply or forward, then moves
 to the next scenario. It covers MCP-backed known-answer reply, explicit
 human-forward routing, prompt-injection quarantine forwarding, and banned-sender
@@ -80,10 +81,13 @@ IMAP inbox
   -> control panel shows status, safety queue, sender review, and logs
 ```
 
-The production runtime uses one source-built image with two roles:
+The production runtime uses one source-built image. By default it starts both
+long-running paths in one process:
 
 - `web`: Axum API and React control panel.
 - `worker`: IMAP polling, safety scanning, AI/MCP processing, and SMTP sending.
+
+Set `AI_MEMMAIL_ROLE=web` or `AI_MEMMAIL_ROLE=worker` to run only one path.
 
 Both roles share PostgreSQL. Email content is not stored in PostgreSQL; only
 metadata, processing decisions, safety results, sender review state, banned
@@ -135,11 +139,16 @@ files must stay untracked.
 Ignored local files include:
 
 - `.env.local`
+- `config/config.yaml`
 - `config/local.yaml`
 - `config/live.local.yaml`
 
 System prompts are configured as file paths, not inline prompt text. Paths are
 resolved relative to `prompts.root`.
+
+Each `mailboxes[].id` is the stable operational id stored in logs and
+processing metadata. Use a real production id such as `support` or an address
+slug; do not leave copied sandbox values like `test` in production config.
 
 Example shape:
 
@@ -267,7 +276,7 @@ cd web && npm run e2e
 Run the opt-in live mail E2E directly:
 
 ```bash
-AI_MEMMAIL_LIVE_E2E=1 AI_MEMMAIL_CONFIG=config/local.yaml \
+AI_MEMMAIL_LIVE_E2E=1 AI_MEMMAIL_CONFIG=config/config.yaml \
   cargo test -p ai-memmail-server --test live_e2e -- --nocapture
 ```
 
@@ -278,15 +287,14 @@ fallbacks, and worker decisions; live mail, AI, and MCP behavior is covered by
 the opt-in live E2E because it depends on local credentials and external
 services.
 GitHub CI runs deterministic unit checks only. Live AI and E2E tests are local
-only and use untracked credentials from `config/local.yaml`.
+only and use untracked credentials from `config/config.yaml`.
 
 ## Docker
 
 The local Compose stack builds from source and runs:
 
 - PostgreSQL
-- `web`
-- `worker`
+- `app`
 
 The image is a multi-stage build: Node builds the React control panel, Rust
 builds the service binary, and the runtime image contains only the compiled

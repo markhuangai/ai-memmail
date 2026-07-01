@@ -3,7 +3,7 @@
 .codex
 .ai-cred
 .env.local
-config/local.yaml
+config/config.yaml
 config/live.local.yaml
 target/
 web/node_modules/

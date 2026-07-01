@@ -162,14 +162,14 @@ impl ProcessingStore for PgStore {
         run_id: &str,
         message: &InboundMessage,
     ) -> Result<ProcessingClaim, StorageError> {
-        let run_id = uuid::Uuid::parse_str(run_id)?.to_string();
+        let run_id = parse_run_id(run_id)?;
         let key = message.metadata.dedupe_key();
         let inserted = self
             .client
             .query_opt(
                 "INSERT INTO processing_runs
                 (run_id, mailbox_id, uid_validity, uid, message_id, from_addr, subject, status)
-                VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 ON CONFLICT (mailbox_id, uid_validity, uid) DO NOTHING
                 RETURNING status",
                 &[
@@ -210,7 +210,7 @@ impl ProcessingStore for PgStore {
                 .client
                 .query_opt(
                     "UPDATE processing_runs
-                    SET run_id = $1::uuid, status = $2, message_id = $3, from_addr = $4,
+                    SET run_id = $1, status = $2, message_id = $3, from_addr = $4,
                         subject = $5, updated_at = now()
                     WHERE mailbox_id = $6 AND uid_validity = $7 AND uid = $8
                         AND (status IN ($9, $10) OR (status = $2 AND updated_at < now() - make_interval(mins => $11::int)))
@@ -306,6 +306,10 @@ impl ProcessingStore for PgStore {
             .await?;
         Ok(())
     }
+}
+
+fn parse_run_id(run_id: &str) -> Result<uuid::Uuid, StorageError> {
+    Ok(uuid::Uuid::parse_str(run_id)?)
 }
 
 #[async_trait::async_trait]
@@ -568,6 +572,19 @@ mod tests {
             "sensitive_exfiltration"
         );
         assert_eq!(safety_category_value(&SafetyCategory::Safe), "safe");
+    }
+
+    #[test]
+    fn postgres_uuid_params_accept_uuid_values() {
+        fn assert_postgres_param<T: tokio_postgres::types::ToSql + Sync>() {}
+
+        assert_postgres_param::<uuid::Uuid>();
+    }
+
+    #[test]
+    fn parse_run_id_rejects_non_uuid_values() {
+        let error = parse_run_id("not-a-uuid").unwrap_err().to_string();
+        assert!(error.contains("processing run id is not a uuid"));
     }
 
     #[tokio::test]
