@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::ai::AgentDecision;
 use crate::config::DatabaseConfig;
@@ -15,11 +16,39 @@ pub enum StorageError {
     Connect(#[from] tokio_postgres::Error),
     #[error("processing run id is not a uuid: {0}")]
     InvalidRunId(#[from] uuid::Error),
+    #[error("applied migration {version} has name {applied_name:?}, expected {expected_name:?}")]
+    MigrationNameMismatch {
+        version: i32,
+        expected_name: &'static str,
+        applied_name: String,
+    },
+    #[error(
+        "applied migration {version} checksum mismatch: expected {expected_checksum}, found {applied_checksum}"
+    )]
+    MigrationChecksumMismatch {
+        version: i32,
+        expected_checksum: String,
+        applied_checksum: String,
+    },
     #[error("processing store lock poisoned")]
     LockPoisoned,
 }
 
 pub const INIT_SQL: &str = include_str!("../migrations/001_init.sql");
+const MIGRATION_LOCK_ID: i64 = 4_971_774_501_001;
+const SCHEMA_MIGRATIONS_SQL: &str = "
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    checksum TEXT NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+";
+const MIGRATIONS: &[Migration] = &[Migration {
+    version: 1,
+    name: "001_init",
+    sql: INIT_SQL,
+}];
 pub const PROCESSING_STATUS_PROCESSING: &str = "processing";
 pub const PROCESSING_STATUS_RETRYABLE_FAILED: &str = "retryable_failed";
 pub const PROCESSING_STATUS_SEND_FAILED: &str = "send_failed";
@@ -30,6 +59,19 @@ pub enum ProcessingClaim {
     Claimed,
     InProgress { status: String },
     AlreadyFinished { status: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Migration {
+    pub version: i32,
+    pub name: &'static str,
+    pub sql: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AppliedMigration {
+    name: String,
+    checksum: String,
 }
 
 #[async_trait::async_trait]
@@ -243,8 +285,87 @@ impl PgStore {
     }
 
     pub async fn migrate(&self) -> Result<(), StorageError> {
-        self.client.batch_execute(INIT_SQL).await?;
+        self.client
+            .execute("SELECT pg_advisory_lock($1)", &[&MIGRATION_LOCK_ID])
+            .await?;
+        let result = self.apply_migrations().await;
+        let unlock_result = self
+            .client
+            .execute("SELECT pg_advisory_unlock($1)", &[&MIGRATION_LOCK_ID])
+            .await;
+
+        match (result, unlock_result) {
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(error.into()),
+            (Ok(()), Ok(_)) => Ok(()),
+        }
+    }
+
+    async fn apply_migrations(&self) -> Result<(), StorageError> {
+        self.client.batch_execute(SCHEMA_MIGRATIONS_SQL).await?;
+        let applied = self.applied_migrations().await?;
+        for migration in MIGRATIONS {
+            let checksum = migration_checksum(migration.sql);
+            match applied.get(&migration.version) {
+                Some(applied) => {
+                    validate_applied_migration(migration, &checksum, applied)?;
+                }
+                None => {
+                    self.apply_pending_migration(migration, &checksum).await?;
+                }
+            }
+        }
         Ok(())
+    }
+
+    async fn applied_migrations(&self) -> Result<HashMap<i32, AppliedMigration>, StorageError> {
+        let rows = self
+            .client
+            .query("SELECT version, name, checksum FROM schema_migrations", &[])
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get(0),
+                    AppliedMigration {
+                        name: row.get(1),
+                        checksum: row.get(2),
+                    },
+                )
+            })
+            .collect())
+    }
+
+    async fn apply_pending_migration(
+        &self,
+        migration: &Migration,
+        checksum: &str,
+    ) -> Result<(), StorageError> {
+        self.client.batch_execute("BEGIN").await?;
+        let result: Result<(), StorageError> = async {
+            self.client.batch_execute(migration.sql).await?;
+            self.client
+                .execute(
+                    "INSERT INTO schema_migrations (version, name, checksum)
+                    VALUES ($1, $2, $3)",
+                    &[&migration.version, &migration.name, &checksum],
+                )
+                .await?;
+            Ok(())
+        }
+        .await;
+
+        match result {
+            Ok(()) => {
+                self.client.batch_execute("COMMIT").await?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = self.client.batch_execute("ROLLBACK").await;
+                Err(error)
+            }
+        }
     }
 
     pub async fn insert_action_log(&self, event: &ActionEvent) -> Result<(), StorageError> {
@@ -598,6 +719,32 @@ fn parse_run_id(run_id: &str) -> Result<uuid::Uuid, StorageError> {
     Ok(uuid::Uuid::parse_str(run_id)?)
 }
 
+fn validate_applied_migration(
+    migration: &Migration,
+    expected_checksum: &str,
+    applied: &AppliedMigration,
+) -> Result<(), StorageError> {
+    if applied.name != migration.name {
+        return Err(StorageError::MigrationNameMismatch {
+            version: migration.version,
+            expected_name: migration.name,
+            applied_name: applied.name.clone(),
+        });
+    }
+    if applied.checksum != expected_checksum {
+        return Err(StorageError::MigrationChecksumMismatch {
+            version: migration.version,
+            expected_checksum: expected_checksum.to_string(),
+            applied_checksum: applied.checksum.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn migration_checksum(sql: &str) -> String {
+    format!("{:x}", Sha256::digest(sql.as_bytes()))
+}
+
 #[async_trait::async_trait]
 impl ProcessingStore for MemoryProcessingStore {
     async fn claim_message(
@@ -861,6 +1008,77 @@ mod tests {
         assert!(INIT_SQL.contains("CREATE TABLE IF NOT EXISTS banned_senders"));
         assert!(INIT_SQL.contains("ADD COLUMN IF NOT EXISTS outbound_body"));
         assert!(INIT_SQL.contains("ADD COLUMN IF NOT EXISTS agent_safety_notes"));
+    }
+
+    #[test]
+    fn migration_runner_defines_version_tracking() {
+        assert!(SCHEMA_MIGRATIONS_SQL.contains("CREATE TABLE IF NOT EXISTS schema_migrations"));
+        assert!(SCHEMA_MIGRATIONS_SQL.contains("version INTEGER PRIMARY KEY"));
+        assert!(SCHEMA_MIGRATIONS_SQL.contains("checksum TEXT NOT NULL"));
+        assert_eq!(MIGRATIONS[0].version, 1);
+        assert_eq!(MIGRATIONS[0].name, "001_init");
+        assert_eq!(MIGRATIONS[0].sql, INIT_SQL);
+    }
+
+    #[test]
+    fn migration_versions_are_strictly_increasing() {
+        for pair in MIGRATIONS.windows(2) {
+            assert!(
+                pair[0].version < pair[1].version,
+                "migration versions must be strictly increasing"
+            );
+        }
+    }
+
+    #[test]
+    fn migration_checksum_is_stable_sha256_hex() {
+        let checksum = migration_checksum("SELECT 1;");
+        assert_eq!(checksum.len(), 64);
+        assert_eq!(checksum, migration_checksum("SELECT 1;"));
+        assert_ne!(checksum, migration_checksum("SELECT 2;"));
+    }
+
+    #[test]
+    fn applied_migration_validation_rejects_name_or_checksum_drift() {
+        let migration = Migration {
+            version: 7,
+            name: "007_test",
+            sql: "SELECT 1;",
+        };
+        let checksum = migration_checksum(migration.sql);
+        validate_applied_migration(
+            &migration,
+            &checksum,
+            &AppliedMigration {
+                name: migration.name.to_string(),
+                checksum: checksum.clone(),
+            },
+        )
+        .unwrap();
+
+        let name_error = validate_applied_migration(
+            &migration,
+            &checksum,
+            &AppliedMigration {
+                name: "007_other".to_string(),
+                checksum: checksum.clone(),
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(name_error.contains("expected \"007_test\""));
+
+        let checksum_error = validate_applied_migration(
+            &migration,
+            &checksum,
+            &AppliedMigration {
+                name: migration.name.to_string(),
+                checksum: "different".to_string(),
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(checksum_error.contains("checksum mismatch"));
     }
 
     #[test]

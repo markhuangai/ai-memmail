@@ -233,7 +233,6 @@ async fn get_messages(
     let store = PgStore::connect(&config.database)
         .await
         .map_err(ApiError::from_storage)?;
-    store.migrate().await.map_err(ApiError::from_storage)?;
     let messages = store
         .list_processed_emails(100)
         .await

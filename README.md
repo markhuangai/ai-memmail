@@ -21,9 +21,9 @@ The repository now contains the v1 application foundation:
 - Backend and frontend unit coverage gates, plus Playwright E2E coverage for the
   control panel.
 
-PostgreSQL persistence for processing run state is still a foundation-level
-schema and action-log sink; the live worker currently relies on IMAP `UNSEEN`
-plus `Seen` marking for local live processing.
+PostgreSQL persistence tracks processing run state, processed-message history,
+structured decisions, outbound actions, and action logs. The worker still relies
+on IMAP `UNSEEN` plus `Seen` marking for source-mail delivery state.
 
 ## Local Setup
 
@@ -89,10 +89,17 @@ long-running paths in one process:
 
 Set `AI_MEMMAIL_ROLE=web` or `AI_MEMMAIL_ROLE=worker` to run only one path.
 
-Both roles share PostgreSQL. Email content is not stored in PostgreSQL; only
-metadata, processing decisions, safety results, sender review state, banned
-senders, and action logs are persisted. Reprocessing refetches source messages
-from IMAP.
+At process startup, `ai-memmail-server` connects to PostgreSQL and applies
+versioned SQL migrations before starting the selected role. Migration application
+uses a PostgreSQL advisory lock and records applied versions plus checksums in
+`schema_migrations`, so concurrent replicas serialize schema changes and detect
+edited historical migrations.
+
+Both roles share PostgreSQL. Raw inbound email bodies are not stored in
+PostgreSQL; metadata, processing decisions, safety results, outbound reply
+bodies, sender review state, banned senders, and action logs are persisted.
+Forward bodies are redacted before storage because they can include original
+inbound content. Reprocessing refetches source messages from IMAP.
 
 ## Mail Flow
 

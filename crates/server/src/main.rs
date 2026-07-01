@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use ai_memmail_server::config::AppConfig;
 use ai_memmail_server::logging::{init_tracing, LogLevel};
+use ai_memmail_server::storage::PgStore;
 use ai_memmail_server::{web, worker};
 
 const DEFAULT_CONFIG_PATH: &str = "config/config.yaml";
@@ -21,6 +22,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     config.validate()?;
 
     init_tracing(LogLevel::from(config.logging.level.as_str()));
+
+    let migration_store = PgStore::connect(&config.database).await?;
+    migration_store.migrate().await?;
+    drop(migration_store);
 
     let role = RuntimeRole::from_env_value(std::env::var("AI_MEMMAIL_ROLE").ok().as_deref())?;
     let bind = bind_from_env_value(std::env::var("AI_MEMMAIL_BIND").ok())?;

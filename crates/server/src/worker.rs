@@ -49,7 +49,6 @@ pub async fn run(config_path: PathBuf) -> Result<(), WorkerError> {
     let initial_config = AppConfig::load(&config_path)?;
     initial_config.validate()?;
     let processing = PgStore::connect(&initial_config.database).await?;
-    processing.migrate().await?;
     let logger = FanoutLogger::new(&stdout_logger, &processing);
     loop {
         let started = Instant::now();
