@@ -454,8 +454,8 @@ pub fn forward_decision(
             recipients,
             subject: format!("Fwd: {}", message.metadata.subject),
             body: format!(
-                "Human review requested for message from {}.\n\n{}",
-                message.metadata.from_addr, message.plain_text
+                "Human review requested for message from {}.",
+                message.metadata.from_addr
             ),
             reason: reason.into(),
         },
