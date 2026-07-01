@@ -55,6 +55,11 @@ describe("api", () => {
     );
   });
 
+  it("defaults missing processed message payloads to an empty list", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({}));
+    await expect(loadMessages(fetchImpl as typeof fetch)).resolves.toEqual([]);
+  });
+
   it("saves config payloads", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ config: sampleConfig }));
     await saveConfig(sampleConfig, fetchImpl as typeof fetch);
@@ -73,6 +78,13 @@ describe("api", () => {
     );
     await expect(loadConfig(fetchImpl as typeof fetch)).rejects.toEqual(
       new ApiError("control panel login required", 401)
+    );
+  });
+
+  it("uses a generic API error when the error payload is missing", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({}, { status: 502 }));
+    await expect(loadConfig(fetchImpl as typeof fetch)).rejects.toEqual(
+      new ApiError("request failed", 502)
     );
   });
 });

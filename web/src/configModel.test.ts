@@ -27,10 +27,25 @@ describe("configModel", () => {
       bannedSenderCount: 1,
       averagePollSeconds: 60
     });
+    expect(
+      summarizeConfig({
+        ...sampleConfig,
+        mailboxes: sampleConfig.mailboxes.map((mailbox) => ({
+          ...mailbox,
+          enabled: false
+        }))
+      }).averagePollSeconds
+    ).toBe(0);
   });
 
   it("formats mailbox routing labels", () => {
     expect(mailboxRouteLabel(sampleConfig.mailboxes[0])).toBe("1 MCP / 1 reviewer");
+    expect(
+      mailboxRouteLabel({
+        ...sampleConfig.mailboxes[0],
+        safety_forward_to: []
+      })
+    ).toBe("1 MCP / 0 reviewers");
   });
 
   it("updates mailbox scalar values immutably", () => {
@@ -55,6 +70,19 @@ describe("configModel", () => {
       agent: { system_prompt_path: "support-agent.md" }
     });
     expect(removeMailbox(withMailbox, "mailbox_1").mailboxes).toHaveLength(0);
+
+    const withCollision = addMailbox({
+      ...sampleConfig,
+      mailboxes: [
+        sampleConfig.mailboxes[0],
+        {
+          ...sampleConfig.mailboxes[0],
+          id: "mailbox_3",
+          address: "mailbox_3@example.com"
+        }
+      ]
+    });
+    expect(withCollision.mailboxes.at(-1)?.id).toBe("mailbox_4");
   });
 
   it("converts comma separated list fields", () => {
@@ -88,6 +116,7 @@ describe("configModel", () => {
       command: null,
       url: "http://dense-mem:8080/mcp"
     });
+    expect(updateMcpServer(updated, "missing", (server) => server)).toBe(updated);
 
     const removed = removeMcpServer(updated, "dense_mem_primary");
     expect(removed.mcp_servers.dense_mem_primary).toBeUndefined();
