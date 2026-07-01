@@ -809,6 +809,13 @@ mod tests {
     }
 
     fn test_pg_admin_config() -> Option<DatabaseConfig> {
+        if std::env::var("AI_MEMMAIL_RUN_POSTGRES_TESTS")
+            .ok()
+            .as_deref()
+            != Some("1")
+        {
+            return None;
+        }
         let host = std::env::var("AI_MEMMAIL_TEST_PG_HOST").ok()?;
         let port = std::env::var("AI_MEMMAIL_TEST_PG_PORT")
             .ok()
