@@ -7,5 +7,6 @@ mod mail_external;
 pub mod prompts;
 pub mod safety;
 pub mod storage;
+mod storage_pg;
 pub mod web;
 pub mod worker;

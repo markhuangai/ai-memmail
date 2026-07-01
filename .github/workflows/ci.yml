@@ -8,26 +8,6 @@ on:
 jobs:
   backend:
     runs-on: docker-runner
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: ai_memmail
-          POSTGRES_PASSWORD: ai_memmail
-          POSTGRES_DB: ai_memmail_test
-        ports:
-          - 55432:5432
-        options: >-
-          --health-cmd "pg_isready -U ai_memmail -d ai_memmail_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      AI_MEMMAIL_TEST_PG_HOST: 127.0.0.1
-      AI_MEMMAIL_TEST_PG_PORT: 55432
-      AI_MEMMAIL_TEST_PG_USER: ai_memmail
-      AI_MEMMAIL_TEST_PG_PASSWORD: ai_memmail
-      AI_MEMMAIL_TEST_PG_DATABASE: ai_memmail_test
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.75.0
@@ -36,7 +16,7 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: cargo fmt --all --check
       - run: cargo test --workspace
-      - run: cargo llvm-cov --workspace --lib --fail-under-lines 90 --ignore-filename-regex 'rustc-.*library|src/main.rs|src/ai_external.rs|src/mail_external.rs'
+      - run: cargo llvm-cov --workspace --lib --fail-under-lines 90 --ignore-filename-regex 'rustc-.*library|src/main.rs|src/ai_external.rs|src/mail_external.rs|src/storage_pg.rs'
 
   frontend:
     runs-on: docker-runner
