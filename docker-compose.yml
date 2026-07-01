@@ -21,7 +21,6 @@ services:
     environment:
       AI_MEMMAIL_CONFIG: /app/config/config.yaml
       AI_MEMMAIL_BIND: 0.0.0.0:8080
-      AI_MEMMAIL_ROLE: ${AI_MEMMAIL_ROLE:-all}
       CONTROL_PANEL_KEY: ${CONTROL_PANEL_KEY:?CONTROL_PANEL_KEY is required}
     ports:
       - "18080:8080"

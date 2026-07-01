@@ -12,7 +12,7 @@ cargo test --workspace
 
 if ! cargo llvm-cov --version >/dev/null 2>&1; then
   echo "cargo-llvm-cov is required for the 90% backend coverage gate." >&2
-  echo "Install it, then rerun: cargo llvm-cov --workspace --fail-under-lines 90" >&2
+  echo "Install it, then rerun: scripts/check-backend.sh" >&2
   exit 1
 fi
 
@@ -20,4 +20,4 @@ cargo llvm-cov \
   --workspace \
   --lib \
   --fail-under-lines 90 \
-  --ignore-filename-regex 'rustc-.*library|src/main.rs|src/ai_external.rs|src/mail_external.rs'
+  --ignore-filename-regex 'rustc-.*library|src/main.rs|src/ai_external.rs|src/mail_external.rs|src/storage_pg.rs'

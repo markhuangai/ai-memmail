@@ -16,8 +16,8 @@ The repository now contains the v1 application foundation:
   migrations.
 - React TypeScript control panel for login, mailbox settings, MCP server
   settings, safety lists, AI prompt paths, and logging settings.
-- Source-built Docker runtime that runs the web API and worker side by side by
-  default, with explicit `web` and `worker` roles still available.
+- Source-built Docker runtime that runs the web API and worker side by side in
+  one app process.
 - Backend and frontend unit coverage gates, plus Playwright E2E coverage for the
   control panel.
 
@@ -59,12 +59,13 @@ local testing. Override it when needed:
 CONTROL_PANEL_KEY="replace-with-local-key" scripts/live-e2e.sh
 ```
 
-The live mail test loads `config/config.yaml`, sends one email scenario at a time,
-runs the real worker path, waits for the expected reply or forward, then moves
-to the next scenario. It covers MCP-backed known-answer reply, explicit
-human-forward routing, prompt-injection quarantine forwarding, and banned-sender
-forwarding. The test derives the forward mailbox credentials from the local
-config in memory; do not commit local credentials.
+The live mail test loads `config/config.yaml`, starts PostgreSQL, sends one
+email scenario at a time, runs the real worker path from the test process, waits
+for the expected reply or forward, then starts the app for the browser E2E
+check. It covers MCP-backed known-answer reply, explicit human-forward routing,
+prompt-injection quarantine forwarding, and banned-sender forwarding. The test
+derives the forward mailbox credentials from the local config in memory; do not
+commit local credentials.
 
 ## v1 Architecture
 
@@ -81,22 +82,20 @@ IMAP inbox
   -> control panel shows status, safety queue, sender review, and logs
 ```
 
-The production runtime uses one source-built image. By default it starts both
-long-running paths in one process:
+The production runtime uses one source-built image and starts both long-running
+paths in one process:
 
 - `web`: Axum API and React control panel.
 - `worker`: IMAP polling, safety scanning, AI/MCP processing, and SMTP sending.
 
-Set `AI_MEMMAIL_ROLE=web` or `AI_MEMMAIL_ROLE=worker` to run only one path.
-
 At process startup, `ai-memmail-server` connects to PostgreSQL and applies
-versioned SQL migrations before starting the selected role. Migration application
-uses a PostgreSQL advisory lock and records applied versions plus checksums in
-`schema_migrations`, so concurrent replicas serialize schema changes and detect
-edited historical migrations.
+versioned SQL migrations before starting the web API and worker. Migration
+application uses a PostgreSQL advisory lock and records applied versions plus
+checksums in `schema_migrations`, so concurrent replicas serialize schema
+changes and detect edited historical migrations.
 
-Both roles share PostgreSQL. Raw inbound email bodies are not stored in
-PostgreSQL; metadata, processing decisions, safety results, outbound reply
+The web API and worker share PostgreSQL. Raw inbound email bodies are not stored
+in PostgreSQL; metadata, processing decisions, safety results, outbound reply
 bodies, sender review state, banned senders, and action logs are persisted.
 Forward bodies are redacted before storage because they can include original
 inbound content. Reprocessing refetches source messages from IMAP.
@@ -287,13 +286,25 @@ AI_MEMMAIL_LIVE_E2E=1 AI_MEMMAIL_CONFIG=config/config.yaml \
   cargo test -p ai-memmail-server --test live_e2e -- --nocapture
 ```
 
-The backend coverage gate excludes the binary entrypoint and raw external
-adapter modules (`ai_external.rs`, `mail_external.rs`) from the percentage
-calculation. Unit tests cover the trait boundaries, parsing, payload mapping,
-fallbacks, and worker decisions; live mail, AI, and MCP behavior is covered by
-the opt-in live E2E because it depends on local credentials and external
-services.
-GitHub CI runs deterministic unit checks only. Live AI and E2E tests are local
+The backend coverage gate excludes the binary entrypoint, raw external adapter
+modules (`ai_external.rs`, `mail_external.rs`), and the Postgres-backed storage
+adapter (`storage_pg.rs`) from the percentage calculation. Unit tests cover the
+trait boundaries, parsing, payload mapping, fallbacks, and worker decisions.
+Postgres storage tests are opt-in integration tests:
+
+```bash
+AI_MEMMAIL_RUN_POSTGRES_TESTS=1 \
+AI_MEMMAIL_TEST_PG_HOST=127.0.0.1 \
+AI_MEMMAIL_TEST_PG_PORT=5432 \
+AI_MEMMAIL_TEST_PG_USER=postgres \
+AI_MEMMAIL_TEST_PG_PASSWORD=postgres \
+AI_MEMMAIL_TEST_PG_DATABASE=postgres \
+  cargo test -p ai-memmail-server storage_pg -- --nocapture
+```
+
+Live mail, AI, and MCP behavior is covered by the opt-in live E2E because it
+depends on local credentials and external services. GitHub CI runs deterministic
+unit checks only. Live AI, Postgres storage integration, and E2E tests are local
 only and use untracked credentials from `config/config.yaml`.
 
 ## Docker

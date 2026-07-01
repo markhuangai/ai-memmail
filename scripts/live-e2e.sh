@@ -15,10 +15,18 @@ if [ ! -f "$AI_MEMMAIL_CONFIG" ]; then
   exit 1
 fi
 
-AI_MEMMAIL_ROLE=web docker compose up --build -d postgres app
-trap 'docker compose logs --tail=120 app postgres; docker compose stop app postgres; docker compose rm -f app postgres' EXIT
+cleanup() {
+  docker compose logs --tail=120 app postgres || true
+  docker compose stop app postgres || true
+  docker compose rm -f app postgres || true
+}
+trap cleanup EXIT
+
+docker compose up -d postgres
 
 AI_MEMMAIL_LIVE_E2E=1 cargo test -p ai-memmail-server --test live_e2e -- --nocapture
+
+docker compose up --build -d app
 
 cd web
 npm ci

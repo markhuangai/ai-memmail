@@ -27,19 +27,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     migration_store.migrate().await?;
     drop(migration_store);
 
-    let role = RuntimeRole::from_env_value(std::env::var("AI_MEMMAIL_ROLE").ok().as_deref())?;
     let bind = bind_from_env_value(std::env::var("AI_MEMMAIL_BIND").ok())?;
-
-    match role {
-        RuntimeRole::All => run_all(bind, config_path, config).await?,
-        RuntimeRole::Web => web::serve(bind, config_path, config).await?,
-        RuntimeRole::Worker => worker::run(config_path).await?,
-    }
+    run_services(bind, config_path, config).await?;
 
     Ok(())
 }
 
-async fn run_all(
+async fn run_services(
     bind: SocketAddr,
     config_path: PathBuf,
     config: AppConfig,
@@ -63,64 +57,9 @@ fn bind_from_env_value(value: Option<String>) -> Result<SocketAddr, std::net::Ad
         .parse::<SocketAddr>()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RuntimeRole {
-    All,
-    Web,
-    Worker,
-}
-
-impl RuntimeRole {
-    fn from_env_value(value: Option<&str>) -> Result<Self, InvalidRuntimeRole> {
-        match value.unwrap_or("all") {
-            "" | "all" => Ok(Self::All),
-            "web" => Ok(Self::Web),
-            "worker" => Ok(Self::Worker),
-            value => Err(InvalidRuntimeRole(value.to_string())),
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("invalid AI_MEMMAIL_ROLE {0:?}; expected all, web, or worker")]
-struct InvalidRuntimeRole(String);
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn runtime_role_defaults_to_all() {
-        assert_eq!(RuntimeRole::from_env_value(None).unwrap(), RuntimeRole::All);
-        assert_eq!(
-            RuntimeRole::from_env_value(Some("")).unwrap(),
-            RuntimeRole::All
-        );
-    }
-
-    #[test]
-    fn runtime_role_accepts_explicit_modes() {
-        assert_eq!(
-            RuntimeRole::from_env_value(Some("all")).unwrap(),
-            RuntimeRole::All
-        );
-        assert_eq!(
-            RuntimeRole::from_env_value(Some("web")).unwrap(),
-            RuntimeRole::Web
-        );
-        assert_eq!(
-            RuntimeRole::from_env_value(Some("worker")).unwrap(),
-            RuntimeRole::Worker
-        );
-    }
-
-    #[test]
-    fn runtime_role_rejects_unknown_modes() {
-        let error = RuntimeRole::from_env_value(Some("api"))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("expected all, web, or worker"));
-    }
 
     #[test]
     fn config_path_defaults_to_config_yaml() {
