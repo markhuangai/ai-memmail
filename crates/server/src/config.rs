@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn rejects_prompt_paths_with_parent_components() {
         let mut config = valid_config();
-        config.prompts.safety_scan = "../config/local.yaml".into();
+        config.prompts.safety_scan = "../config/config.yaml".into();
         let error = config.validate().unwrap_err().to_string();
         assert!(error.contains("prompts.safety_scan must not contain parent"));
 

@@ -339,6 +339,150 @@ p {
   overflow-x: auto;
 }
 
+.history-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.message-list-panel,
+.message-detail-panel {
+  min-width: 0;
+}
+
+.message-list {
+  display: grid;
+  gap: 8px;
+}
+
+.message-row {
+  min-height: 78px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  align-items: start;
+  width: 100%;
+  padding: 12px;
+  text-align: left;
+}
+
+.message-row.active,
+.message-row:hover {
+  border-color: #1e775d;
+  background: #f2faf6;
+}
+
+.message-row-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.message-row-main strong,
+.message-row-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-row-main span,
+.message-row-time,
+.muted {
+  color: #667367;
+}
+
+.message-row-time {
+  grid-column: 1 / -1;
+  font-size: 0.82rem;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  border: 1px solid #cbd4ca;
+  border-radius: 999px;
+  padding: 0 10px;
+  background: #f6f7f4;
+  color: #526054;
+  font-size: 0.78rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.status-pill.success {
+  border-color: #b7dbc9;
+  background: #eaf7f1;
+  color: #1e775d;
+}
+
+.status-pill.pending {
+  border-color: #d8c790;
+  background: #fff8dd;
+  color: #756018;
+}
+
+.status-pill.danger {
+  border-color: #efb8ae;
+  background: #ffe9e5;
+  color: #8f2f28;
+}
+
+.message-detail-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.message-section {
+  display: grid;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.message-section h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 1rem;
+}
+
+.message-section h3 svg {
+  width: 18px;
+  height: 18px;
+  color: #1e775d;
+}
+
+.text-block {
+  display: grid;
+  gap: 6px;
+}
+
+.text-block span {
+  color: #667367;
+  font-weight: 700;
+}
+
+.text-block p,
+.message-body {
+  overflow-wrap: anywhere;
+}
+
+.message-body {
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid #e4e8e1;
+  border-radius: 8px;
+  background: #fbfcfa;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+
+.timeline-table {
+  min-width: 860px;
+}
+
 table {
   width: 100%;
   min-width: 720px;
@@ -410,6 +554,7 @@ th {
   }
 
   .overview-grid,
+  .history-layout,
   .form-grid,
   .detail-grid,
   .inline-form {

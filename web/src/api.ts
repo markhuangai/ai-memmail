@@ -1,4 +1,4 @@
-import type { AppConfig, StatusResponse } from "./types";
+import type { AppConfig, ProcessedEmail, StatusResponse } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -64,6 +64,17 @@ export async function loadConfig(
     fetchImpl
   );
   return payload.config;
+}
+
+export async function loadMessages(
+  fetchImpl?: typeof fetch
+): Promise<ProcessedEmail[]> {
+  const payload = await requestJson<{ messages?: ProcessedEmail[] }>(
+    "/api/messages",
+    {},
+    fetchImpl
+  );
+  return payload.messages ?? [];
 }
 
 export async function saveConfig(

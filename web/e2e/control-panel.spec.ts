@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { sampleConfig } from "../src/fixtures";
+import { sampleConfig, sampleMessages } from "../src/fixtures";
 
 test("control panel login and mailbox edit", async ({ page }) => {
   if (process.env.E2E_LIVE !== "1") {
@@ -22,6 +22,9 @@ test("control panel login and mailbox edit", async ({ page }) => {
     await page.route("**/api/config", async (route) => {
       await route.fulfill({ json: { config: sampleConfig } });
     });
+    await page.route("**/api/messages", async (route) => {
+      await route.fulfill({ json: { messages: sampleMessages } });
+    });
   }
 
   await page.goto("/");
@@ -39,4 +42,26 @@ test("control panel login and mailbox edit", async ({ page }) => {
   await page.getByLabel("Poll seconds").fill("75");
   await page.getByRole("button", { name: "Safety" }).click();
   await expect(page.getByText("Banned Senders")).toBeVisible();
+  await page.getByRole("button", { name: "History" }).click();
+  if (process.env.E2E_LIVE === "1") {
+    const runId = process.env.AI_MEMMAIL_LIVE_E2E_RUN_ID;
+    expect(runId, "AI_MEMMAIL_LIVE_E2E_RUN_ID should be exported for live e2e").toBeTruthy();
+    for (const subject of [
+      `live-e2e known mcp ${runId}`,
+      `live-e2e human forward ${runId}`,
+      `live-e2e quarantine ${runId}`,
+      `live-e2e banned sender ${runId}`
+    ]) {
+      await expect(
+        page.getByRole("button", { name: new RegExp(escapeRegExp(subject)) })
+      ).toBeVisible();
+    }
+    return;
+  }
+
+  await expect(page.getByRole("heading", { name: "Pricing question" })).toBeVisible();
 });
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}

@@ -20,6 +20,6 @@ COPY --from=server-build /app/target/release/ai-memmail-server /usr/local/bin/ai
 COPY --from=web-build /app/web/dist ./web/dist
 COPY prompts ./prompts
 ENV AI_MEMMAIL_BIND=0.0.0.0:8080
-ENV AI_MEMMAIL_CONFIG=/app/config/local.yaml
+ENV AI_MEMMAIL_CONFIG=/app/config/config.yaml
 EXPOSE 8080
 ENTRYPOINT ["ai-memmail-server"]

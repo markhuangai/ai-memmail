@@ -14,9 +14,23 @@ jobs:
         with:
           components: rustfmt
       - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Start PostgreSQL for storage coverage
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql postgresql-client
+          sudo service postgresql start
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER USER postgres WITH PASSWORD 'postgres';"
+          PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "SELECT 1;"
       - run: cargo fmt --all --check
       - run: cargo test --workspace
       - run: cargo llvm-cov --workspace --lib --fail-under-lines 90 --ignore-filename-regex 'rustc-.*library|src/main.rs|src/ai_external.rs|src/mail_external.rs'
+        env:
+          AI_MEMMAIL_RUN_POSTGRES_TESTS: "1"
+          AI_MEMMAIL_TEST_PG_HOST: 127.0.0.1
+          AI_MEMMAIL_TEST_PG_PORT: "5432"
+          AI_MEMMAIL_TEST_PG_USER: postgres
+          AI_MEMMAIL_TEST_PG_PASSWORD: postgres
+          AI_MEMMAIL_TEST_PG_DATABASE: postgres
 
   frontend:
     runs-on: docker-runner

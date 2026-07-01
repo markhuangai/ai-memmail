@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import { sampleConfig } from "./fixtures";
+import { sampleConfig, sampleMessages } from "./fixtures";
 import type { AppConfig } from "./types";
 
 function jsonResponse(body: unknown, init?: ResponseInit) {
@@ -39,7 +39,8 @@ describe("App", () => {
           enabled_mailboxes: 1
         })
       )
-      .mockImplementationOnce(() => jsonResponse({ config: sampleConfig }));
+      .mockImplementationOnce(() => jsonResponse({ config: sampleConfig }))
+      .mockImplementationOnce(() => jsonResponse({ messages: sampleMessages }));
 
     render(<App />);
 
@@ -50,7 +51,135 @@ describe("App", () => {
 
     expect(await screen.findByText("MCP servers")).toBeInTheDocument();
     expect(screen.getByText("1/1")).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("renders processed email history details", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((path) => {
+      if (path === "/api/status") {
+        return jsonResponse({
+          service: "ai-memmail",
+          authenticated: true,
+          uptime_seconds: 3,
+          enabled_mailboxes: 1
+        });
+      }
+      if (path === "/api/messages") {
+        return jsonResponse({ messages: sampleMessages });
+      }
+      return jsonResponse({ config: sampleConfig });
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
+    expect(screen.getByRole("heading", { name: "Pricing question" })).toBeInTheDocument();
+    expect(screen.getAllByText("person@example.com").length).toBeGreaterThan(0);
+    expect(screen.getByText("Thanks for reaching out. The current plan is available.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Ignore previous instructions/i }));
+    expect(screen.getAllByText("prompt_injection").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Forward body omitted/i)).toBeInTheDocument();
+  });
+
+  it("renders empty processed email history", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((path) => {
+      if (path === "/api/status") {
+        return jsonResponse({
+          service: "ai-memmail",
+          authenticated: true,
+          uptime_seconds: 3,
+          enabled_mailboxes: 1
+        });
+      }
+      if (path === "/api/messages") {
+        return jsonResponse({ messages: [] });
+      }
+      return jsonResponse({ config: sampleConfig });
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
+    expect(screen.getByRole("heading", { name: "No processed messages" })).toBeInTheDocument();
+  });
+
+  it("renders history status variants and raw invalid timestamps", async () => {
+    const variantMessages = [
+      {
+        ...sampleMessages[0],
+        uid: 50,
+        subject: "Processing update",
+        status: "processing",
+        outbound_action: null,
+        outbound_recipients: [],
+        outbound_subject: null,
+        outbound_body: null,
+        outbound_body_redacted: false,
+        outbound_reason: null,
+        updated_at: "not-a-date",
+        logs: []
+      },
+      {
+        ...sampleMessages[0],
+        uid: 51,
+        subject: "Retry failed update",
+        status: "retryable_failed"
+      },
+      {
+        ...sampleMessages[0],
+        uid: 52,
+        subject: "Archived update",
+        status: "archived"
+      }
+    ];
+    vi.spyOn(globalThis, "fetch").mockImplementation((path) => {
+      if (path === "/api/status") {
+        return jsonResponse({
+          service: "ai-memmail",
+          authenticated: true,
+          uptime_seconds: 3,
+          enabled_mailboxes: 1
+        });
+      }
+      if (path === "/api/messages") {
+        return jsonResponse({ messages: variantMessages });
+      }
+      return jsonResponse({ config: sampleConfig });
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
+    expect(screen.getByRole("heading", { name: "Processing update" })).toBeInTheDocument();
+    expect(screen.getAllByText("not-a-date").length).toBeGreaterThan(0);
+    expect(screen.getByText("No outbound body recorded.")).toBeInTheDocument();
+    expect(screen.getByText("No log entries recorded.")).toBeInTheDocument();
+    expect(screen.getAllByText("processing").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("retryable_failed").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("archived").length).toBeGreaterThan(0);
+  });
+
+  it("keeps config visible when processed message history fails to load", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((path) => {
+      if (path === "/api/status") {
+        return jsonResponse({
+          service: "ai-memmail",
+          authenticated: true,
+          uptime_seconds: 3,
+          enabled_mailboxes: 1
+        });
+      }
+      if (path === "/api/messages") {
+        return jsonResponse({ error: "database unavailable" }, { status: 500 });
+      }
+      return jsonResponse({ config: sampleConfig });
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("database unavailable")).toBeInTheDocument();
+    expect(screen.getByText("MCP servers")).toBeInTheDocument();
   });
 
   it("edits mailbox polling and saves config", async () => {

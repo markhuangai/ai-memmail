@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn rejects_parent_directory_prompt_path() {
-        let error = resolve_prompt_path(Path::new("prompts"), Path::new("../config/local.yaml"))
+        let error = resolve_prompt_path(Path::new("prompts"), Path::new("../config/config.yaml"))
             .unwrap_err()
             .to_string();
         assert!(error.contains("must not escape prompt root"));

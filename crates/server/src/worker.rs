@@ -49,7 +49,6 @@ pub async fn run(config_path: PathBuf) -> Result<(), WorkerError> {
     let initial_config = AppConfig::load(&config_path)?;
     initial_config.validate()?;
     let processing = PgStore::connect(&initial_config.database).await?;
-    processing.migrate().await?;
     let logger = FanoutLogger::new(&stdout_logger, &processing);
     loop {
         let started = Instant::now();
@@ -202,8 +201,16 @@ async fn process_mailbox(
                 ))
                 .await;
             for message in messages {
+                let message_run_id = Uuid::new_v4().to_string();
                 process_message(
-                    config, mailbox, logger, run_id, mail, decisions, processing, message,
+                    config,
+                    mailbox,
+                    logger,
+                    &message_run_id,
+                    mail,
+                    decisions,
+                    processing,
+                    message,
                 )
                 .await;
             }
@@ -288,6 +295,8 @@ async fn process_message(
             return;
         }
     };
+    log_safety_scan_result(logger, run_id, &message, &scan, started.elapsed()).await;
+    record_safety_result_for_history(processing, logger, run_id, &message, &scan).await;
     let safety_decision = decide(&scan);
     if should_forward_for_human_review(&safety_decision) {
         let action = safety_forward_action(mailbox, &message, &safety_decision.reason);
@@ -352,9 +361,19 @@ async fn process_message(
             return;
         }
     };
+    log_agent_decision(logger, run_id, &message, &decision, started.elapsed()).await;
+    record_agent_decision_for_history(processing, logger, run_id, &message, &decision).await;
 
     match &decision.action.kind {
         OutboundActionKind::Noop => {
+            record_outbound_action_for_history(
+                processing,
+                logger,
+                run_id,
+                &message,
+                &decision.action,
+            )
+            .await;
             update_processing_status(
                 processing,
                 logger,
@@ -368,7 +387,7 @@ async fn process_message(
         }
         OutboundActionKind::Reply | OutboundActionKind::Forward => {
             let action = match reviewed_outbound_action(
-                config, mailbox, logger, run_id, decisions, &message, &decision,
+                config, mailbox, logger, run_id, decisions, processing, &message, &decision,
             )
             .await
             {
@@ -401,6 +420,7 @@ async fn reviewed_outbound_action(
     logger: &dyn ActionLogger,
     run_id: &str,
     decisions: &dyn DecisionEngine,
+    processing: &dyn ProcessingStore,
     message: &InboundMessage,
     decision: &AgentDecision,
 ) -> Option<OutboundAction> {
@@ -422,9 +442,18 @@ async fn reviewed_outbound_action(
                     "outbound_review",
                     "approved",
                     started.elapsed(),
-                    Some(review.reason),
+                    Some(review.reason.clone()),
                 ))
                 .await;
+            record_outbound_review_for_history(
+                processing,
+                logger,
+                run_id,
+                message,
+                "approved",
+                &review.reason,
+            )
+            .await;
             Some(decision.action.clone())
         }
         Ok(review) => {
@@ -439,6 +468,15 @@ async fn reviewed_outbound_action(
                     Some(review.reason.clone()),
                 ))
                 .await;
+            record_outbound_review_for_history(
+                processing,
+                logger,
+                run_id,
+                message,
+                "rejected",
+                &review.reason,
+            )
+            .await;
             Some(outbound_review_forward_action(
                 mailbox,
                 message,
@@ -458,6 +496,15 @@ async fn reviewed_outbound_action(
                     Some(error.to_string()),
                 ))
                 .await;
+            record_outbound_review_for_history(
+                processing,
+                logger,
+                run_id,
+                message,
+                "failed",
+                &error.to_string(),
+            )
+            .await;
             None
         }
     }
@@ -482,6 +529,7 @@ async fn send_and_mark_seen(
     status: &'static str,
 ) {
     let started = Instant::now();
+    record_outbound_action_for_history(processing, logger, run_id, message, &action).await;
     match mail.send(&mailbox.smtp, &action).await {
         Ok(()) => {
             logger
@@ -528,6 +576,151 @@ async fn send_and_mark_seen(
                 ))
                 .await;
         }
+    }
+}
+
+async fn log_safety_scan_result(
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    message: &InboundMessage,
+    scan: &SafetyScanResult,
+    duration: Duration,
+) {
+    logger
+        .log(message_event(
+            LogLevel::Info,
+            run_id,
+            message,
+            "safety_scan",
+            crate::storage::safety_category_value(&scan.category),
+            duration,
+            Some(scan.reason.clone()),
+        ))
+        .await;
+}
+
+async fn log_agent_decision(
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    message: &InboundMessage,
+    decision: &AgentDecision,
+    duration: Duration,
+) {
+    logger
+        .log(message_event(
+            LogLevel::Info,
+            run_id,
+            message,
+            "agent_decision",
+            crate::storage::outbound_action_value(&decision.action.kind),
+            duration,
+            Some(decision.action.reason.clone()),
+        ))
+        .await;
+}
+
+async fn record_safety_result_for_history(
+    processing: &dyn ProcessingStore,
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    message: &InboundMessage,
+    scan: &SafetyScanResult,
+) {
+    let started = Instant::now();
+    if let Err(error) = processing
+        .record_safety_result(&message.metadata.dedupe_key(), &scan.category, &scan.reason)
+        .await
+    {
+        logger
+            .log(message_event(
+                LogLevel::Error,
+                run_id,
+                message,
+                "safety_result_persist",
+                "failed",
+                started.elapsed(),
+                Some(error.to_string()),
+            ))
+            .await;
+    }
+}
+
+async fn record_agent_decision_for_history(
+    processing: &dyn ProcessingStore,
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    message: &InboundMessage,
+    decision: &AgentDecision,
+) {
+    let started = Instant::now();
+    if let Err(error) = processing
+        .record_agent_decision(&message.metadata.dedupe_key(), decision)
+        .await
+    {
+        logger
+            .log(message_event(
+                LogLevel::Error,
+                run_id,
+                message,
+                "agent_decision_persist",
+                "failed",
+                started.elapsed(),
+                Some(error.to_string()),
+            ))
+            .await;
+    }
+}
+
+async fn record_outbound_action_for_history(
+    processing: &dyn ProcessingStore,
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    message: &InboundMessage,
+    action: &OutboundAction,
+) {
+    let started = Instant::now();
+    if let Err(error) = processing
+        .record_outbound_action(&message.metadata.dedupe_key(), action)
+        .await
+    {
+        logger
+            .log(message_event(
+                LogLevel::Error,
+                run_id,
+                message,
+                "outbound_action_persist",
+                "failed",
+                started.elapsed(),
+                Some(error.to_string()),
+            ))
+            .await;
+    }
+}
+
+async fn record_outbound_review_for_history(
+    processing: &dyn ProcessingStore,
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    message: &InboundMessage,
+    status: &str,
+    reason: &str,
+) {
+    let started = Instant::now();
+    if let Err(error) = processing
+        .record_outbound_review(&message.metadata.dedupe_key(), status, reason)
+        .await
+    {
+        logger
+            .log(message_event(
+                LogLevel::Error,
+                run_id,
+                message,
+                "outbound_review_persist",
+                "failed",
+                started.elapsed(),
+                Some(error.to_string()),
+            ))
+            .await;
     }
 }
 
@@ -800,6 +993,7 @@ fn message_event(
         duration,
         detail,
     );
+    event.message_uid_validity = Some(message.metadata.uid_validity);
     event.message_uid = Some(message.metadata.uid);
     event
 }
@@ -1062,6 +1256,7 @@ mod tests {
 
     struct FakeProcessingStore {
         claims: Mutex<Vec<FakeClaimOutcome>>,
+        run_ids: Mutex<Vec<String>>,
         fail_update: bool,
     }
 
@@ -1069,6 +1264,7 @@ mod tests {
         fn new(claims: Vec<FakeClaimOutcome>) -> Self {
             Self {
                 claims: Mutex::new(claims),
+                run_ids: Mutex::new(Vec::new()),
                 fail_update: false,
             }
         }
@@ -1077,15 +1273,23 @@ mod tests {
             self.fail_update = true;
             self
         }
+
+        fn run_ids(&self) -> Vec<String> {
+            self.run_ids.lock().expect("run ids lock").clone()
+        }
     }
 
     #[async_trait::async_trait]
     impl ProcessingStore for FakeProcessingStore {
         async fn claim_message(
             &self,
-            _run_id: &str,
+            run_id: &str,
             _message: &InboundMessage,
         ) -> Result<ProcessingClaim, crate::storage::StorageError> {
+            self.run_ids
+                .lock()
+                .map_err(|_| crate::storage::StorageError::LockPoisoned)?
+                .push(run_id.to_string());
             let outcome = self
                 .claims
                 .lock()
@@ -1319,6 +1523,34 @@ mod tests {
             .events()
             .iter()
             .any(|event| event.action == "smtp_send" && event.status == "replied"));
+    }
+
+    #[tokio::test]
+    async fn messages_in_one_poll_get_distinct_run_ids() {
+        let logger = crate::logging::MemoryLogger::default();
+        let mail = FakeMail::new(vec![
+            inbound(60, "first@example.com", "First", "Question"),
+            inbound(61, "second@example.com", "Second", "Question"),
+        ]);
+        let decisions = fake_decisions(safe_scan(), reply_action());
+        let processing =
+            FakeProcessingStore::new(vec![FakeClaimOutcome::Claimed, FakeClaimOutcome::Claimed]);
+
+        run_once_with_store(
+            &config(),
+            &logger,
+            "poll-run",
+            &mail,
+            &decisions,
+            &processing,
+        )
+        .await;
+
+        let run_ids = processing.run_ids();
+        assert_eq!(run_ids.len(), 2);
+        assert_ne!(run_ids[0], run_ids[1]);
+        uuid::Uuid::parse_str(&run_ids[0]).unwrap();
+        uuid::Uuid::parse_str(&run_ids[1]).unwrap();
     }
 
     #[tokio::test]

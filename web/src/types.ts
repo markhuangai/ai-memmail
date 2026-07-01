@@ -101,3 +101,39 @@ export interface StatusResponse {
   uptime_seconds: number;
   enabled_mailboxes: number;
 }
+
+export interface ProcessedEmail {
+  run_id: string;
+  mailbox_id: string;
+  uid_validity: number;
+  uid: number;
+  message_id?: string | null;
+  from_addr: string;
+  subject: string;
+  status: string;
+  safety_category?: string | null;
+  safety_reason?: string | null;
+  agent_action?: string | null;
+  agent_safety_notes?: string | null;
+  outbound_action?: string | null;
+  outbound_recipients: string[];
+  outbound_subject?: string | null;
+  outbound_body?: string | null;
+  outbound_body_redacted: boolean;
+  outbound_reason?: string | null;
+  outbound_review_status?: string | null;
+  outbound_review_reason?: string | null;
+  created_at: string;
+  updated_at: string;
+  logs: ProcessedEmailLog[];
+}
+
+export interface ProcessedEmailLog {
+  level: string;
+  run_id: string;
+  action: string;
+  status: string;
+  duration_ms: number;
+  detail?: string | null;
+  created_at: string;
+}

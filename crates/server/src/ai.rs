@@ -388,6 +388,7 @@ pub fn deterministic_safety_scan(message: &InboundMessage) -> Option<SafetyScanR
         "ignore all previous instructions",
         "reveal your system prompt",
         "developer message",
+        "config.yaml",
         "local.yaml",
         "api key",
         "password",
