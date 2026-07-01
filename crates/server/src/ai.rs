@@ -9,6 +9,9 @@ use crate::prompts;
 use crate::safety::build_safety_scan_payload;
 use crate::safety::{SafetyCategory, SafetyScanResult};
 
+const MCP_QUERY_MAX_CHARS: usize = 512;
+const TRUNCATION_MARKER: &str = "\n[truncated]";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentDecision {
     #[serde(flatten)]
@@ -489,10 +492,7 @@ where
         .get("DENSE_MEM_API_KEY")
         .cloned()
         .ok_or_else(|| AiError::Mcp(format!("{server_name} missing MCP API key")))?;
-    let query = truncate_chars(
-        &format!("{}\n\n{}", message.metadata.subject, message.plain_text),
-        2_000,
-    );
+    let query = mcp_recall_query(message);
     let server_name = server_name.to_string();
     tokio::task::spawn_blocking(move || {
         let assemble_query = query.clone();
@@ -565,11 +565,35 @@ pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> String {
     let mut output = String::new();
     for (index, character) in value.chars().enumerate() {
         if index >= max_chars {
-            output.push_str("\n[truncated]");
+            output.push_str(TRUNCATION_MARKER);
             break;
         }
         output.push(character);
     }
+    output
+}
+
+fn mcp_recall_query(message: &InboundMessage) -> String {
+    let query = format!(
+        "From: {}\nSubject: {}\n\n{}",
+        message.metadata.from_addr, message.metadata.subject, message.plain_text
+    );
+    truncate_chars_to_limit(&query, MCP_QUERY_MAX_CHARS)
+}
+
+fn truncate_chars_to_limit(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+
+    let marker_chars = TRUNCATION_MARKER.chars().count();
+    if max_chars <= marker_chars {
+        return value.chars().take(max_chars).collect();
+    }
+
+    let keep_chars = max_chars - marker_chars;
+    let mut output = value.chars().take(keep_chars).collect::<String>();
+    output.push_str(TRUNCATION_MARKER);
     output
 }
 
@@ -714,6 +738,7 @@ mod tests {
     struct FakeBlockingMcpClient {
         fail_assemble: bool,
         calls: Arc<Mutex<Vec<String>>>,
+        queries: Arc<Mutex<Vec<String>>>,
     }
 
     impl FakeBlockingMcpClient {
@@ -721,11 +746,16 @@ mod tests {
             Self {
                 fail_assemble,
                 calls: Arc::new(Mutex::new(Vec::new())),
+                queries: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
         fn calls(&self) -> Vec<String> {
             self.calls.lock().expect("blocking mcp calls").clone()
+        }
+
+        fn queries(&self) -> Vec<String> {
+            self.queries.lock().expect("blocking mcp queries").clone()
         }
     }
 
@@ -742,6 +772,12 @@ mod tests {
                 .lock()
                 .expect("blocking mcp calls")
                 .push(name.clone());
+            self.queries.lock().expect("blocking mcp queries").push(
+                params["arguments"]["query"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            );
             if self.fail_assemble && name == "assemble_context" {
                 return Err(AiError::Mcp("assemble failed".to_string()));
             }
@@ -934,6 +970,52 @@ mod tests {
 
         assert!(context.contains("fallback memory says 90% coverage"));
         assert_eq!(client.calls(), vec!["assemble_context", "recall_memory"]);
+    }
+
+    #[tokio::test]
+    async fn http_mcp_context_provider_caps_query_at_dense_mem_limit() {
+        let mut config = app_config();
+        let mut mailbox = mailbox_config();
+        mailbox.mcp_servers = vec!["project_memory".to_string()];
+        config.mcp_servers.insert(
+            "project_memory".to_string(),
+            McpServerConfig {
+                transport: McpTransport::StreamableHttp,
+                command: None,
+                args: vec![],
+                env: BTreeMap::from([("DENSE_MEM_API_KEY".to_string(), "test-key".to_string())]),
+                url: Some("https://mcp.example.test".to_string()),
+            },
+        );
+        let client = FakeBlockingMcpClient::new(true);
+        let provider = HttpMcpContextProvider::new(client.clone());
+        let long_body = "What is the support policy? ".repeat(80);
+
+        provider
+            .recall_mailbox_context(&config, &mailbox, &inbound("Long question", &long_body))
+            .await
+            .unwrap();
+
+        assert_eq!(client.calls(), vec!["assemble_context", "recall_memory"]);
+        let queries = client.queries();
+        assert_eq!(queries.len(), 2);
+        for query in queries {
+            assert!(
+                query.chars().count() <= MCP_QUERY_MAX_CHARS,
+                "MCP query exceeded Dense-Mem limit: {}",
+                query.chars().count()
+            );
+            assert!(query.contains("Subject: Long question"));
+            assert!(query.ends_with(TRUNCATION_MARKER));
+        }
+    }
+
+    #[test]
+    fn truncate_chars_to_limit_keeps_marker_inside_limit() {
+        let truncated = truncate_chars_to_limit(&"密".repeat(600), 512);
+
+        assert_eq!(truncated.chars().count(), 512);
+        assert!(truncated.ends_with(TRUNCATION_MARKER));
     }
 
     #[tokio::test]
