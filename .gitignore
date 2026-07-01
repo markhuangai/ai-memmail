@@ -4,6 +4,7 @@
 .ai-cred
 .env.local
 config/config.yaml
+config/local.yaml
 config/live.local.yaml
 target/
 web/node_modules/
