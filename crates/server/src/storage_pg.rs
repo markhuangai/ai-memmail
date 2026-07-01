@@ -799,8 +799,17 @@ mod tests {
 
             let admin = connect_test_pg(&admin_config).await;
             admin
+                .execute(
+                    "SELECT pg_terminate_backend(pid)
+                    FROM pg_stat_activity
+                    WHERE datname = $1 AND pid <> pg_backend_pid()",
+                    &[&database_name],
+                )
+                .await
+                .unwrap();
+            admin
                 .batch_execute(&format!(
-                    "DROP DATABASE IF EXISTS {} WITH (FORCE)",
+                    "DROP DATABASE IF EXISTS {}",
                     quote_ident(&database_name)
                 ))
                 .await
