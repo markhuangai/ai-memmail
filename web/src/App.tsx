@@ -1,15 +1,18 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  History as HistoryIcon,
   KeyRound,
   LogOut,
   Mail,
+  MessageSquareText,
   Plus,
   RefreshCw,
   Save,
   Server,
   Settings,
   ShieldAlert,
+  Send,
   Trash2
 } from "lucide-react";
 import {
@@ -29,13 +32,20 @@ import {
   updateMailbox,
   updateMcpServer
 } from "./configModel";
-import { loadConfig, loadStatus, login, logout, saveConfig } from "./api";
-import type { AppConfig, BannedSenderConfig, MailboxConfig, StatusResponse } from "./types";
+import { loadConfig, loadMessages, loadStatus, login, logout, saveConfig } from "./api";
+import type {
+  AppConfig,
+  BannedSenderConfig,
+  MailboxConfig,
+  ProcessedEmail,
+  StatusResponse
+} from "./types";
 
-type TabId = "overview" | "mailboxes" | "mcp" | "safety" | "settings";
+type TabId = "overview" | "history" | "mailboxes" | "mcp" | "safety" | "settings";
 
 const tabs: Array<{ id: TabId; label: string; icon: typeof Activity }> = [
   { id: "overview", label: "Overview", icon: Activity },
+  { id: "history", label: "History", icon: HistoryIcon },
   { id: "mailboxes", label: "Mailboxes", icon: Mail },
   { id: "mcp", label: "MCP Servers", icon: Server },
   { id: "safety", label: "Safety", icon: ShieldAlert },
@@ -45,6 +55,7 @@ const tabs: Array<{ id: TabId; label: string; icon: typeof Activity }> = [
 export function App() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
+  const [messages, setMessages] = useState<ProcessedEmail[]>([]);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [loginKey, setLoginKey] = useState("");
   const [error, setError] = useState("");
@@ -56,6 +67,15 @@ export function App() {
     setStatus(nextStatus);
     if (nextStatus.authenticated) {
       setConfig(await loadConfig());
+      try {
+        setMessages(await loadMessages());
+      } catch (cause) {
+        setMessages([]);
+        setError(errorMessage(cause));
+      }
+    } else {
+      setConfig(null);
+      setMessages([]);
     }
   }
 
@@ -75,6 +95,7 @@ export function App() {
     setError("");
     await logout();
     setConfig(null);
+    setMessages([]);
     await refresh();
   }
 
@@ -176,6 +197,7 @@ export function App() {
         ) : (
           <section className="content-band">
             {activeTab === "overview" ? <Overview summary={summary} config={config} /> : null}
+            {activeTab === "history" ? <HistoryPanel messages={messages} /> : null}
             {activeTab === "mailboxes" ? (
               <Mailboxes config={config} setConfig={setConfig} />
             ) : null}
@@ -191,6 +213,195 @@ export function App() {
           </section>
         )}
       </main>
+    </div>
+  );
+}
+
+function HistoryPanel({ messages }: { messages: ProcessedEmail[] }) {
+  const [selectedKey, setSelectedKey] = useState("");
+  const selected = useMemo(() => {
+    if (messages.length === 0) {
+      return null;
+    }
+    return messages.find((message) => messageKey(message) === selectedKey) ?? messages[0];
+  }, [messages, selectedKey]);
+
+  useEffect(() => {
+    if (messages.length === 0) {
+      setSelectedKey("");
+      return;
+    }
+    if (!messages.some((message) => messageKey(message) === selectedKey)) {
+      setSelectedKey(messageKey(messages[0]));
+    }
+  }, [messages, selectedKey]);
+
+  if (messages.length === 0 || !selected) {
+    return (
+      <section className="panel">
+        <h2>No processed messages</h2>
+      </section>
+    );
+  }
+
+  return (
+    <div className="history-layout">
+      <section className="panel message-list-panel">
+        <div className="panel-heading">
+          <div>
+            <h2>Processed Email</h2>
+            <p>{messages.length} messages</p>
+          </div>
+        </div>
+        <div className="message-list" role="list">
+          {messages.map((message) => {
+            const key = messageKey(message);
+            return (
+              <button
+                className={selected && messageKey(selected) === key ? "message-row active" : "message-row"}
+                key={key}
+                onClick={() => setSelectedKey(key)}
+                type="button"
+              >
+                <span className="message-row-main">
+                  <strong>{message.subject || "(no subject)"}</strong>
+                  <span>{message.from_addr}</span>
+                </span>
+                <span className={statusPillClass(message.status)}>{message.status}</span>
+                <span className="message-row-time">{formatTimestamp(message.updated_at)}</span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+      <MessageDetail message={selected} />
+    </div>
+  );
+}
+
+function MessageDetail({ message }: { message: ProcessedEmail }) {
+  return (
+    <section className="panel message-detail-panel">
+      <div className="panel-heading">
+        <div>
+          <h2>{message.subject || "(no subject)"}</h2>
+          <p>{message.from_addr}</p>
+        </div>
+        <span className={statusPillClass(message.status)}>{message.status}</span>
+      </div>
+
+      <dl className="detail-grid message-detail-grid">
+        <div>
+          <dt>Mailbox</dt>
+          <dd>{message.mailbox_id}</dd>
+        </div>
+        <div>
+          <dt>UID</dt>
+          <dd>{message.uid_validity}:{message.uid}</dd>
+        </div>
+        <div>
+          <dt>Message ID</dt>
+          <dd>{message.message_id ?? "none"}</dd>
+        </div>
+        <div>
+          <dt>Updated</dt>
+          <dd>{formatTimestamp(message.updated_at)}</dd>
+        </div>
+      </dl>
+
+      <section className="message-section">
+        <h3><ShieldAlert aria-hidden="true" /> Safety and AI</h3>
+        <dl className="detail-grid message-detail-grid">
+          <div>
+            <dt>Safety</dt>
+            <dd>{message.safety_category ?? "not recorded"}</dd>
+          </div>
+          <div>
+            <dt>Agent action</dt>
+            <dd>{message.agent_action ?? "not recorded"}</dd>
+          </div>
+          <div>
+            <dt>Review</dt>
+            <dd>{message.outbound_review_status ?? "not reviewed"}</dd>
+          </div>
+          <div>
+            <dt>Final action</dt>
+            <dd>{message.outbound_action ?? "not recorded"}</dd>
+          </div>
+        </dl>
+        <TextBlock label="Safety reason" value={message.safety_reason} />
+        <TextBlock label="Agent notes" value={message.agent_safety_notes} />
+        <TextBlock label="Review reason" value={message.outbound_review_reason} />
+      </section>
+
+      <section className="message-section">
+        <h3><Send aria-hidden="true" /> Outbound</h3>
+        <dl className="detail-grid message-detail-grid">
+          <div>
+            <dt>Recipients</dt>
+            <dd>{message.outbound_recipients.length ? message.outbound_recipients.join(", ") : "none"}</dd>
+          </div>
+          <div>
+            <dt>Subject</dt>
+            <dd>{message.outbound_subject ?? "none"}</dd>
+          </div>
+          <div>
+            <dt>Reason</dt>
+            <dd>{message.outbound_reason ?? "none"}</dd>
+          </div>
+        </dl>
+        {message.outbound_body ? (
+          <pre className="message-body">{message.outbound_body}</pre>
+        ) : message.outbound_body_redacted ? (
+          <p className="muted">Forward body omitted because it can include original inbound email content.</p>
+        ) : (
+          <p className="muted">No outbound body recorded.</p>
+        )}
+      </section>
+
+      <section className="message-section">
+        <h3><MessageSquareText aria-hidden="true" /> Timeline</h3>
+        {message.logs.length === 0 ? (
+          <p className="muted">No log entries recorded.</p>
+        ) : (
+          <div className="table-wrap">
+            <table className="timeline-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Level</th>
+                  <th>Action</th>
+                  <th>Status</th>
+                  <th>Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {message.logs.map((entry, index) => (
+                  <tr key={`${entry.created_at}:${entry.action}:${index}`}>
+                    <td>{formatTimestamp(entry.created_at)}</td>
+                    <td>{entry.level}</td>
+                    <td>{entry.action}</td>
+                    <td>{entry.status}</td>
+                    <td>{entry.detail ?? ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </section>
+  );
+}
+
+function TextBlock({ label, value }: { label: string; value?: string | null }) {
+  if (!value) {
+    return null;
+  }
+  return (
+    <div className="text-block">
+      <span>{label}</span>
+      <p>{value}</p>
     </div>
   );
 }
@@ -890,6 +1101,31 @@ function SettingsPanel({
       </div>
     </section>
   );
+}
+
+function messageKey(message: ProcessedEmail): string {
+  return `${message.mailbox_id}:${message.uid_validity}:${message.uid}`;
+}
+
+function statusPillClass(status: string): string {
+  if (status.includes("failed")) {
+    return "status-pill danger";
+  }
+  if (status === "processing") {
+    return "status-pill pending";
+  }
+  if (["replied", "forwarded", "noop", "quarantined"].includes(status)) {
+    return "status-pill success";
+  }
+  return "status-pill";
+}
+
+function formatTimestamp(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toLocaleString();
 }
 
 function errorMessage(cause: unknown): string {

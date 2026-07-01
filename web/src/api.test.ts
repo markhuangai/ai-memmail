@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, loadConfig, loadStatus, login, saveConfig } from "./api";
-import { sampleConfig } from "./fixtures";
+import { ApiError, loadConfig, loadMessages, loadStatus, login, saveConfig } from "./api";
+import { sampleConfig, sampleMessages } from "./fixtures";
 
 function jsonResponse(body: unknown, init?: ResponseInit) {
   return new Response(JSON.stringify(body), {
@@ -44,6 +44,15 @@ describe("api", () => {
   it("unwraps config payloads", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ config: sampleConfig }));
     await expect(loadConfig(fetchImpl as typeof fetch)).resolves.toEqual(sampleConfig);
+  });
+
+  it("unwraps processed message payloads", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ messages: sampleMessages }));
+    await expect(loadMessages(fetchImpl as typeof fetch)).resolves.toEqual(sampleMessages);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/api/messages",
+      expect.objectContaining({ credentials: "same-origin" })
+    );
   });
 
   it("saves config payloads", async () => {

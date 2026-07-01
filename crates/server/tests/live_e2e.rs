@@ -1,12 +1,14 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ai_memmail_server::config::{AppConfig, BannedSenderConfig, BannedSenderKind, MailboxConfig};
-use ai_memmail_server::logging::MemoryLogger;
+use ai_memmail_server::config::{
+    AppConfig, BannedSenderConfig, BannedSenderKind, DatabaseConfig, MailboxConfig,
+};
+use ai_memmail_server::logging::{FanoutLogger, MemoryLogger};
 use ai_memmail_server::mail::{
     InboundMessage, LiveMailTransport, MailTransport, OutboundAction, OutboundActionKind,
 };
-use ai_memmail_server::storage::MemoryProcessingStore;
+use ai_memmail_server::storage::PgStore;
 use ai_memmail_server::worker;
 
 const DEFAULT_CONFIG_PATH: &str = "config/config.yaml";
@@ -29,45 +31,48 @@ async fn live_email_processing_scenarios() {
         .expect("at least one enabled mailbox");
     let forward = forward_mailbox(monitored);
     let transport = LiveMailTransport::default();
-    let processing = MemoryProcessingStore::default();
+    let processing = live_processing_store(&config.database).await;
     let run_id = unique_run_id();
 
-    run_known_mcp_reply(
-        &config,
-        monitored,
-        &forward,
-        &transport,
-        &processing,
-        &run_id,
-    )
-    .await;
-    run_human_forward(
-        &config,
-        monitored,
-        &forward,
-        &transport,
-        &processing,
-        &run_id,
-    )
-    .await;
-    run_quarantine_forward(
-        &config,
-        monitored,
-        &forward,
-        &transport,
-        &processing,
-        &run_id,
-    )
-    .await;
-    run_banned_sender_forward(
-        &config,
-        monitored,
-        &forward,
-        &transport,
-        &processing,
-        &run_id,
-    )
-    .await;
+    let subjects = [
+        run_known_mcp_reply(
+            &config,
+            monitored,
+            &forward,
+            &transport,
+            &processing,
+            &run_id,
+        )
+        .await,
+        run_human_forward(
+            &config,
+            monitored,
+            &forward,
+            &transport,
+            &processing,
+            &run_id,
+        )
+        .await,
+        run_quarantine_forward(
+            &config,
+            monitored,
+            &forward,
+            &transport,
+            &processing,
+            &run_id,
+        )
+        .await,
+        run_banned_sender_forward(
+            &config,
+            monitored,
+            &forward,
+            &transport,
+            &processing,
+            &run_id,
+        )
+        .await,
+    ];
+    assert_processed_history(&processing, &subjects).await;
 }
 
 async fn run_known_mcp_reply(
@@ -75,9 +80,9 @@ async fn run_known_mcp_reply(
     monitored: &MailboxConfig,
     forward: &MailboxConfig,
     transport: &LiveMailTransport,
-    processing: &MemoryProcessingStore,
+    processing: &PgStore,
     run_id: &str,
-) {
+) -> String {
     let subject = format!("live-e2e known mcp {run_id}");
     send_probe(
         transport,
@@ -101,6 +106,7 @@ async fn run_known_mcp_reply(
         "known MCP reply did not include expected coverage percentage; subject={}",
         message.metadata.subject
     );
+    subject
 }
 
 async fn run_human_forward(
@@ -108,9 +114,9 @@ async fn run_human_forward(
     monitored: &MailboxConfig,
     forward: &MailboxConfig,
     transport: &LiveMailTransport,
-    processing: &MemoryProcessingStore,
+    processing: &PgStore,
     run_id: &str,
-) {
+) -> String {
     let subject = format!("live-e2e human forward {run_id}");
     send_probe(
         transport,
@@ -133,6 +139,7 @@ async fn run_human_forward(
         },
     )
     .await;
+    subject
 }
 
 async fn run_quarantine_forward(
@@ -140,9 +147,9 @@ async fn run_quarantine_forward(
     monitored: &MailboxConfig,
     forward: &MailboxConfig,
     transport: &LiveMailTransport,
-    processing: &MemoryProcessingStore,
+    processing: &PgStore,
     run_id: &str,
-) {
+) -> String {
     let subject = format!("live-e2e quarantine {run_id}");
     send_probe(
         transport,
@@ -168,6 +175,7 @@ async fn run_quarantine_forward(
         },
     )
     .await;
+    subject
 }
 
 async fn run_banned_sender_forward(
@@ -175,9 +183,9 @@ async fn run_banned_sender_forward(
     monitored: &MailboxConfig,
     forward: &MailboxConfig,
     transport: &LiveMailTransport,
-    processing: &MemoryProcessingStore,
+    processing: &PgStore,
     run_id: &str,
-) {
+) -> String {
     let mut config = config.clone();
     config.banned_senders.push(BannedSenderConfig {
         kind: BannedSenderKind::Email,
@@ -211,6 +219,7 @@ async fn run_banned_sender_forward(
         },
     )
     .await;
+    subject
 }
 
 async fn send_probe(
@@ -239,7 +248,7 @@ async fn wait_for_forward_mail(
     config: &AppConfig,
     forward: &MailboxConfig,
     transport: &LiveMailTransport,
-    processing: &MemoryProcessingStore,
+    processing: &PgStore,
     subject: &str,
     matches: impl Fn(&InboundMessage) -> bool,
 ) -> InboundMessage {
@@ -251,7 +260,14 @@ async fn wait_for_forward_mail(
     let mut last_events: Vec<String>;
     loop {
         let logger = MemoryLogger::default();
-        worker::run_once_with_processing_store(config, &logger, "live-e2e", processing).await;
+        let logger_with_history = FanoutLogger::new(&logger, processing);
+        worker::run_once_with_processing_store(
+            config,
+            &logger_with_history,
+            "live-e2e",
+            processing,
+        )
+        .await;
         last_events = logger
             .events()
             .into_iter()
@@ -291,6 +307,63 @@ async fn wait_for_forward_mail(
     }
 }
 
+async fn assert_processed_history(store: &PgStore, subjects: &[String]) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let messages = store
+            .list_processed_emails(100)
+            .await
+            .expect("list processed email history");
+        let missing: Vec<&String> = subjects
+            .iter()
+            .filter(|subject| {
+                !messages
+                    .iter()
+                    .any(|message| message.subject.as_str() == subject.as_str())
+            })
+            .collect();
+        if missing.is_empty() {
+            let known_subject = subjects.first().expect("known MCP subject");
+            let known = messages
+                .iter()
+                .find(|message| message.subject == *known_subject)
+                .expect("known MCP history row");
+            assert_eq!(known.outbound_action.as_deref(), Some("reply"));
+            assert!(
+                known
+                    .outbound_body
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("90"),
+                "known MCP history row should include the reply body"
+            );
+            assert!(
+                known.logs.iter().any(|entry| entry.action == "smtp_send"),
+                "known MCP history row should include SMTP timeline logs"
+            );
+
+            for subject in &subjects[1..] {
+                let forwarded = messages
+                    .iter()
+                    .find(|message| message.subject == *subject)
+                    .expect("forward history row");
+                assert_eq!(forwarded.outbound_action.as_deref(), Some("forward"));
+                assert!(
+                    forwarded.outbound_body_redacted,
+                    "forward history row should redact stored body for subject {subject}"
+                );
+            }
+            return;
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for processed history rows; missing={missing:?}"
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
 fn forward_mailbox(monitored: &MailboxConfig) -> MailboxConfig {
     let forward_address = monitored
         .agent
@@ -312,11 +385,44 @@ fn forward_mailbox(monitored: &MailboxConfig) -> MailboxConfig {
 }
 
 fn unique_run_id() -> String {
+    if let Ok(run_id) = std::env::var("AI_MEMMAIL_LIVE_E2E_RUN_ID") {
+        return run_id;
+    }
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time after epoch")
         .as_millis();
     format!("{millis}-{}", std::process::id())
+}
+
+async fn live_processing_store(config: &DatabaseConfig) -> PgStore {
+    let mut database = config.clone();
+    database.host = std::env::var("AI_MEMMAIL_LIVE_E2E_DB_HOST").unwrap_or_else(|_| {
+        if database.host == "postgres" {
+            "127.0.0.1".to_string()
+        } else {
+            database.host.clone()
+        }
+    });
+    database.port = std::env::var("AI_MEMMAIL_LIVE_E2E_DB_PORT")
+        .ok()
+        .map(|value| {
+            value
+                .parse()
+                .expect("AI_MEMMAIL_LIVE_E2E_DB_PORT is a port")
+        })
+        .unwrap_or_else(|| {
+            if database.host == "127.0.0.1" && database.port == 5432 {
+                15432
+            } else {
+                database.port
+            }
+        });
+    let store = PgStore::connect(&database)
+        .await
+        .expect("connect live e2e postgres");
+    store.migrate().await.expect("migrate live e2e postgres");
+    store
 }
 
 fn live_config_path() -> PathBuf {

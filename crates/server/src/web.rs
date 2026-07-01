@@ -15,6 +15,7 @@ use tower_http::services::ServeDir;
 use uuid::Uuid;
 
 use crate::config::{AppConfig, ConfigError};
+use crate::storage::{PgStore, ProcessedEmail, StorageError};
 use crate::worker;
 
 const SESSION_COOKIE: &str = "ai_memmail_session";
@@ -57,6 +58,11 @@ pub struct ConfigResponse {
     pub config: AppConfig,
 }
 
+#[derive(Debug, Serialize)]
+pub struct MessagesResponse {
+    pub messages: Vec<ProcessedEmail>,
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ErrorResponse {
     pub error: String,
@@ -86,6 +92,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/config", get(get_config).put(update_config))
+        .route("/api/messages", get(get_messages))
         .with_state(state)
         .fallback_service(ServeDir::new("web/dist").append_index_html_on_directories(true))
 }
@@ -217,6 +224,23 @@ async fn update_config(
     }))
 }
 
+async fn get_messages(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<MessagesResponse>, ApiError> {
+    require_auth(&state, &headers)?;
+    let config = state.config.read().expect("config lock poisoned").clone();
+    let store = PgStore::connect(&config.database)
+        .await
+        .map_err(ApiError::from_storage)?;
+    store.migrate().await.map_err(ApiError::from_storage)?;
+    let messages = store
+        .list_processed_emails(100)
+        .await
+        .map_err(ApiError::from_storage)?;
+    Ok(Json(MessagesResponse { messages }))
+}
+
 fn control_panel_key_from_env() -> Result<String, ConfigError> {
     let key = std::env::var("CONTROL_PANEL_KEY").map_err(|_| {
         ConfigError::Invalid("CONTROL_PANEL_KEY environment variable is required".to_string())
@@ -263,6 +287,13 @@ impl ApiError {
     fn from_config(error: ConfigError) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            message: error.to_string(),
+        }
+    }
+
+    fn from_storage(error: StorageError) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
             message: error.to_string(),
         }
     }
@@ -410,6 +441,23 @@ mod tests {
                 Request::builder()
                     .method(Method::GET)
                     .uri("/api/config")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn messages_requires_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = router(test_state(dir.path().join("config.yaml")));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/messages")
                     .body(Body::empty())
                     .unwrap(),
             )
