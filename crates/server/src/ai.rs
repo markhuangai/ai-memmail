@@ -432,6 +432,8 @@ pub fn human_review_requested(message: &InboundMessage) -> bool {
         "forward this to a human",
         "human review",
         "manual review",
+        "escalation to human",
+        "escalate to human",
         "please escalate",
     ]
     .iter()
@@ -458,6 +460,9 @@ pub fn forward_decision(
                 message.metadata.from_addr
             ),
             reason: reason.into(),
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
         },
         safety_notes: "message passed deterministic human-review routing".to_string(),
     }
@@ -891,6 +896,10 @@ mod tests {
             "Manual review",
             "Please forward this to a human"
         )));
+        assert!(human_review_requested(&inbound(
+            "Re: automated reply",
+            "escalation to human"
+        )));
         assert!(!human_review_requested(&inbound(
             "Question",
             "Please answer"
@@ -1136,6 +1145,9 @@ mod tests {
                 subject: "Re: Question".to_string(),
                 body: "Answer".to_string(),
                 reason: "draft".to_string(),
+                message_id: None,
+                in_reply_to: None,
+                references: vec![],
             },
             safety_notes: "safe".to_string(),
         };
@@ -1183,6 +1195,8 @@ mod tests {
                 uid_validity: 1,
                 uid: 2,
                 message_id: None,
+                in_reply_to: None,
+                references: vec![],
                 from_addr: "person@example.com".to_string(),
                 subject: subject.to_string(),
             },

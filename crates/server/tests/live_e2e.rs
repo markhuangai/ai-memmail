@@ -7,6 +7,7 @@ use ai_memmail_server::config::{
 use ai_memmail_server::logging::{FanoutLogger, MemoryLogger};
 use ai_memmail_server::mail::{
     InboundMessage, LiveMailTransport, MailTransport, OutboundAction, OutboundActionKind,
+    AUTOMATED_REPLY_NOTICE,
 };
 use ai_memmail_server::storage::PgStore;
 use ai_memmail_server::worker;
@@ -34,16 +35,28 @@ async fn live_email_processing_scenarios() {
     let processing = live_processing_store(&config.database).await;
     let run_id = unique_run_id();
 
+    let (known_subject, known_reply_message_id) = run_known_mcp_reply(
+        &config,
+        monitored,
+        &forward,
+        &transport,
+        &processing,
+        &run_id,
+    )
+    .await;
+    let escalation_subject = run_escalation_followup(
+        &config,
+        monitored,
+        &forward,
+        &transport,
+        &processing,
+        &known_subject,
+        &known_reply_message_id,
+    )
+    .await;
     let subjects = [
-        run_known_mcp_reply(
-            &config,
-            monitored,
-            &forward,
-            &transport,
-            &processing,
-            &run_id,
-        )
-        .await,
+        known_subject.clone(),
+        escalation_subject.clone(),
         run_human_forward(
             &config,
             monitored,
@@ -72,7 +85,7 @@ async fn live_email_processing_scenarios() {
         )
         .await,
     ];
-    assert_processed_history(&processing, &subjects).await;
+    assert_processed_history(&processing, &subjects, &known_subject, &escalation_subject).await;
 }
 
 async fn run_known_mcp_reply(
@@ -82,7 +95,7 @@ async fn run_known_mcp_reply(
     transport: &LiveMailTransport,
     processing: &PgStore,
     run_id: &str,
-) -> String {
+) -> (String, String) {
     let subject = format!("live-e2e known mcp {run_id}");
     send_probe(
         transport,
@@ -106,6 +119,60 @@ async fn run_known_mcp_reply(
         "known MCP reply did not include expected coverage percentage; subject={}",
         message.metadata.subject
     );
+    assert!(
+        message.plain_text.contains(AUTOMATED_REPLY_NOTICE),
+        "known MCP reply did not include automated reply notice"
+    );
+    let reply_message_id = message
+        .metadata
+        .message_id
+        .clone()
+        .expect("known MCP reply should have a message id");
+    (subject, reply_message_id)
+}
+
+async fn run_escalation_followup(
+    config: &AppConfig,
+    monitored: &MailboxConfig,
+    forward: &MailboxConfig,
+    transport: &LiveMailTransport,
+    processing: &PgStore,
+    known_subject: &str,
+    known_reply_message_id: &str,
+) -> String {
+    let subject = format!("Re: {known_subject}");
+    let probe_body = "escalation to human";
+    transport
+        .send(
+            &forward.smtp,
+            &OutboundAction {
+                kind: OutboundActionKind::Reply,
+                recipients: vec![monitored.address.clone()],
+                subject: subject.clone(),
+                body: probe_body.to_string(),
+                reason: "live e2e escalation follow-up".to_string(),
+                message_id: None,
+                in_reply_to: Some(known_reply_message_id.to_string()),
+                references: vec![known_reply_message_id.to_string()],
+            },
+        )
+        .await
+        .expect("send live escalation follow-up");
+    let message = wait_for_forward_mail(
+        config,
+        forward,
+        transport,
+        processing,
+        &subject,
+        |message| {
+            message.metadata.subject.contains(&subject)
+                && message.metadata.subject.starts_with("Fwd:")
+                && message.plain_text.contains("Human review requested")
+                && message.plain_text.contains(probe_body)
+        },
+    )
+    .await;
+    assert_forward_contains_original(&message, &subject, probe_body);
     subject
 }
 
@@ -241,6 +308,9 @@ async fn send_probe(
                 subject: subject.to_string(),
                 body: body.to_string(),
                 reason: "live e2e probe".to_string(),
+                message_id: None,
+                in_reply_to: None,
+                references: vec![],
             },
         )
         .await
@@ -310,7 +380,12 @@ async fn wait_for_forward_mail(
     }
 }
 
-async fn assert_processed_history(store: &PgStore, subjects: &[String]) {
+async fn assert_processed_history(
+    store: &PgStore,
+    subjects: &[String],
+    known_subject: &str,
+    escalation_subject: &str,
+) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         let messages = store
@@ -326,12 +401,19 @@ async fn assert_processed_history(store: &PgStore, subjects: &[String]) {
             })
             .collect();
         if missing.is_empty() {
-            let known_subject = subjects.first().expect("known MCP subject");
             let known = messages
                 .iter()
-                .find(|message| message.subject == *known_subject)
+                .find(|message| message.subject == known_subject)
                 .expect("known MCP history row");
             assert_eq!(known.outbound_action.as_deref(), Some("reply"));
+            assert!(
+                known
+                    .inbound_body
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("According to configured MCP memory"),
+                "known MCP history row should include inbound body"
+            );
             assert!(
                 known
                     .outbound_body
@@ -341,8 +423,35 @@ async fn assert_processed_history(store: &PgStore, subjects: &[String]) {
                 "known MCP history row should include the reply body"
             );
             assert!(
+                known
+                    .outbound_body
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains(AUTOMATED_REPLY_NOTICE),
+                "known MCP history row should include automated reply notice"
+            );
+            assert!(
+                known.outbound_message_id.is_some(),
+                "known MCP history row should include outbound message id"
+            );
+            assert!(
                 known.logs.iter().any(|entry| entry.action == "smtp_send"),
                 "known MCP history row should include SMTP timeline logs"
+            );
+
+            let escalation = messages
+                .iter()
+                .find(|message| message.subject == escalation_subject)
+                .expect("escalation history row");
+            assert_eq!(escalation.outbound_action.as_deref(), Some("forward"));
+            assert_eq!(escalation.thread_id, known.thread_id);
+            assert!(
+                escalation
+                    .inbound_body
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("escalation to human"),
+                "escalation history row should include inbound body"
             );
 
             for subject in &subjects[1..] {

@@ -9,8 +9,8 @@ use crate::logging::{
     action_event, ActionEvent, ActionLogger, FanoutLogger, LogLevel, StdoutLogger,
 };
 use crate::mail::{
-    forward_body, InboundMessage, LiveMailTransport, MailTransport, OutboundAction,
-    OutboundActionKind,
+    automated_reply_body, forward_body, reply_references, InboundMessage, LiveMailTransport,
+    MailTransport, OutboundAction, OutboundActionKind,
 };
 use crate::safety::{
     decide, sender_is_banned, suspicious_forward_intro, suspicious_forward_subject, SafetyDecision,
@@ -363,7 +363,7 @@ async fn process_message(
     };
     log_agent_decision(logger, run_id, &message, &decision, started.elapsed()).await;
     record_agent_decision_for_history(processing, logger, run_id, &message, &decision).await;
-    let outbound_decision = decision_with_forward_body(&message, &decision);
+    let outbound_decision = decision_with_runtime_fields(mailbox, &message, &decision);
 
     match &outbound_decision.action.kind {
         OutboundActionKind::Noop => {
@@ -422,22 +422,59 @@ async fn process_message(
     }
 }
 
-fn decision_with_forward_body(message: &InboundMessage, decision: &AgentDecision) -> AgentDecision {
+fn decision_with_runtime_fields(
+    mailbox: &MailboxConfig,
+    message: &InboundMessage,
+    decision: &AgentDecision,
+) -> AgentDecision {
     AgentDecision {
-        action: action_with_forward_body(message, &decision.action),
+        action: action_with_runtime_fields(mailbox, message, &decision.action),
         safety_notes: decision.safety_notes.clone(),
     }
 }
 
-fn action_with_forward_body(message: &InboundMessage, action: &OutboundAction) -> OutboundAction {
-    if action.kind != OutboundActionKind::Forward {
-        return action.clone();
+fn action_with_runtime_fields(
+    mailbox: &MailboxConfig,
+    message: &InboundMessage,
+    action: &OutboundAction,
+) -> OutboundAction {
+    match action.kind {
+        OutboundActionKind::Forward => {
+            let mut action = action.clone();
+            let intro = action.body.trim().to_string();
+            action.body = forward_body(&intro, message);
+            action.message_id = None;
+            action.in_reply_to = None;
+            action.references.clear();
+            action
+        }
+        OutboundActionKind::Reply => {
+            let mut action = action.clone();
+            action.body = automated_reply_body(&action.body);
+            action.message_id = Some(outbound_message_id(mailbox));
+            action.in_reply_to = message.metadata.message_id.clone();
+            action.references = reply_references(&message.metadata);
+            action
+        }
+        OutboundActionKind::Noop => {
+            let mut action = action.clone();
+            action.message_id = None;
+            action.in_reply_to = None;
+            action.references.clear();
+            action
+        }
     }
+}
 
-    let mut action = action.clone();
-    let intro = action.body.trim().to_string();
-    action.body = forward_body(&intro, message);
-    action
+fn outbound_message_id(mailbox: &MailboxConfig) -> String {
+    let domain = mailbox
+        .smtp
+        .from
+        .rsplit_once('@')
+        .map(|(_, domain)| domain.trim())
+        .filter(|domain| !domain.is_empty())
+        .unwrap_or("ai-memmail.local");
+    format!("<{}@{}>", Uuid::new_v4(), domain)
 }
 
 async fn reviewed_outbound_action(
@@ -954,6 +991,9 @@ fn safety_forward_action(
         subject: suspicious_forward_subject(&message.metadata.subject),
         body: forward_body(&intro, message),
         reason: reason.to_string(),
+        message_id: None,
+        in_reply_to: None,
+        references: vec![],
     }
 }
 
@@ -983,6 +1023,9 @@ fn outbound_review_forward_action(
         subject: format!("Fwd: {}", message.metadata.subject),
         body: forward_body(&intro, message),
         reason: format!("outbound review rejected: {}", review.reason),
+        message_id: None,
+        in_reply_to: None,
+        references: vec![],
     }
 }
 
@@ -1113,6 +1156,8 @@ mod tests {
                 uid_validity: 1,
                 uid,
                 message_id: Some(format!("<{uid}@example.com>")),
+                in_reply_to: None,
+                references: vec![],
                 from_addr: from_addr.to_string(),
                 subject: subject.to_string(),
             },
@@ -1486,6 +1531,9 @@ mod tests {
             subject: "Re: Hello".to_string(),
             body: "Known answer".to_string(),
             reason: "memory supported answer".to_string(),
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
         }
     }
 
@@ -1496,6 +1544,9 @@ mod tests {
             subject: "Fwd: cited agent memory".to_string(),
             body: "Josh asked whether a short meeting would be useful.".to_string(),
             reason: "requires Mark's judgment".to_string(),
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
         }
     }
 
@@ -1506,6 +1557,9 @@ mod tests {
             subject: String::new(),
             body: String::new(),
             reason: "no safe action".to_string(),
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
         }
     }
 
@@ -1547,6 +1601,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn forward_runtime_fields_strip_model_supplied_thread_headers() {
+        let config = config();
+        let message = inbound(
+            65,
+            "Josh <joshua.kappler@gmail.com>",
+            "cited agent memory",
+            "Original memo-engine meeting request.",
+        );
+        let mut action = forward_action();
+        action.message_id = Some("<model-supplied@example.com>".to_string());
+        action.in_reply_to = Some("<unreviewed-parent@example.com>".to_string());
+        action.references = vec!["<unreviewed-root@example.com>".to_string()];
+
+        let action = action_with_runtime_fields(&config.mailboxes[0], &message, &action);
+
+        assert_eq!(action.kind, OutboundActionKind::Forward);
+        assert_eq!(action.message_id, None);
+        assert_eq!(action.in_reply_to, None);
+        assert!(action.references.is_empty());
+        assert!(action
+            .body
+            .contains("---------- Forwarded message ---------"));
+        assert!(action
+            .body
+            .contains("Original memo-engine meeting request."));
+    }
+
     #[tokio::test]
     async fn run_once_logs_mailbox_count() {
         let logger = crate::logging::MemoryLogger::default();
@@ -1571,6 +1653,13 @@ mod tests {
         let sent = mail.sent();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].kind, OutboundActionKind::Reply);
+        assert!(sent[0].body.contains(crate::mail::AUTOMATED_REPLY_NOTICE));
+        assert_eq!(sent[0].in_reply_to, Some("<42@example.com>".to_string()));
+        assert_eq!(sent[0].references, vec!["<42@example.com>".to_string()]);
+        assert!(sent[0]
+            .message_id
+            .as_deref()
+            .is_some_and(|message_id| message_id.ends_with("@example.com>")));
         assert_eq!(mail.seen()[0].uid, 42);
         assert!(logger
             .events()
@@ -1641,10 +1730,48 @@ mod tests {
         let sent = mail.sent();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].kind, OutboundActionKind::Reply);
+        let reviewed = decisions.reviewed_actions();
+        assert_eq!(reviewed.len(), 1);
+        assert_eq!(reviewed[0].kind, OutboundActionKind::Reply);
+        assert!(reviewed[0]
+            .body
+            .contains(crate::mail::AUTOMATED_REPLY_NOTICE));
+        assert_eq!(
+            reviewed[0].in_reply_to,
+            Some("<56@example.com>".to_string())
+        );
+        assert_eq!(mail.sent()[0].body, reviewed[0].body);
+        assert_eq!(mail.sent()[0].message_id, reviewed[0].message_id);
         assert!(logger
             .events()
             .iter()
             .any(|event| event.action == "outbound_review" && event.status == "approved"));
+    }
+
+    #[tokio::test]
+    async fn escalation_phrase_routes_automated_reply_followup_to_human_forward() {
+        let config = config();
+        let logger = crate::logging::MemoryLogger::default();
+        let mut message = inbound(64, "person@example.com", "Re: Hello", "escalation to human");
+        message.metadata.in_reply_to = Some("<auto-reply@example.com>".to_string());
+        message.metadata.references = vec!["<42@example.com>".to_string()];
+        let action = crate::ai::forward_decision(
+            &config.mailboxes[0],
+            &message,
+            "sender requested human review",
+        )
+        .action;
+        let mail = FakeMail::new(vec![message]);
+        let decisions = fake_decisions(safe_scan(), action);
+
+        run_once_with(&config, &logger, "run-test", &mail, &decisions).await;
+
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].kind, OutboundActionKind::Forward);
+        assert_eq!(sent[0].recipients, vec!["human@example.com"]);
+        assert!(sent[0].body.contains("Human review requested"));
+        assert!(sent[0].body.contains("escalation to human"));
     }
 
     #[tokio::test]
