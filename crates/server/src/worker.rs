@@ -443,6 +443,9 @@ fn action_with_runtime_fields(
             let mut action = action.clone();
             let intro = action.body.trim().to_string();
             action.body = forward_body(&intro, message);
+            action.message_id = None;
+            action.in_reply_to = None;
+            action.references.clear();
             action
         }
         OutboundActionKind::Reply => {
@@ -453,7 +456,13 @@ fn action_with_runtime_fields(
             action.references = reply_references(&message.metadata);
             action
         }
-        OutboundActionKind::Noop => action.clone(),
+        OutboundActionKind::Noop => {
+            let mut action = action.clone();
+            action.message_id = None;
+            action.in_reply_to = None;
+            action.references.clear();
+            action
+        }
     }
 }
 
@@ -1590,6 +1599,34 @@ mod tests {
             precheck_sender("person@example.com", &config()),
             SenderPrecheck::Allowed
         );
+    }
+
+    #[test]
+    fn forward_runtime_fields_strip_model_supplied_thread_headers() {
+        let config = config();
+        let message = inbound(
+            65,
+            "Josh <joshua.kappler@gmail.com>",
+            "cited agent memory",
+            "Original memo-engine meeting request.",
+        );
+        let mut action = forward_action();
+        action.message_id = Some("<model-supplied@example.com>".to_string());
+        action.in_reply_to = Some("<unreviewed-parent@example.com>".to_string());
+        action.references = vec!["<unreviewed-root@example.com>".to_string()];
+
+        let action = action_with_runtime_fields(&config.mailboxes[0], &message, &action);
+
+        assert_eq!(action.kind, OutboundActionKind::Forward);
+        assert_eq!(action.message_id, None);
+        assert_eq!(action.in_reply_to, None);
+        assert!(action.references.is_empty());
+        assert!(action
+            .body
+            .contains("---------- Forwarded message ---------"));
+        assert!(action
+            .body
+            .contains("Original memo-engine meeting request."));
     }
 
     #[tokio::test]
