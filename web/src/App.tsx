@@ -225,6 +225,14 @@ function HistoryPanel({ messages }: { messages: ProcessedEmail[] }) {
     }
     return messages.find((message) => messageKey(message) === selectedKey) ?? messages[0];
   }, [messages, selectedKey]);
+  const threadMessages = useMemo(() => {
+    if (!selected) {
+      return [];
+    }
+    return messages
+      .filter((message) => message.thread_id === selected.thread_id)
+      .sort((a, b) => timestampMs(a.created_at) - timestampMs(b.created_at));
+  }, [messages, selected]);
 
   useEffect(() => {
     if (messages.length === 0) {
@@ -274,12 +282,24 @@ function HistoryPanel({ messages }: { messages: ProcessedEmail[] }) {
           })}
         </div>
       </section>
-      <MessageDetail message={selected} />
+      <MessageDetail
+        message={selected}
+        onSelectMessage={(message) => setSelectedKey(messageKey(message))}
+        threadMessages={threadMessages}
+      />
     </div>
   );
 }
 
-function MessageDetail({ message }: { message: ProcessedEmail }) {
+function MessageDetail({
+  message,
+  onSelectMessage,
+  threadMessages
+}: {
+  message: ProcessedEmail;
+  onSelectMessage: (message: ProcessedEmail) => void;
+  threadMessages: ProcessedEmail[];
+}) {
   return (
     <section className="panel message-detail-panel">
       <div className="panel-heading">
@@ -304,10 +324,62 @@ function MessageDetail({ message }: { message: ProcessedEmail }) {
           <dd>{message.message_id ?? "none"}</dd>
         </div>
         <div>
+          <dt>Thread</dt>
+          <dd>{message.thread_id}</dd>
+        </div>
+        <div>
           <dt>Updated</dt>
           <dd>{formatTimestamp(message.updated_at)}</dd>
         </div>
       </dl>
+
+      <section className="message-section">
+        <h3><Mail aria-hidden="true" /> Inbound</h3>
+        <dl className="detail-grid message-detail-grid">
+          <div>
+            <dt>In reply to</dt>
+            <dd>{message.in_reply_to ?? "none"}</dd>
+          </div>
+          <div>
+            <dt>References</dt>
+            <dd>{message.references.length ? message.references.join(", ") : "none"}</dd>
+          </div>
+        </dl>
+        {message.inbound_body ? (
+          <>
+            <pre className="message-body">{message.inbound_body}</pre>
+            {message.inbound_body_truncated ? (
+              <p className="muted">Inbound body truncated for storage.</p>
+            ) : null}
+          </>
+        ) : (
+          <p className="muted">No inbound body recorded.</p>
+        )}
+      </section>
+
+      <section className="message-section">
+        <h3><MessageSquareText aria-hidden="true" /> Email chain</h3>
+        <div className="chain-list" role="list">
+          {threadMessages.map((threadMessage) => {
+            const active = messageKey(threadMessage) === messageKey(message);
+            return (
+              <button
+                className={active ? "chain-item active" : "chain-item"}
+                key={messageKey(threadMessage)}
+                onClick={() => onSelectMessage(threadMessage)}
+                type="button"
+              >
+                <span>
+                  <strong>{threadMessage.subject || "(no subject)"}</strong>
+                  <span>{threadMessage.from_addr}</span>
+                </span>
+                <span className={statusPillClass(threadMessage.status)}>{threadMessage.status}</span>
+                <span>{formatTimestamp(threadMessage.updated_at)}</span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
 
       <section className="message-section">
         <h3><ShieldAlert aria-hidden="true" /> Safety and AI</h3>
@@ -348,6 +420,10 @@ function MessageDetail({ message }: { message: ProcessedEmail }) {
           <div>
             <dt>Reason</dt>
             <dd>{message.outbound_reason ?? "none"}</dd>
+          </div>
+          <div>
+            <dt>Outbound Message ID</dt>
+            <dd>{message.outbound_message_id ?? "none"}</dd>
           </div>
         </dl>
         {message.outbound_body ? (
@@ -1126,6 +1202,11 @@ function formatTimestamp(value: string): string {
     return value;
   }
   return parsed.toLocaleString();
+}
+
+function timestampMs(value: string): number {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
 }
 
 function errorMessage(cause: unknown): string {

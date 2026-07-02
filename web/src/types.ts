@@ -107,9 +107,14 @@ export interface ProcessedEmail {
   mailbox_id: string;
   uid_validity: number;
   uid: number;
+  thread_id: string;
   message_id?: string | null;
+  in_reply_to?: string | null;
+  references: string[];
   from_addr: string;
   subject: string;
+  inbound_body?: string | null;
+  inbound_body_truncated: boolean;
   status: string;
   safety_category?: string | null;
   safety_reason?: string | null;
@@ -120,6 +125,7 @@ export interface ProcessedEmail {
   outbound_subject?: string | null;
   outbound_body?: string | null;
   outbound_body_redacted: boolean;
+  outbound_message_id?: string | null;
   outbound_reason?: string | null;
   outbound_review_status?: string | null;
   outbound_review_reason?: string | null;

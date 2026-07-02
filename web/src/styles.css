@@ -479,6 +479,41 @@ p {
   white-space: pre-wrap;
 }
 
+.chain-list {
+  display: grid;
+  gap: 8px;
+}
+
+.chain-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  border: 1px solid #e4e8e1;
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.chain-item.active {
+  border-color: #1e775d;
+  background: #f2faf6;
+}
+
+.chain-item > span:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.chain-item > span:first-child span {
+  color: #667367;
+  overflow-wrap: anywhere;
+}
+
 .timeline-table {
   min-width: 860px;
 }
@@ -559,6 +594,10 @@ th {
   .detail-grid,
   .inline-form {
     grid-template-columns: 1fr;
+  }
+
+  .chain-item {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .panel-heading {

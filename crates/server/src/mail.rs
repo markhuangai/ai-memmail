@@ -17,6 +17,8 @@ pub struct MessageMetadata {
     pub uid_validity: u64,
     pub uid: u64,
     pub message_id: Option<String>,
+    pub in_reply_to: Option<String>,
+    pub references: Vec<String>,
     pub from_addr: String,
     pub subject: String,
 }
@@ -36,6 +38,12 @@ pub struct OutboundAction {
     pub subject: String,
     pub body: String,
     pub reason: String,
+    #[serde(default)]
+    pub message_id: Option<String>,
+    #[serde(default)]
+    pub in_reply_to: Option<String>,
+    #[serde(default)]
+    pub references: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,7 +180,18 @@ impl MessageMetadata {
             uid: self.uid,
         }
     }
+
+    pub fn thread_id(&self) -> String {
+        self.references
+            .first()
+            .or(self.in_reply_to.as_ref())
+            .or(self.message_id.as_ref())
+            .cloned()
+            .unwrap_or_else(|| format!("{}:{}:{}", self.mailbox_id, self.uid_validity, self.uid))
+    }
 }
+
+pub const AUTOMATED_REPLY_NOTICE: &str = "This is an automated email reply from ai-memmail. If this needs to be escalated to a human, reply with: escalation to human";
 
 pub fn parse_inbound_message(
     mailbox_id: &str,
@@ -186,7 +205,19 @@ pub fn parse_inbound_message(
         .headers
         .get_first_value("Subject")
         .unwrap_or_default();
-    let message_id = parsed.headers.get_first_value("Message-ID");
+    let message_id = parsed
+        .headers
+        .get_first_value("Message-ID")
+        .and_then(|value| first_message_id(&value));
+    let in_reply_to = parsed
+        .headers
+        .get_first_value("In-Reply-To")
+        .and_then(|value| first_message_id(&value));
+    let references = parsed
+        .headers
+        .get_first_value("References")
+        .map(|value| message_ids(&value))
+        .unwrap_or_default();
     let plain_text = extract_plain_text(&parsed)?;
     Ok(InboundMessage {
         metadata: MessageMetadata {
@@ -194,6 +225,8 @@ pub fn parse_inbound_message(
             uid_validity,
             uid,
             message_id,
+            in_reply_to,
+            references,
             from_addr,
             subject,
         },
@@ -252,6 +285,42 @@ pub fn forward_body(intro: &str, message: &InboundMessage) -> String {
     )
 }
 
+pub fn automated_reply_body(body: &str) -> String {
+    if body.contains(AUTOMATED_REPLY_NOTICE) {
+        return body.to_string();
+    }
+    let trimmed = body.trim_end();
+    format!("{trimmed}\n\n--\n{AUTOMATED_REPLY_NOTICE}")
+}
+
+pub fn reply_references(metadata: &MessageMetadata) -> Vec<String> {
+    let mut references = metadata.references.clone();
+    if let Some(message_id) = &metadata.message_id {
+        if !references.iter().any(|reference| reference == message_id) {
+            references.push(message_id.clone());
+        }
+    }
+    references
+}
+
+fn first_message_id(value: &str) -> Option<String> {
+    message_ids(value).into_iter().next()
+}
+
+fn message_ids(value: &str) -> Vec<String> {
+    match mailparse::msgidparse(value) {
+        Ok(ids) => ids.iter().map(|id| format!("<{id}>")).collect::<Vec<_>>(),
+        Err(_) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                Vec::new()
+            } else {
+                vec![trimmed.to_string()]
+            }
+        }
+    }
+}
+
 fn extract_plain_text(parsed: &mailparse::ParsedMail<'_>) -> Result<String, MailError> {
     if parsed.ctype.mimetype.eq_ignore_ascii_case("text/plain") {
         return parsed
@@ -307,6 +376,8 @@ mod tests {
                     uid_validity: 9,
                     uid: 42,
                     message_id: Some("<m1@example.com>".to_string()),
+                    in_reply_to: None,
+                    references: vec![],
                     from_addr: "sender@example.com".to_string(),
                     subject: "Question".to_string(),
                 },
@@ -344,6 +415,9 @@ mod tests {
             subject: "Re: Question".to_string(),
             body: "Answer".to_string(),
             reason: "test".to_string(),
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
         };
 
         let fetched = transport.fetch_unseen(&mailbox, 3).await.unwrap();
@@ -364,6 +438,8 @@ mod tests {
             uid_validity: 7,
             uid: 42,
             message_id: None,
+            in_reply_to: None,
+            references: vec![],
             from_addr: "a@example.com".to_string(),
             subject: "Hello".to_string(),
         };
@@ -385,6 +461,9 @@ mod tests {
             subject: "".to_string(),
             body: "".to_string(),
             reason: "test".to_string(),
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
         };
         let errors = validate_outbound_action(&action).unwrap_err();
         assert_eq!(errors.len(), 3);
@@ -398,6 +477,9 @@ mod tests {
             subject: "".to_string(),
             body: "".to_string(),
             reason: "nothing to do".to_string(),
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
         };
         let errors = validate_outbound_action(&action).unwrap_err();
         assert_eq!(errors[0].field, "recipients");
@@ -411,6 +493,9 @@ mod tests {
             subject: "Re: Hello".to_string(),
             body: "Thanks".to_string(),
             reason: "known answer".to_string(),
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
         };
         assert!(validate_outbound_action(&reply).is_ok());
 
@@ -420,6 +505,9 @@ mod tests {
             subject: "Review".to_string(),
             body: "Please review".to_string(),
             reason: "needs human review".to_string(),
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
         };
         assert!(validate_outbound_action(&forward).is_ok());
 
@@ -429,6 +517,9 @@ mod tests {
             subject: "".to_string(),
             body: "".to_string(),
             reason: "nothing safe to do".to_string(),
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
         };
         assert!(validate_outbound_action(&noop).is_ok());
     }
@@ -449,6 +540,70 @@ mod tests {
     }
 
     #[test]
+    fn parses_thread_headers_and_derives_thread_id() {
+        let raw = b"From: Sender <sender@example.com>\r\nSubject: Follow up\r\nMessage-ID: <m2@example.com>\r\nIn-Reply-To: <m1@example.com>\r\nReferences: <root@example.com> <m1@example.com>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nFollow up";
+        let message = parse_inbound_message("support", 9, 11, raw).unwrap();
+
+        assert_eq!(
+            message.metadata.message_id,
+            Some("<m2@example.com>".to_string())
+        );
+        assert_eq!(
+            message.metadata.in_reply_to,
+            Some("<m1@example.com>".to_string())
+        );
+        assert_eq!(
+            message.metadata.references,
+            vec![
+                "<root@example.com>".to_string(),
+                "<m1@example.com>".to_string()
+            ]
+        );
+        assert_eq!(message.metadata.thread_id(), "<root@example.com>");
+    }
+
+    #[test]
+    fn reply_references_append_inbound_message_id_once() {
+        let mut metadata = MessageMetadata {
+            mailbox_id: "support".to_string(),
+            uid_validity: 7,
+            uid: 42,
+            message_id: Some("<m2@example.com>".to_string()),
+            in_reply_to: Some("<m1@example.com>".to_string()),
+            references: vec!["<root@example.com>".to_string()],
+            from_addr: "a@example.com".to_string(),
+            subject: "Hello".to_string(),
+        };
+        assert_eq!(
+            reply_references(&metadata),
+            vec![
+                "<root@example.com>".to_string(),
+                "<m2@example.com>".to_string()
+            ]
+        );
+
+        metadata.references.push("<m2@example.com>".to_string());
+        assert_eq!(
+            reply_references(&metadata),
+            vec![
+                "<root@example.com>".to_string(),
+                "<m2@example.com>".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn automated_reply_body_appends_escalation_notice_once() {
+        let body = automated_reply_body("Answer");
+
+        assert_eq!(
+            body,
+            "Answer\n\n--\nThis is an automated email reply from ai-memmail. If this needs to be escalated to a human, reply with: escalation to human"
+        );
+        assert_eq!(automated_reply_body(&body), body);
+    }
+
+    #[test]
     fn parses_text_part_from_multipart_message() {
         let raw = b"From: sender@example.com\r\nSubject: Multipart\r\nContent-Type: multipart/alternative; boundary=abc\r\n\r\n--abc\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nPlain body\r\n--abc\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>HTML body</p>\r\n--abc--";
         let message = parse_inbound_message("support", 1, 2, raw).unwrap();
@@ -463,6 +618,8 @@ mod tests {
                 uid_validity: 1,
                 uid: 2,
                 message_id: Some("<m1@example.com>".to_string()),
+                in_reply_to: None,
+                references: vec![],
                 from_addr: "person@example.com".to_string(),
                 subject: "Question".to_string(),
             },
@@ -484,6 +641,9 @@ mod tests {
             subject: "".to_string(),
             body: "".to_string(),
             reason: "invalid".to_string(),
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
         };
         let error = crate::mail_external::send_blocking(&smtp, &action).unwrap_err();
         assert!(error.to_string().contains("recipients"));

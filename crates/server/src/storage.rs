@@ -35,6 +35,8 @@ pub enum StorageError {
 }
 
 pub const INIT_SQL: &str = include_str!("../migrations/001_init.sql");
+pub const HISTORY_BODY_THREADING_SQL: &str =
+    include_str!("../migrations/002_history_body_threading.sql");
 pub(crate) const MIGRATION_LOCK_ID: i64 = 4_971_774_501_001;
 pub(crate) const SCHEMA_MIGRATIONS_SQL: &str = "
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -44,15 +46,23 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ";
-pub(crate) const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "001_init",
-    sql: INIT_SQL,
-}];
+pub(crate) const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "001_init",
+        sql: INIT_SQL,
+    },
+    Migration {
+        version: 2,
+        name: "002_history_body_threading",
+        sql: HISTORY_BODY_THREADING_SQL,
+    },
+];
 pub const PROCESSING_STATUS_PROCESSING: &str = "processing";
 pub const PROCESSING_STATUS_RETRYABLE_FAILED: &str = "retryable_failed";
 pub const PROCESSING_STATUS_SEND_FAILED: &str = "send_failed";
 pub const PROCESSING_STALE_AFTER_MINUTES: i32 = 15;
+pub const INBOUND_BODY_STORAGE_MAX_CHARS: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessingClaim {
@@ -165,6 +175,7 @@ pub struct StoredOutboundAction {
     pub body: Option<String>,
     pub body_redacted: bool,
     pub reason: String,
+    pub message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,9 +190,14 @@ pub struct ProcessedEmail {
     pub mailbox_id: String,
     pub uid_validity: u64,
     pub uid: u64,
+    pub thread_id: String,
     pub message_id: Option<String>,
+    pub in_reply_to: Option<String>,
+    pub references: Vec<String>,
     pub from_addr: String,
     pub subject: String,
+    pub inbound_body: Option<String>,
+    pub inbound_body_truncated: bool,
     pub status: String,
     pub safety_category: Option<String>,
     pub safety_reason: Option<String>,
@@ -192,6 +208,7 @@ pub struct ProcessedEmail {
     pub outbound_subject: Option<String>,
     pub outbound_body: Option<String>,
     pub outbound_body_redacted: bool,
+    pub outbound_message_id: Option<String>,
     pub outbound_reason: Option<String>,
     pub outbound_review_status: Option<String>,
     pub outbound_review_reason: Option<String>,
@@ -384,6 +401,7 @@ impl ProcessingStore for MemoryProcessingStore {
                     body: body.map(ToString::to_string),
                     body_redacted,
                     reason: action.reason.clone(),
+                    message_id: action.message_id.clone(),
                 },
             );
         Ok(())
@@ -473,6 +491,19 @@ pub(crate) fn outbound_body_for_storage(action: &OutboundAction) -> (Option<&str
     }
 }
 
+pub(crate) fn inbound_body_for_storage(message: &InboundMessage) -> (String, bool) {
+    let mut output = String::new();
+    let mut truncated = false;
+    for (index, character) in message.plain_text.chars().enumerate() {
+        if index >= INBOUND_BODY_STORAGE_MAX_CHARS {
+            truncated = true;
+            break;
+        }
+        output.push(character);
+    }
+    (output, truncated)
+}
+
 pub(crate) fn empty_string_as_none(value: &str) -> Option<&str> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -545,6 +576,9 @@ mod tests {
         assert!(INIT_SQL.contains("CREATE TABLE IF NOT EXISTS banned_senders"));
         assert!(INIT_SQL.contains("ADD COLUMN IF NOT EXISTS outbound_body"));
         assert!(INIT_SQL.contains("ADD COLUMN IF NOT EXISTS agent_safety_notes"));
+        assert!(HISTORY_BODY_THREADING_SQL.contains("ADD COLUMN IF NOT EXISTS inbound_body"));
+        assert!(HISTORY_BODY_THREADING_SQL.contains("ADD COLUMN IF NOT EXISTS thread_id"));
+        assert!(HISTORY_BODY_THREADING_SQL.contains("ADD COLUMN IF NOT EXISTS outbound_message_id"));
     }
 
     #[test]
@@ -555,6 +589,9 @@ mod tests {
         assert_eq!(MIGRATIONS[0].version, 1);
         assert_eq!(MIGRATIONS[0].name, "001_init");
         assert_eq!(MIGRATIONS[0].sql, INIT_SQL);
+        assert_eq!(MIGRATIONS[1].version, 2);
+        assert_eq!(MIGRATIONS[1].name, "002_history_body_threading");
+        assert_eq!(MIGRATIONS[1].sql, HISTORY_BODY_THREADING_SQL);
     }
 
     #[test]
@@ -690,6 +727,9 @@ mod tests {
             subject: "Re: Question".to_string(),
             body: "Answer".to_string(),
             reason: "known answer".to_string(),
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
         };
         assert_eq!(outbound_body_for_storage(&reply), (Some("Answer"), false));
 
@@ -699,8 +739,22 @@ mod tests {
             subject: "Fwd: Question".to_string(),
             body: "contains original inbound body".to_string(),
             reason: "human review".to_string(),
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
         };
         assert_eq!(outbound_body_for_storage(&forward), (None, true));
+    }
+
+    #[test]
+    fn inbound_body_storage_caps_large_message_bodies() {
+        let mut message = message(7);
+        message.plain_text = "a".repeat(INBOUND_BODY_STORAGE_MAX_CHARS + 10);
+
+        let (body, truncated) = inbound_body_for_storage(&message);
+
+        assert_eq!(body.len(), INBOUND_BODY_STORAGE_MAX_CHARS);
+        assert!(truncated);
     }
 
     #[test]
@@ -831,6 +885,9 @@ mod tests {
             subject: "Re: Question".to_string(),
             body: "Answer".to_string(),
             reason: "known answer".to_string(),
+            message_id: Some("<reply@example.com>".to_string()),
+            in_reply_to: Some("<inbound@example.com>".to_string()),
+            references: vec!["<root@example.com>".to_string()],
         };
         let decision = AgentDecision {
             action: action.clone(),
@@ -859,7 +916,8 @@ mod tests {
                 subject: "Re: Question".to_string(),
                 body: Some("Answer".to_string()),
                 body_redacted: false,
-                reason: "known answer".to_string()
+                reason: "known answer".to_string(),
+                message_id: Some("<reply@example.com>".to_string())
             })
         );
         assert_eq!(
@@ -878,6 +936,8 @@ mod tests {
                 uid_validity: 1,
                 uid,
                 message_id: Some(format!("<{uid}@example.com>")),
+                in_reply_to: None,
+                references: vec![],
                 from_addr: "person@example.com".to_string(),
                 subject: "Question".to_string(),
             },

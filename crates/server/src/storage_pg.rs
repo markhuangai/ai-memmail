@@ -6,13 +6,13 @@ use crate::logging::{ActionEvent, ActionLogger};
 use crate::mail::{DedupeKey, InboundMessage, OutboundAction, OutboundActionKind};
 use crate::safety::SafetyCategory;
 use crate::storage::{
-    empty_string_as_none, log_level_value, migration_checksum, outbound_action_value,
-    outbound_body_for_storage, parse_run_id, processing_claim_for_existing_status,
-    processing_status_can_reclaim, safety_category_value, validate_applied_migration,
-    AppliedMigration, Migration, ProcessedEmail, ProcessedEmailLog, ProcessingClaim,
-    ProcessingStore, StorageError, MIGRATIONS, MIGRATION_LOCK_ID, PROCESSING_STALE_AFTER_MINUTES,
-    PROCESSING_STATUS_PROCESSING, PROCESSING_STATUS_RETRYABLE_FAILED,
-    PROCESSING_STATUS_SEND_FAILED, SCHEMA_MIGRATIONS_SQL,
+    empty_string_as_none, inbound_body_for_storage, log_level_value, migration_checksum,
+    outbound_action_value, outbound_body_for_storage, parse_run_id,
+    processing_claim_for_existing_status, processing_status_can_reclaim, safety_category_value,
+    validate_applied_migration, AppliedMigration, Migration, ProcessedEmail, ProcessedEmailLog,
+    ProcessingClaim, ProcessingStore, StorageError, MIGRATIONS, MIGRATION_LOCK_ID,
+    PROCESSING_STALE_AFTER_MINUTES, PROCESSING_STATUS_PROCESSING,
+    PROCESSING_STATUS_RETRYABLE_FAILED, PROCESSING_STATUS_SEND_FAILED, SCHEMA_MIGRATIONS_SQL,
 };
 
 #[derive(Debug)]
@@ -155,10 +155,12 @@ impl PgStore {
         let rows = self
             .client
             .query(
-                "SELECT run_id::text, mailbox_id, uid_validity, uid, message_id, from_addr,
-                    subject, status, safety_category, safety_reason, agent_action,
-                    agent_safety_notes, outbound_action, outbound_recipients, outbound_subject,
-                    outbound_body, outbound_body_redacted, outbound_reason,
+                "SELECT run_id::text, mailbox_id, uid_validity, uid,
+                    COALESCE(thread_id, message_id, mailbox_id || ':' || uid_validity::text || ':' || uid::text),
+                    message_id, in_reply_to, message_references, from_addr, subject,
+                    inbound_body, inbound_body_truncated, status, safety_category, safety_reason,
+                    agent_action, agent_safety_notes, outbound_action, outbound_recipients, outbound_subject,
+                    outbound_body, outbound_body_redacted, outbound_message_id, outbound_reason,
                     outbound_review_status, outbound_review_reason, created_at::text,
                     updated_at::text
                 FROM processing_runs
@@ -181,24 +183,30 @@ impl PgStore {
                 mailbox_id,
                 uid_validity: uid_validity as u64,
                 uid: uid as u64,
-                message_id: row.get(4),
-                from_addr: row.get(5),
-                subject: row.get(6),
-                status: row.get(7),
-                safety_category: row.get(8),
-                safety_reason: row.get(9),
-                agent_action: row.get(10),
-                agent_safety_notes: row.get(11),
-                outbound_action: row.get(12),
-                outbound_recipients: row.get(13),
-                outbound_subject: row.get(14),
-                outbound_body: row.get(15),
-                outbound_body_redacted: row.get(16),
-                outbound_reason: row.get(17),
-                outbound_review_status: row.get(18),
-                outbound_review_reason: row.get(19),
-                created_at: row.get(20),
-                updated_at: row.get(21),
+                thread_id: row.get(4),
+                message_id: row.get(5),
+                in_reply_to: row.get(6),
+                references: row.get(7),
+                from_addr: row.get(8),
+                subject: row.get(9),
+                inbound_body: row.get(10),
+                inbound_body_truncated: row.get(11),
+                status: row.get(12),
+                safety_category: row.get(13),
+                safety_reason: row.get(14),
+                agent_action: row.get(15),
+                agent_safety_notes: row.get(16),
+                outbound_action: row.get(17),
+                outbound_recipients: row.get(18),
+                outbound_subject: row.get(19),
+                outbound_body: row.get(20),
+                outbound_body_redacted: row.get(21),
+                outbound_message_id: row.get(22),
+                outbound_reason: row.get(23),
+                outbound_review_status: row.get(24),
+                outbound_review_reason: row.get(25),
+                created_at: row.get(26),
+                updated_at: row.get(27),
                 logs,
             });
         }
@@ -240,6 +248,37 @@ impl PgStore {
             })
             .collect())
     }
+
+    async fn thread_id_for_message(
+        &self,
+        message: &InboundMessage,
+    ) -> Result<String, StorageError> {
+        let mut related_ids = message.metadata.references.clone();
+        if let Some(in_reply_to) = &message.metadata.in_reply_to {
+            related_ids.push(in_reply_to.clone());
+        }
+        related_ids.sort();
+        related_ids.dedup();
+        if related_ids.is_empty() {
+            return Ok(message.metadata.thread_id());
+        }
+
+        let row = self
+            .client
+            .query_opt(
+                "SELECT thread_id
+                FROM processing_runs
+                WHERE message_id = ANY($1) OR outbound_message_id = ANY($1)
+                ORDER BY updated_at ASC
+                LIMIT 1",
+                &[&related_ids],
+            )
+            .await?;
+        Ok(row
+            .and_then(|row| row.get::<_, Option<String>>(0))
+            .filter(|thread_id| !thread_id.trim().is_empty())
+            .unwrap_or_else(|| message.metadata.thread_id()))
+    }
 }
 
 #[async_trait::async_trait]
@@ -251,12 +290,15 @@ impl ProcessingStore for PgStore {
     ) -> Result<ProcessingClaim, StorageError> {
         let run_id = parse_run_id(run_id)?;
         let key = message.metadata.dedupe_key();
+        let thread_id = self.thread_id_for_message(message).await?;
+        let (inbound_body, inbound_body_truncated) = inbound_body_for_storage(message);
         let inserted = self
             .client
             .query_opt(
                 "INSERT INTO processing_runs
-                (run_id, mailbox_id, uid_validity, uid, message_id, from_addr, subject, status)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                (run_id, mailbox_id, uid_validity, uid, thread_id, message_id, in_reply_to,
+                    message_references, from_addr, subject, inbound_body, inbound_body_truncated, status)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 ON CONFLICT (mailbox_id, uid_validity, uid) DO NOTHING
                 RETURNING status",
                 &[
@@ -264,9 +306,14 @@ impl ProcessingStore for PgStore {
                     &key.mailbox_id,
                     &(key.uid_validity as i64),
                     &(key.uid as i64),
+                    &thread_id,
                     &message.metadata.message_id,
+                    &message.metadata.in_reply_to,
+                    &message.metadata.references,
                     &message.metadata.from_addr,
                     &message.metadata.subject,
+                    &inbound_body,
+                    &inbound_body_truncated,
                     &PROCESSING_STATUS_PROCESSING,
                 ],
             )
@@ -297,17 +344,24 @@ impl ProcessingStore for PgStore {
                 .client
                 .query_opt(
                     "UPDATE processing_runs
-                    SET run_id = $1, status = $2, message_id = $3, from_addr = $4,
-                        subject = $5, updated_at = now()
-                    WHERE mailbox_id = $6 AND uid_validity = $7 AND uid = $8
-                        AND (status IN ($9, $10) OR (status = $2 AND updated_at < now() - make_interval(mins => $11::int)))
+                    SET run_id = $1, status = $2, thread_id = $3, message_id = $4,
+                        in_reply_to = $5, message_references = $6, from_addr = $7,
+                        subject = $8, inbound_body = $9, inbound_body_truncated = $10,
+                        updated_at = now()
+                    WHERE mailbox_id = $11 AND uid_validity = $12 AND uid = $13
+                        AND (status IN ($14, $15) OR (status = $2 AND updated_at < now() - make_interval(mins => $16::int)))
                     RETURNING status",
                     &[
                         &run_id,
                         &PROCESSING_STATUS_PROCESSING,
+                        &thread_id,
                         &message.metadata.message_id,
+                        &message.metadata.in_reply_to,
+                        &message.metadata.references,
                         &message.metadata.from_addr,
                         &message.metadata.subject,
+                        &inbound_body,
+                        &inbound_body_truncated,
                         &key.mailbox_id,
                         &(key.uid_validity as i64),
                         &(key.uid as i64),
@@ -405,15 +459,17 @@ impl ProcessingStore for PgStore {
             .execute(
                 "UPDATE processing_runs
                 SET outbound_action = $1, outbound_recipients = $2, outbound_subject = $3,
-                    outbound_body = $4, outbound_body_redacted = $5, outbound_reason = $6,
+                    outbound_body = $4, outbound_body_redacted = $5, outbound_message_id = $6,
+                    outbound_reason = $7,
                     updated_at = now()
-                WHERE mailbox_id = $7 AND uid_validity = $8 AND uid = $9",
+                WHERE mailbox_id = $8 AND uid_validity = $9 AND uid = $10",
                 &[
                     &outbound_action_value(&action.kind),
                     &action.recipients,
                     &empty_string_as_none(&action.subject),
                     &body,
                     &body_redacted,
+                    &action.message_id,
                     &empty_string_as_none(&action.reason),
                     &key.mailbox_id,
                     &(key.uid_validity as i64),
@@ -483,7 +539,7 @@ mod tests {
     use super::*;
     use crate::logging::LogLevel;
     use crate::mail::MessageMetadata;
-    use crate::storage::INIT_SQL;
+    use crate::storage::{HISTORY_BODY_THREADING_SQL, INIT_SQL};
 
     #[tokio::test]
     async fn pg_store_migrates_idempotently_and_tracks_checksum() {
@@ -503,10 +559,16 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].get::<_, i32>(0), 1);
         assert_eq!(rows[0].get::<_, String>(1), "001_init");
         assert_eq!(rows[0].get::<_, String>(2), migration_checksum(INIT_SQL));
+        assert_eq!(rows[1].get::<_, i32>(0), 2);
+        assert_eq!(rows[1].get::<_, String>(1), "002_history_body_threading");
+        assert_eq!(
+            rows[1].get::<_, String>(2),
+            migration_checksum(HISTORY_BODY_THREADING_SQL)
+        );
 
         pg.cleanup().await;
     }
@@ -582,6 +644,9 @@ mod tests {
             subject: "Re: Question".to_string(),
             body: "Answer".to_string(),
             reason: "known answer".to_string(),
+            message_id: Some("<reply-71@example.com>".to_string()),
+            in_reply_to: Some("<71@example.com>".to_string()),
+            references: vec!["<71@example.com>".to_string()],
         };
         let decision = AgentDecision {
             action: action.clone(),
@@ -663,9 +728,14 @@ mod tests {
         assert_eq!(email.mailbox_id, "support");
         assert_eq!(email.uid_validity, 1);
         assert_eq!(email.uid, 71);
+        assert_eq!(email.thread_id, "<71@example.com>");
         assert_eq!(email.message_id, Some("<71@example.com>".to_string()));
+        assert_eq!(email.in_reply_to, None);
+        assert_eq!(email.references, Vec::<String>::new());
         assert_eq!(email.from_addr, "person@example.com");
         assert_eq!(email.subject, "Question");
+        assert_eq!(email.inbound_body, Some("Body".to_string()));
+        assert!(!email.inbound_body_truncated);
         assert_eq!(email.status, "replied");
         assert_eq!(email.safety_category, Some("safe".to_string()));
         assert_eq!(email.safety_reason, Some("routine".to_string()));
@@ -676,6 +746,10 @@ mod tests {
         assert_eq!(email.outbound_subject, Some("Re: Question".to_string()));
         assert_eq!(email.outbound_body, Some("Answer".to_string()));
         assert!(!email.outbound_body_redacted);
+        assert_eq!(
+            email.outbound_message_id,
+            Some("<reply-71@example.com>".to_string())
+        );
         assert_eq!(email.outbound_reason, Some("known answer".to_string()));
         assert_eq!(email.outbound_review_status, Some("approved".to_string()));
         assert_eq!(email.outbound_review_reason, Some("looks safe".to_string()));
@@ -709,6 +783,9 @@ mod tests {
             subject: "Fwd: Question".to_string(),
             body: "contains the inbound body".to_string(),
             reason: "needs human review".to_string(),
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
         };
 
         pg.store.claim_message(&run_id, &message).await.unwrap();
@@ -752,6 +829,62 @@ mod tests {
         pg.cleanup().await;
     }
 
+    #[tokio::test]
+    async fn pg_store_links_reply_to_generated_outbound_message_id() {
+        let Some(pg) = TestPgStore::create().await else {
+            return;
+        };
+        pg.store.migrate().await.unwrap();
+
+        let original_run_id = uuid::Uuid::new_v4().to_string();
+        let original = message(73);
+        let original_key = original.metadata.dedupe_key();
+        let reply = OutboundAction {
+            kind: OutboundActionKind::Reply,
+            recipients: vec!["person@example.com".to_string()],
+            subject: "Re: Question".to_string(),
+            body: "Answer".to_string(),
+            reason: "known answer".to_string(),
+            message_id: Some("<auto-reply@example.com>".to_string()),
+            in_reply_to: original.metadata.message_id.clone(),
+            references: vec![original.metadata.message_id.clone().unwrap()],
+        };
+        pg.store
+            .claim_message(&original_run_id, &original)
+            .await
+            .unwrap();
+        pg.store
+            .record_outbound_action(&original_key, &reply)
+            .await
+            .unwrap();
+
+        let mut follow_up = message(74);
+        follow_up.metadata.message_id = Some("<follow-up@example.com>".to_string());
+        follow_up.metadata.in_reply_to = Some("<auto-reply@example.com>".to_string());
+        follow_up.metadata.references = vec![];
+        pg.store
+            .claim_message(&uuid::Uuid::new_v4().to_string(), &follow_up)
+            .await
+            .unwrap();
+
+        let emails = pg.store.list_processed_emails(10).await.unwrap();
+        let original = emails
+            .iter()
+            .find(|email| email.uid == 73)
+            .expect("original row");
+        let follow_up = emails
+            .iter()
+            .find(|email| email.uid == 74)
+            .expect("follow-up row");
+        assert_eq!(follow_up.thread_id, original.thread_id);
+        assert_eq!(
+            follow_up.in_reply_to,
+            Some("<auto-reply@example.com>".to_string())
+        );
+
+        pg.cleanup().await;
+    }
+
     fn message(uid: u64) -> InboundMessage {
         InboundMessage {
             metadata: MessageMetadata {
@@ -759,6 +892,8 @@ mod tests {
                 uid_validity: 1,
                 uid,
                 message_id: Some(format!("<{uid}@example.com>")),
+                in_reply_to: None,
+                references: vec![],
                 from_addr: "person@example.com".to_string(),
                 subject: "Question".to_string(),
             },

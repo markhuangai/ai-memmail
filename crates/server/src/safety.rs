@@ -247,6 +247,8 @@ mod tests {
             uid_validity: 1,
             uid: 2,
             message_id: Some("<m@example.com>".to_string()),
+            in_reply_to: None,
+            references: vec![],
             from_addr: "user@example.com".to_string(),
             subject: "Boundary probe".to_string(),
         };

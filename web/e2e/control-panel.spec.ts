@@ -48,12 +48,13 @@ test("control panel login and mailbox edit", async ({ page }) => {
     expect(runId, "AI_MEMMAIL_LIVE_E2E_RUN_ID should be exported for live e2e").toBeTruthy();
     for (const subject of [
       `live-e2e known mcp ${runId}`,
+      `Re: live-e2e known mcp ${runId}`,
       `live-e2e human forward ${runId}`,
       `live-e2e quarantine ${runId}`,
       `live-e2e banned sender ${runId}`
     ]) {
       await expect(
-        page.getByRole("button", { name: new RegExp(escapeRegExp(subject)) })
+        page.getByRole("button").filter({ hasText: subject }).first()
       ).toBeVisible();
     }
     return;
