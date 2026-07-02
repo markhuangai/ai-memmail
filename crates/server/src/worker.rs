@@ -363,15 +363,16 @@ async fn process_message(
     };
     log_agent_decision(logger, run_id, &message, &decision, started.elapsed()).await;
     record_agent_decision_for_history(processing, logger, run_id, &message, &decision).await;
+    let outbound_decision = decision_with_forward_body(&message, &decision);
 
-    match &decision.action.kind {
+    match &outbound_decision.action.kind {
         OutboundActionKind::Noop => {
             record_outbound_action_for_history(
                 processing,
                 logger,
                 run_id,
                 &message,
-                &decision.action,
+                &outbound_decision.action,
             )
             .await;
             update_processing_status(
@@ -387,7 +388,14 @@ async fn process_message(
         }
         OutboundActionKind::Reply | OutboundActionKind::Forward => {
             let action = match reviewed_outbound_action(
-                config, mailbox, logger, run_id, decisions, processing, &message, &decision,
+                config,
+                mailbox,
+                logger,
+                run_id,
+                decisions,
+                processing,
+                &message,
+                &outbound_decision,
             )
             .await
             {
@@ -412,6 +420,24 @@ async fn process_message(
             .await;
         }
     }
+}
+
+fn decision_with_forward_body(message: &InboundMessage, decision: &AgentDecision) -> AgentDecision {
+    AgentDecision {
+        action: action_with_forward_body(message, &decision.action),
+        safety_notes: decision.safety_notes.clone(),
+    }
+}
+
+fn action_with_forward_body(message: &InboundMessage, action: &OutboundAction) -> OutboundAction {
+    if action.kind != OutboundActionKind::Forward {
+        return action.clone();
+    }
+
+    let mut action = action.clone();
+    let intro = action.body.trim().to_string();
+    action.body = forward_body(&intro, message);
+    action
 }
 
 async fn reviewed_outbound_action(
@@ -1183,6 +1209,7 @@ mod tests {
         fail_agent: bool,
         fail_review: bool,
         calls: Arc<Mutex<DecisionCallCounts>>,
+        reviewed_actions: Arc<Mutex<Vec<OutboundAction>>>,
     }
 
     #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -1195,6 +1222,13 @@ mod tests {
     impl FakeDecisionEngine {
         fn call_counts(&self) -> DecisionCallCounts {
             self.calls.lock().expect("decision calls lock").clone()
+        }
+
+        fn reviewed_actions(&self) -> Vec<OutboundAction> {
+            self.reviewed_actions
+                .lock()
+                .expect("reviewed actions lock")
+                .clone()
         }
     }
 
@@ -1234,12 +1268,16 @@ mod tests {
             _config: &AppConfig,
             _mailbox: &MailboxConfig,
             _message: &InboundMessage,
-            _decision: &AgentDecision,
+            decision: &AgentDecision,
         ) -> Result<OutboundReviewDecision, AiError> {
             self.calls
                 .lock()
                 .expect("decision calls lock")
                 .outbound_review += 1;
+            self.reviewed_actions
+                .lock()
+                .expect("reviewed actions lock")
+                .push(decision.action.clone());
             if self.fail_review {
                 return Err(AiError::Provider("review failed".to_string()));
             }
@@ -1353,6 +1391,7 @@ mod tests {
             fail_agent: false,
             fail_review: false,
             calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
+            reviewed_actions: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -1371,6 +1410,7 @@ mod tests {
             fail_agent: false,
             fail_review: false,
             calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
+            reviewed_actions: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -1389,6 +1429,7 @@ mod tests {
             fail_agent: false,
             fail_review: true,
             calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
+            reviewed_actions: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -1407,6 +1448,7 @@ mod tests {
             fail_agent: false,
             fail_review: false,
             calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
+            reviewed_actions: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -1425,6 +1467,7 @@ mod tests {
             fail_agent: true,
             fail_review: false,
             calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
+            reviewed_actions: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -1443,6 +1486,16 @@ mod tests {
             subject: "Re: Hello".to_string(),
             body: "Known answer".to_string(),
             reason: "memory supported answer".to_string(),
+        }
+    }
+
+    fn forward_action() -> OutboundAction {
+        OutboundAction {
+            kind: OutboundActionKind::Forward,
+            recipients: vec!["human@example.com".to_string()],
+            subject: "Fwd: cited agent memory".to_string(),
+            body: "Josh asked whether a short meeting would be useful.".to_string(),
+            reason: "requires Mark's judgment".to_string(),
         }
     }
 
@@ -1526,6 +1579,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_forward_includes_original_message_body_before_send() {
+        let logger = crate::logging::MemoryLogger::default();
+        let mail = FakeMail::new(vec![inbound(
+            62,
+            "Josh <joshua.kappler@gmail.com>",
+            "cited agent memory",
+            "Original memo-engine meeting request.",
+        )]);
+        let decisions = fake_decisions(safe_scan(), forward_action());
+
+        run_once_with(&config(), &logger, "run-test", &mail, &decisions).await;
+
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].kind, OutboundActionKind::Forward);
+        assert_eq!(
+            sent[0].body,
+            "Josh asked whether a short meeting would be useful.\n\n---------- Forwarded message ---------\nFrom: Josh <joshua.kappler@gmail.com>\nSubject: cited agent memory\nMessage-ID: <62@example.com>\nUID: 1:62\n\nOriginal memo-engine meeting request."
+        );
+        assert_eq!(mail.seen()[0].uid, 62);
+    }
+
+    #[tokio::test]
     async fn messages_in_one_poll_get_distinct_run_ids() {
         let logger = crate::logging::MemoryLogger::default();
         let mail = FakeMail::new(vec![
@@ -1569,6 +1645,31 @@ mod tests {
             .events()
             .iter()
             .any(|event| event.action == "outbound_review" && event.status == "approved"));
+    }
+
+    #[tokio::test]
+    async fn outbound_review_receives_composed_forward_body() {
+        let mut config = config();
+        config.ai.review.enabled = true;
+        let logger = crate::logging::MemoryLogger::default();
+        let mail = FakeMail::new(vec![inbound(
+            63,
+            "Josh <joshua.kappler@gmail.com>",
+            "cited agent memory",
+            "Original memo-engine meeting request.",
+        )]);
+        let decisions = fake_decisions(safe_scan(), forward_action());
+
+        run_once_with(&config, &logger, "run-test", &mail, &decisions).await;
+
+        let reviewed = decisions.reviewed_actions();
+        assert_eq!(reviewed.len(), 1);
+        assert_eq!(reviewed[0].kind, OutboundActionKind::Forward);
+        assert_eq!(
+            reviewed[0].body,
+            "Josh asked whether a short meeting would be useful.\n\n---------- Forwarded message ---------\nFrom: Josh <joshua.kappler@gmail.com>\nSubject: cited agent memory\nMessage-ID: <63@example.com>\nUID: 1:63\n\nOriginal memo-engine meeting request."
+        );
+        assert_eq!(mail.sent()[0].body, reviewed[0].body);
     }
 
     #[tokio::test]

@@ -118,15 +118,9 @@ async fn run_human_forward(
     run_id: &str,
 ) -> String {
     let subject = format!("live-e2e human forward {run_id}");
-    send_probe(
-        transport,
-        monitored,
-        forward,
-        &subject,
-        "Please forward this to a human for manual review. Do not answer directly.",
-    )
-    .await;
-    wait_for_forward_mail(
+    let probe_body = "Please forward this to a human for manual review. Do not answer directly.";
+    send_probe(transport, monitored, forward, &subject, probe_body).await;
+    let message = wait_for_forward_mail(
         config,
         forward,
         transport,
@@ -139,6 +133,7 @@ async fn run_human_forward(
         },
     )
     .await;
+    assert_forward_contains_original(&message, &subject, probe_body);
     subject
 }
 
@@ -151,15 +146,9 @@ async fn run_quarantine_forward(
     run_id: &str,
 ) -> String {
     let subject = format!("live-e2e quarantine {run_id}");
-    send_probe(
-        transport,
-        monitored,
-        forward,
-        &subject,
-        "Live E2E quarantine probe: this message intentionally contains the keyword jailbreak so the deterministic safety precheck routes it to human review.",
-    )
-    .await;
-    wait_for_forward_mail(
+    let probe_body = "Live E2E quarantine probe: this message intentionally contains the keyword jailbreak so the deterministic safety precheck routes it to human review.";
+    send_probe(transport, monitored, forward, &subject, probe_body).await;
+    let message = wait_for_forward_mail(
         config,
         forward,
         transport,
@@ -175,6 +164,7 @@ async fn run_quarantine_forward(
         },
     )
     .await;
+    assert_forward_contains_original(&message, &subject, probe_body);
     subject
 }
 
@@ -193,15 +183,10 @@ async fn run_banned_sender_forward(
         reason: "live e2e banned sender route".to_string(),
     });
     let subject = format!("live-e2e banned sender {run_id}");
-    send_probe(
-        transport,
-        monitored,
-        forward,
-        &subject,
-        "This routine message should be forwarded because the test config bans the sender.",
-    )
-    .await;
-    wait_for_forward_mail(
+    let probe_body =
+        "This routine message should be forwarded because the test config bans the sender.";
+    send_probe(transport, monitored, forward, &subject, probe_body).await;
+    let message = wait_for_forward_mail(
         &config,
         forward,
         transport,
@@ -219,7 +204,25 @@ async fn run_banned_sender_forward(
         },
     )
     .await;
+    assert_forward_contains_original(&message, &subject, probe_body);
     subject
+}
+
+fn assert_forward_contains_original(message: &InboundMessage, subject: &str, original_body: &str) {
+    assert!(
+        message
+            .plain_text
+            .contains("---------- Forwarded message ---------"),
+        "forwarded body should include the forwarded-message marker; subject={subject}"
+    );
+    assert!(
+        message.plain_text.contains(&format!("Subject: {subject}")),
+        "forwarded body should include original subject metadata; subject={subject}"
+    );
+    assert!(
+        message.plain_text.contains(original_body),
+        "forwarded body should include the original email body; subject={subject}"
+    );
 }
 
 async fn send_probe(

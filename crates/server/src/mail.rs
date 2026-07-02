@@ -241,9 +241,14 @@ pub fn validate_outbound_action(action: &OutboundAction) -> Result<(), Vec<Valid
 }
 
 pub fn forward_body(intro: &str, message: &InboundMessage) -> String {
+    let message_id = message.metadata.message_id.as_deref().unwrap_or("(none)");
     format!(
-        "{intro}\n\n--- Original message metadata ---\nFrom: {}\nSubject: {}\nUID: {}\n\n--- Original message text ---\n{}",
-        message.metadata.from_addr, message.metadata.subject, message.metadata.uid, message.plain_text
+        "{intro}\n\n---------- Forwarded message ---------\nFrom: {}\nSubject: {}\nMessage-ID: {message_id}\nUID: {}:{}\n\n{}",
+        message.metadata.from_addr,
+        message.metadata.subject,
+        message.metadata.uid_validity,
+        message.metadata.uid,
+        message.plain_text
     )
 }
 
@@ -457,17 +462,17 @@ mod tests {
                 mailbox_id: "support".to_string(),
                 uid_validity: 1,
                 uid: 2,
-                message_id: None,
+                message_id: Some("<m1@example.com>".to_string()),
                 from_addr: "person@example.com".to_string(),
                 subject: "Question".to_string(),
             },
             plain_text: "Original text".to_string(),
         };
         let body = forward_body("Intro", &message);
-        assert!(body.contains("Intro"));
-        assert!(body.contains("person@example.com"));
-        assert!(body.contains("Question"));
-        assert!(body.contains("Original text"));
+        assert_eq!(
+            body,
+            "Intro\n\n---------- Forwarded message ---------\nFrom: person@example.com\nSubject: Question\nMessage-ID: <m1@example.com>\nUID: 1:2\n\nOriginal text"
+        );
     }
 
     #[test]
