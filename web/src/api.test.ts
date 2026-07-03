@@ -1,6 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, loadConfig, loadMessages, loadStatus, login, saveConfig } from "./api";
-import { sampleConfig, sampleMessages } from "./fixtures";
+import {
+  ApiError,
+  createEmailCategory,
+  createEmailRule,
+  createEmailTopic,
+  deleteEmailRule,
+  loadConfig,
+  loadEmailClassification,
+  loadMessages,
+  loadStatus,
+  login,
+  saveConfig,
+  updateEmailRule
+} from "./api";
+import { sampleClassification, sampleConfig, sampleMessages } from "./fixtures";
 
 function jsonResponse(body: unknown, init?: ResponseInit) {
   return new Response(JSON.stringify(body), {
@@ -58,6 +71,87 @@ describe("api", () => {
   it("defaults missing processed message payloads to an empty list", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({}));
     await expect(loadMessages(fetchImpl as typeof fetch)).resolves.toEqual([]);
+  });
+
+  it("unwraps email classification payloads", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ classification: sampleClassification })
+    );
+    await expect(loadEmailClassification(fetchImpl as typeof fetch)).resolves.toEqual(
+      sampleClassification
+    );
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/api/email-classification",
+      expect.objectContaining({ credentials: "same-origin" })
+    );
+  });
+
+  it("creates email categories and topics", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ classification: sampleClassification })
+    );
+
+    await createEmailCategory("partner", "Partner outreach", fetchImpl as typeof fetch);
+    await createEmailTopic("dense-mem", "Dense-Mem", fetchImpl as typeof fetch);
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      "/api/email-categories",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ name: "partner", description: "Partner outreach" })
+      })
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      "/api/email-topics",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ name: "dense-mem", description: "Dense-Mem" })
+      })
+    );
+  });
+
+  it("creates updates and deletes email rules", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ classification: sampleClassification })
+    );
+    const rule = {
+      mailbox_id: "support",
+      name: "Decline agency",
+      category_id: 1,
+      topic_ids: [3],
+      action: "reply" as const,
+      reply_goal: "Decline politely.",
+      enabled: true,
+      priority: 50
+    };
+
+    await createEmailRule(rule, fetchImpl as typeof fetch);
+    await updateEmailRule(42, { ...rule, enabled: false }, fetchImpl as typeof fetch);
+    await deleteEmailRule(42, fetchImpl as typeof fetch);
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      "/api/email-rules",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(rule)
+      })
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      "/api/email-rules/42",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ ...rule, enabled: false })
+      })
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      3,
+      "/api/email-rules/42",
+      expect.objectContaining({ method: "DELETE" })
+    );
   });
 
   it("saves config payloads", async () => {

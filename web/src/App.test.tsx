@@ -314,6 +314,91 @@ describe("App", () => {
     expect(await screen.findByText("Decline PR agency outreach")).toBeInTheDocument();
   });
 
+  it("manages labels and existing email rules from the rules tab", async () => {
+    const categoryBodies: string[] = [];
+    const topicBodies: string[] = [];
+    const updateBodies: string[] = [];
+    const deletedRules: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((path, init) => {
+      if (path === "/api/status") {
+        return jsonResponse({
+          service: "ai-memmail",
+          authenticated: true,
+          uptime_seconds: 3,
+          enabled_mailboxes: 1
+        });
+      }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
+      }
+      if (path === "/api/email-categories" && init?.method === "POST") {
+        categoryBodies.push(String(init.body));
+        return jsonResponse({ classification: sampleClassification });
+      }
+      if (path === "/api/email-topics" && init?.method === "POST") {
+        topicBodies.push(String(init.body));
+        return jsonResponse({ classification: sampleClassification });
+      }
+      if (path === "/api/email-rules/1" && init?.method === "PUT") {
+        updateBodies.push(String(init.body));
+        return jsonResponse({
+          classification: {
+            ...sampleClassification,
+            rules: [
+              {
+                ...sampleClassification.rules[0],
+                name: "Updated marketing decline",
+                topic_ids: [1],
+                topics: ["dense_mem"]
+              }
+            ]
+          }
+        });
+      }
+      if (path === "/api/email-rules/1" && init?.method === "DELETE") {
+        deletedRules.push(path);
+        return jsonResponse({ classification: { ...sampleClassification, rules: [] } });
+      }
+      return jsonResponse({ config: sampleConfig });
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^rules$/i }));
+    fireEvent.change(screen.getAllByLabelText(/^name$/i)[0], {
+      target: { value: "partner" }
+    });
+    fireEvent.change(screen.getAllByLabelText(/description/i)[0], {
+      target: { value: "Partner outreach" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add category/i }));
+    await waitFor(() => expect(categoryBodies).toHaveLength(1));
+
+    fireEvent.change(screen.getAllByLabelText(/^name$/i)[1], {
+      target: { value: "project updates" }
+    });
+    fireEvent.change(screen.getAllByLabelText(/description/i)[1], {
+      target: { value: "Project update topic" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add topic/i }));
+    await waitFor(() => expect(topicBodies).toHaveLength(1));
+
+    fireEvent.change(screen.getAllByLabelText(/rule name/i)[1], {
+      target: { value: "Updated marketing decline" }
+    });
+    fireEvent.click(screen.getAllByLabelText("dense_mem")[1]);
+    fireEvent.click(screen.getByRole("button", { name: /save rule/i }));
+    await waitFor(() => expect(updateBodies).toHaveLength(1));
+    expect(JSON.parse(updateBodies[0])).toMatchObject({
+      name: "Updated marketing decline",
+      topic_ids: [1]
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /delete/i }));
+    await waitFor(() => expect(deletedRules).toEqual(["/api/email-rules/1"]));
+    expect(await screen.findByText("No rules configured.")).toBeInTheDocument();
+  });
+
   it("edits mailbox polling and saves config", async () => {
     const savedBodies: string[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation((path, init) => {
