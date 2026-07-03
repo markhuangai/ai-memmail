@@ -16,7 +16,10 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: cargo fmt --all --check
       - run: cargo test --workspace
-      - run: cargo llvm-cov --workspace --lib --fail-under-lines 90 --ignore-filename-regex 'rustc-.*library|src/main.rs|src/ai_external.rs|src/mail_external.rs|src/storage_pg.rs|src/web.rs|src/worker.rs' -- --skip storage_pg::tests::
+      - run: >-
+          cargo llvm-cov --workspace --lib --fail-under-lines 90
+          --ignore-filename-regex 'rustc-.*library|src/main.rs|src/ai_external.rs|src/mail_external.rs|src/storage_pg.rs|src/web.rs|src/worker.rs'
+          -- --skip storage_pg::tests::
 
   frontend:
     runs-on: docker-runner
