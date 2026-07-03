@@ -12,18 +12,20 @@ The repository now contains the v1 application foundation:
 - Rust workspace with an Axum control-panel API, IMAP polling worker,
   OpenAI-compatible safety/agent decisions, Dense-Mem MCP recall over HTTP,
   SMTP reply/forward sending, typed YAML configuration, prompt-file loading,
-  safety policy primitives, structured action logging, and PostgreSQL
-  migrations.
+  safety policy primitives, email classification/rule policies, structured
+  action logging, and PostgreSQL migrations.
 - React TypeScript control panel for login, mailbox settings, MCP server
-  settings, safety lists, AI prompt paths, and logging settings.
+  settings, safety lists, classification rules, AI prompt paths, and logging
+  settings.
 - Source-built Docker runtime that runs the web API and worker side by side in
   one app process.
 - Backend and frontend unit coverage gates, plus Playwright E2E coverage for the
   control panel.
 
 PostgreSQL persistence tracks processing run state, processed-message history,
-structured decisions, outbound actions, and action logs. The worker still relies
-on IMAP `UNSEEN` plus `Seen` marking for source-mail delivery state.
+structured decisions, classification results, rule matches, outbound actions,
+and action logs. The worker still relies on IMAP `UNSEEN` plus `Seen` marking
+for source-mail delivery state.
 
 ## Local Setup
 
@@ -43,7 +45,11 @@ docker compose up --build
 The control panel is served at `http://127.0.0.1:18080` by default. PostgreSQL
 is exposed on `127.0.0.1:15432` by default to avoid conflicts with a host
 Postgres install. To change either host port, edit the port forwarding in
-`docker-compose.yml`.
+`docker-compose.yml` or set `AI_MEMMAIL_HTTP_PORT`, for example:
+
+```bash
+AI_MEMMAIL_HTTP_PORT=18081 docker compose up --build
+```
 
 For live development with real credentials, edit the ignored
 `config/config.yaml` file directly, then run:
@@ -57,6 +63,13 @@ local testing. Override it when needed:
 
 ```bash
 CONTROL_PANEL_KEY="replace-with-local-key" scripts/live-e2e.sh
+```
+
+If another local service already uses `18080`, run the live E2E on another
+control-panel port:
+
+```bash
+AI_MEMMAIL_HTTP_PORT=18081 scripts/live-e2e.sh
 ```
 
 The live mail test loads `config/config.yaml`, starts PostgreSQL, sends one
@@ -76,10 +89,12 @@ IMAP inbox
   -> sender ban/review checks run
   -> safety scan runs with no MCP tools and no send capability
       -> flagged: quarantine, add sender to review, forward to human reviewer
-      -> safe: run mailbox agent with allowed MCP tools
+      -> safe: classify category/topic labels
+          -> matching rule: draft the configured action goal
+          -> no rule: run mailbox agent with allowed MCP tools
   -> SMTP reply or forward
   -> action logs go to stdout and PostgreSQL
-  -> control panel shows status, safety queue, sender review, and logs
+  -> control panel shows history, body, thread, labels, rule match, and logs
 ```
 
 The production runtime uses one source-built image and starts both long-running
@@ -94,11 +109,13 @@ application uses a PostgreSQL advisory lock and records applied versions plus
 checksums in `schema_migrations`, so concurrent replicas serialize schema
 changes and detect edited historical migrations.
 
-The web API and worker share PostgreSQL. Raw inbound email bodies are not stored
-in PostgreSQL; metadata, processing decisions, safety results, outbound reply
-bodies, sender review state, banned senders, and action logs are persisted.
-Forward bodies are redacted before storage because they can include original
-inbound content. Reprocessing refetches source messages from IMAP.
+The web API and worker share PostgreSQL. Inbound plain-text bodies are stored in
+processed-message history up to a bounded size so the control panel can explain
+what was processed. Metadata, processing decisions, safety results,
+classification labels, rule matches, outbound reply bodies, sender review
+state, banned senders, and action logs are also persisted. Forward bodies are
+redacted before storage because they can include full original inbound content.
+Reprocessing refetches source messages from IMAP.
 
 ## Mail Flow
 
@@ -130,10 +147,25 @@ Processing order:
      `safety_forward_to` address
    - prefix the forwarded subject with a potential-jailbreak warning
    - include the scan reason in the forward body
-7. If safe, run the mailbox agent with only the mailbox's allowed MCP servers.
-8. Optionally run a second outbound AI review pass. It exists in v1 but is
+7. If safe, classify the email against active categories and topics. The AI sees
+   the configured taxonomy and may create a new label only when the existing
+   labels cannot honestly describe the email.
+8. Match enabled mailbox rules by category, then optional topics. A rule with no
+   topics matches any topic in its category. If a rule matches, the AI drafts
+   the configured action goal and the application controls recipients,
+   threading, and final action type.
+9. If no rule matches, run the mailbox agent with only the mailbox's allowed MCP
+   servers.
+10. Optionally run a second outbound AI review pass. It exists in v1 but is
    disabled by default.
-9. Send only if deterministic validation accepts the structured AI result.
+11. Send only if deterministic validation accepts the structured AI result.
+
+Default classification labels are seeded in PostgreSQL. The initial categories
+are `marketing_vendor`, `greeting`, `question`, `project_opportunity`, and
+`other`; initial topics include `dense_mem`, `ai_memmail`, `gitvibe`,
+`agentool`, `ai_memory`, and `general`. The worker/web API seeds one enabled
+per-mailbox rule that auto-declines `marketing_vendor` outreach. Operators can
+edit rules in the control panel without changing YAML or mail-server labels.
 
 ## Configuration
 
@@ -177,6 +209,8 @@ logging:
 prompts:
   root: "./prompts"
   safety_scan: "safety-scan.md"
+  email_classifier: "email-classifier.md"
+  rule_action: "rule-action.md"
 
 ai:
   protocol: openai
@@ -231,6 +265,8 @@ session cookies, and no CORS middleware.
 Implemented foundation views:
 
 - Overview
+- History
+- Rules
 - Mailboxes
 - MCP Servers
 - Safety

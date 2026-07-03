@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { sampleConfig, sampleMessages } from "../src/fixtures";
+import { sampleClassification, sampleConfig, sampleMessages } from "../src/fixtures";
 
 test("control panel login and mailbox edit", async ({ page }) => {
   if (process.env.E2E_LIVE !== "1") {
@@ -25,6 +25,9 @@ test("control panel login and mailbox edit", async ({ page }) => {
     await page.route("**/api/messages", async (route) => {
       await route.fulfill({ json: { messages: sampleMessages } });
     });
+    await page.route("**/api/email-classification", async (route) => {
+      await route.fulfill({ json: { classification: sampleClassification } });
+    });
   }
 
   await page.goto("/");
@@ -42,6 +45,9 @@ test("control panel login and mailbox edit", async ({ page }) => {
   await page.getByLabel("Poll seconds").fill("75");
   await page.getByRole("button", { name: "Safety" }).click();
   await expect(page.getByText("Banned Senders")).toBeVisible();
+  await page.getByRole("button", { name: "Rules" }).click();
+  await expect(page.getByText("Auto-decline marketing/vendor outreach")).toBeVisible();
+  await expect(page.getByText("category:marketing_vendor")).toBeVisible();
   await page.getByRole("button", { name: "History" }).click();
   if (process.env.E2E_LIVE === "1") {
     const runId = process.env.AI_MEMMAIL_LIVE_E2E_RUN_ID;

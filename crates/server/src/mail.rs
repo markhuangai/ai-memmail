@@ -303,6 +303,17 @@ pub fn reply_references(metadata: &MessageMetadata) -> Vec<String> {
     references
 }
 
+pub fn reply_recipient(from_addr: &str) -> String {
+    match mailparse::addrparse(from_addr) {
+        Ok(addresses) => addresses
+            .extract_single_info()
+            .map(|address| address.addr.trim().to_string())
+            .filter(|address| !address.is_empty())
+            .unwrap_or_else(|| from_addr.trim().to_string()),
+        Err(_) => from_addr.trim().to_string(),
+    }
+}
+
 fn first_message_id(value: &str) -> Option<String> {
     message_ids(value).into_iter().next()
 }
@@ -590,6 +601,15 @@ mod tests {
                 "<m2@example.com>".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn reply_recipient_extracts_address_from_display_header() {
+        assert_eq!(
+            reply_recipient("Josh <joshua@example.com>"),
+            "joshua@example.com"
+        );
+        assert_eq!(reply_recipient("plain@example.com"), "plain@example.com");
     }
 
     #[test]

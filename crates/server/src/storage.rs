@@ -5,6 +5,12 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::ai::AgentDecision;
+use crate::classification::{
+    default_categories, default_topics, normalize_label_name, EmailCategory, EmailClassification,
+    EmailRule, EmailRuleAction, EmailTaxonomy, EmailTopic, NewEmailRule,
+    ResolvedEmailClassification, DEFAULT_MARKETING_REPLY_GOAL,
+};
+use crate::config::AppConfig;
 use crate::logging::LogLevel;
 use crate::mail::{DedupeKey, InboundMessage, OutboundAction, OutboundActionKind};
 use crate::safety::SafetyCategory;
@@ -32,11 +38,19 @@ pub enum StorageError {
     },
     #[error("processing store lock poisoned")]
     LockPoisoned,
+    #[error("classification not found: {0}")]
+    ClassificationNotFound(String),
+    #[error("invalid classification policy: {0}")]
+    InvalidClassification(String),
 }
 
 pub const INIT_SQL: &str = include_str!("../migrations/001_init.sql");
 pub const HISTORY_BODY_THREADING_SQL: &str =
     include_str!("../migrations/002_history_body_threading.sql");
+pub const EMAIL_CLASSIFICATION_RULES_SQL: &str =
+    include_str!("../migrations/003_email_classification_rules.sql");
+pub const DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL: &str =
+    include_str!("../migrations/004_default_email_rule_seed_uniqueness.sql");
 pub(crate) const MIGRATION_LOCK_ID: i64 = 4_971_774_501_001;
 pub(crate) const SCHEMA_MIGRATIONS_SQL: &str = "
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -56,6 +70,16 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         version: 2,
         name: "002_history_body_threading",
         sql: HISTORY_BODY_THREADING_SQL,
+    },
+    Migration {
+        version: 3,
+        name: "003_email_classification_rules",
+        sql: EMAIL_CLASSIFICATION_RULES_SQL,
+    },
+    Migration {
+        version: 4,
+        name: "004_default_email_rule_seed_uniqueness",
+        sql: DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL,
     },
 ];
 pub const PROCESSING_STATUS_PROCESSING: &str = "processing";
@@ -137,6 +161,67 @@ pub trait ProcessingStore: Send + Sync {
     ) -> Result<(), StorageError> {
         Ok(())
     }
+
+    async fn ensure_default_classification_policy(
+        &self,
+        _config: &AppConfig,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn active_email_taxonomy(&self) -> Result<EmailTaxonomy, StorageError> {
+        Ok(memory_default_taxonomy())
+    }
+
+    async fn resolve_email_classification(
+        &self,
+        classification: &EmailClassification,
+    ) -> Result<ResolvedEmailClassification, StorageError> {
+        let taxonomy = memory_default_taxonomy();
+        let category = normalize_label_name(&classification.category);
+        let category = taxonomy
+            .categories
+            .into_iter()
+            .find(|candidate| candidate.name == category)
+            .unwrap_or_else(|| memory_category(0, "other", "Fallback category", "seed"));
+        let topics = if classification.topics.is_empty() {
+            vec!["general".to_string()]
+        } else {
+            classification
+                .topics
+                .iter()
+                .map(|topic| normalize_label_name(topic))
+                .collect::<Vec<_>>()
+        };
+        Ok(ResolvedEmailClassification {
+            category_id: category.id,
+            category: category.name,
+            topic_ids: vec![],
+            topics,
+            reason: classification.reason.clone(),
+            confidence: classification.confidence.min(100),
+        })
+    }
+
+    async fn find_matching_email_rule(
+        &self,
+        mailbox_id: &str,
+        classification: &ResolvedEmailClassification,
+    ) -> Result<Option<EmailRule>, StorageError> {
+        let _ = (mailbox_id, classification);
+        Ok(None)
+    }
+
+    async fn record_email_classification(
+        &self,
+        key: &DedupeKey,
+        classification: &ResolvedEmailClassification,
+        decision_source: &str,
+        matched_rule: Option<&EmailRule>,
+    ) -> Result<(), StorageError> {
+        let _ = (key, classification, decision_source, matched_rule);
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -147,6 +232,78 @@ pub struct MemoryProcessingStore {
     agent_decisions: Arc<Mutex<HashMap<DedupeKey, StoredAgentDecision>>>,
     outbound_actions: Arc<Mutex<HashMap<DedupeKey, StoredOutboundAction>>>,
     outbound_reviews: Arc<Mutex<HashMap<DedupeKey, StoredOutboundReview>>>,
+    classification: Arc<Mutex<MemoryClassificationState>>,
+}
+
+#[derive(Debug, Clone)]
+struct MemoryClassificationState {
+    categories: Vec<EmailCategory>,
+    topics: Vec<EmailTopic>,
+    rules: Vec<EmailRule>,
+    next_category_id: i64,
+    next_topic_id: i64,
+    next_rule_id: i64,
+    records: HashMap<DedupeKey, StoredEmailClassification>,
+}
+
+impl Default for MemoryClassificationState {
+    fn default() -> Self {
+        let categories = default_categories()
+            .into_iter()
+            .enumerate()
+            .map(|(index, (name, description))| {
+                memory_category((index + 1) as i64, name, description, "seed")
+            })
+            .collect::<Vec<_>>();
+        let topics = default_topics()
+            .into_iter()
+            .enumerate()
+            .map(|(index, (name, description))| {
+                memory_topic((index + 1) as i64, name, description, "seed")
+            })
+            .collect::<Vec<_>>();
+        Self {
+            next_category_id: categories.len() as i64 + 1,
+            next_topic_id: topics.len() as i64 + 1,
+            categories,
+            topics,
+            rules: vec![],
+            next_rule_id: 1,
+            records: HashMap::new(),
+        }
+    }
+}
+
+fn memory_category(id: i64, name: &str, description: &str, source: &str) -> EmailCategory {
+    EmailCategory {
+        id,
+        name: name.to_string(),
+        description: description.to_string(),
+        status: "active".to_string(),
+        source: source.to_string(),
+        created_at: "memory".to_string(),
+        updated_at: "memory".to_string(),
+    }
+}
+
+fn memory_topic(id: i64, name: &str, description: &str, source: &str) -> EmailTopic {
+    EmailTopic {
+        id,
+        name: name.to_string(),
+        description: description.to_string(),
+        status: "active".to_string(),
+        source: source.to_string(),
+        created_at: "memory".to_string(),
+        updated_at: "memory".to_string(),
+    }
+}
+
+fn memory_default_taxonomy() -> EmailTaxonomy {
+    let state = MemoryClassificationState::default();
+    EmailTaxonomy {
+        categories: state.categories,
+        topics: state.topics,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,6 +341,16 @@ pub struct StoredOutboundReview {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredEmailClassification {
+    pub category: String,
+    pub topics: Vec<String>,
+    pub reason: String,
+    pub confidence: u8,
+    pub decision_source: String,
+    pub matched_rule_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ProcessedEmail {
     pub run_id: String,
@@ -212,6 +379,14 @@ pub struct ProcessedEmail {
     pub outbound_reason: Option<String>,
     pub outbound_review_status: Option<String>,
     pub outbound_review_reason: Option<String>,
+    pub classification_category: Option<String>,
+    pub classification_topics: Vec<String>,
+    pub classification_reason: Option<String>,
+    pub classification_confidence: Option<u16>,
+    pub decision_source: Option<String>,
+    pub matched_rule_id: Option<i64>,
+    pub matched_rule_name: Option<String>,
+    pub matched_rule_goal: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub logs: Vec<ProcessedEmailLog>,
@@ -275,6 +450,59 @@ impl MemoryProcessingStore {
             .expect("memory outbound review store poisoned")
             .get(key)
             .cloned()
+    }
+
+    pub fn email_classification(&self, key: &DedupeKey) -> Option<StoredEmailClassification> {
+        self.classification
+            .lock()
+            .expect("memory classification store poisoned")
+            .records
+            .get(key)
+            .cloned()
+    }
+
+    pub fn add_email_rule(&self, mut rule: NewEmailRule) -> EmailRule {
+        let mut state = self
+            .classification
+            .lock()
+            .expect("memory classification store poisoned");
+        rule.name = rule.name.trim().to_string();
+        let id = state.next_rule_id;
+        state.next_rule_id += 1;
+        let category = state
+            .categories
+            .iter()
+            .find(|category| category.id == rule.category_id)
+            .map(|category| category.name.clone())
+            .unwrap_or_else(|| "other".to_string());
+        let topics = rule
+            .topic_ids
+            .iter()
+            .filter_map(|id| {
+                state
+                    .topics
+                    .iter()
+                    .find(|topic| topic.id == *id)
+                    .map(|topic| topic.name.clone())
+            })
+            .collect::<Vec<_>>();
+        let stored = EmailRule {
+            id,
+            mailbox_id: rule.mailbox_id,
+            name: rule.name,
+            category_id: rule.category_id,
+            category,
+            topic_ids: rule.topic_ids,
+            topics,
+            action: rule.action,
+            reply_goal: rule.reply_goal,
+            enabled: rule.enabled,
+            priority: rule.priority,
+            created_at: "memory".to_string(),
+            updated_at: "memory".to_string(),
+        };
+        state.rules.push(stored.clone());
+        stored
     }
 }
 
@@ -426,6 +654,202 @@ impl ProcessingStore for MemoryProcessingStore {
         Ok(())
     }
 
+    async fn ensure_default_classification_policy(
+        &self,
+        config: &AppConfig,
+    ) -> Result<(), StorageError> {
+        let mut state = self
+            .classification
+            .lock()
+            .map_err(|_| StorageError::LockPoisoned)?;
+        let Some(category) = state
+            .categories
+            .iter()
+            .find(|category| category.name == "marketing_vendor")
+            .cloned()
+        else {
+            return Ok(());
+        };
+        for mailbox in &config.mailboxes {
+            if state
+                .rules
+                .iter()
+                .any(|rule| rule.mailbox_id == mailbox.id && rule.category_id == category.id)
+            {
+                continue;
+            }
+            let id = state.next_rule_id;
+            state.next_rule_id += 1;
+            state.rules.push(EmailRule {
+                id,
+                mailbox_id: mailbox.id.clone(),
+                name: "Auto-decline marketing/vendor outreach".to_string(),
+                category_id: category.id,
+                category: category.name.clone(),
+                topic_ids: vec![],
+                topics: vec![],
+                action: EmailRuleAction::Reply,
+                reply_goal: DEFAULT_MARKETING_REPLY_GOAL.to_string(),
+                enabled: true,
+                priority: 100,
+                created_at: "memory".to_string(),
+                updated_at: "memory".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn active_email_taxonomy(&self) -> Result<EmailTaxonomy, StorageError> {
+        let state = self
+            .classification
+            .lock()
+            .map_err(|_| StorageError::LockPoisoned)?;
+        Ok(EmailTaxonomy {
+            categories: state
+                .categories
+                .iter()
+                .filter(|category| category.status == "active")
+                .cloned()
+                .collect(),
+            topics: state
+                .topics
+                .iter()
+                .filter(|topic| topic.status == "active")
+                .cloned()
+                .collect(),
+        })
+    }
+
+    async fn resolve_email_classification(
+        &self,
+        classification: &EmailClassification,
+    ) -> Result<ResolvedEmailClassification, StorageError> {
+        let mut state = self
+            .classification
+            .lock()
+            .map_err(|_| StorageError::LockPoisoned)?;
+        let category_name = normalize_label_name(&classification.category);
+        let category = match state
+            .categories
+            .iter()
+            .find(|category| category.name == category_name)
+            .cloned()
+        {
+            Some(category) => category,
+            None => {
+                let category = memory_category(
+                    state.next_category_id,
+                    &category_name,
+                    "AI-created category",
+                    "ai",
+                );
+                state.next_category_id += 1;
+                state.categories.push(category.clone());
+                category
+            }
+        };
+
+        let mut topic_ids = Vec::new();
+        let mut topics = Vec::new();
+        let topic_names = if classification.topics.is_empty() {
+            vec!["general".to_string()]
+        } else {
+            classification
+                .topics
+                .iter()
+                .map(|topic| normalize_label_name(topic))
+                .collect::<Vec<_>>()
+        };
+        for topic_name in topic_names {
+            let topic = match state
+                .topics
+                .iter()
+                .find(|topic| topic.name == topic_name)
+                .cloned()
+            {
+                Some(topic) => topic,
+                None => {
+                    let topic =
+                        memory_topic(state.next_topic_id, &topic_name, "AI-created topic", "ai");
+                    state.next_topic_id += 1;
+                    state.topics.push(topic.clone());
+                    topic
+                }
+            };
+            if !topic_ids.contains(&topic.id) {
+                topic_ids.push(topic.id);
+                topics.push(topic.name);
+            }
+        }
+
+        Ok(ResolvedEmailClassification {
+            category_id: category.id,
+            category: category.name,
+            topic_ids,
+            topics,
+            reason: classification.reason.clone(),
+            confidence: classification.confidence.min(100),
+        })
+    }
+
+    async fn find_matching_email_rule(
+        &self,
+        mailbox_id: &str,
+        classification: &ResolvedEmailClassification,
+    ) -> Result<Option<EmailRule>, StorageError> {
+        let mut rules = self
+            .classification
+            .lock()
+            .map_err(|_| StorageError::LockPoisoned)?
+            .rules
+            .iter()
+            .filter(|rule| {
+                rule.enabled
+                    && rule.mailbox_id == mailbox_id
+                    && rule.category_id == classification.category_id
+                    && (rule.topic_ids.is_empty()
+                        || rule
+                            .topic_ids
+                            .iter()
+                            .any(|topic_id| classification.topic_ids.contains(topic_id)))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        rules.sort_by_key(|rule| {
+            (
+                if rule.topic_ids.is_empty() { 1 } else { 0 },
+                rule.priority,
+                rule.id,
+            )
+        });
+        Ok(rules.into_iter().next())
+    }
+
+    async fn record_email_classification(
+        &self,
+        key: &DedupeKey,
+        classification: &ResolvedEmailClassification,
+        decision_source: &str,
+        matched_rule: Option<&EmailRule>,
+    ) -> Result<(), StorageError> {
+        self.classification
+            .lock()
+            .map_err(|_| StorageError::LockPoisoned)?
+            .records
+            .insert(
+                key.clone(),
+                StoredEmailClassification {
+                    category: classification.category.clone(),
+                    topics: classification.topics.clone(),
+                    reason: classification.reason.clone(),
+                    confidence: classification.confidence,
+                    decision_source: decision_source.to_string(),
+                    matched_rule_name: matched_rule.map(|rule| rule.name.clone()),
+                },
+            );
+        Ok(())
+    }
+
     async fn upsert_sender_review(
         &self,
         sender: &str,
@@ -553,6 +977,10 @@ pub(crate) fn log_level_value(level: LogLevel) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{
+        AgentConfig, AiConfig, AiProtocol, DatabaseConfig, ImapConfig, LoggingConfig,
+        MailboxConfig, PromptConfig, ReviewConfig, SmtpConfig,
+    };
     use crate::mail::{InboundMessage, MessageMetadata};
 
     #[test]
@@ -579,6 +1007,8 @@ mod tests {
         assert!(HISTORY_BODY_THREADING_SQL.contains("ADD COLUMN IF NOT EXISTS inbound_body"));
         assert!(HISTORY_BODY_THREADING_SQL.contains("ADD COLUMN IF NOT EXISTS thread_id"));
         assert!(HISTORY_BODY_THREADING_SQL.contains("ADD COLUMN IF NOT EXISTS outbound_message_id"));
+        assert!(DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL
+            .contains("email_rules_default_marketing_seed_unique_idx"));
     }
 
     #[test]
@@ -592,6 +1022,12 @@ mod tests {
         assert_eq!(MIGRATIONS[1].version, 2);
         assert_eq!(MIGRATIONS[1].name, "002_history_body_threading");
         assert_eq!(MIGRATIONS[1].sql, HISTORY_BODY_THREADING_SQL);
+        assert_eq!(MIGRATIONS[2].version, 3);
+        assert_eq!(MIGRATIONS[2].name, "003_email_classification_rules");
+        assert_eq!(MIGRATIONS[2].sql, EMAIL_CLASSIFICATION_RULES_SQL);
+        assert_eq!(MIGRATIONS[3].version, 4);
+        assert_eq!(MIGRATIONS[3].name, "004_default_email_rule_seed_uniqueness");
+        assert_eq!(MIGRATIONS[3].sql, DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL);
     }
 
     #[test]
@@ -929,6 +1365,294 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn memory_store_resolves_unknown_labels_and_records_classification() {
+        let store = MemoryProcessingStore::default();
+        let message = message(46);
+        let key = message.metadata.dedupe_key();
+
+        let resolved = store
+            .resolve_email_classification(&EmailClassification {
+                category: "New Category!".to_string(),
+                topics: vec![
+                    "Dense Mem".to_string(),
+                    "Dense Mem".to_string(),
+                    "New Topic".to_string(),
+                ],
+                reason: "category and topic are model-created".to_string(),
+                confidence: 255,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(resolved.category, "new_category");
+        assert_eq!(resolved.topics, vec!["dense_mem", "new_topic"]);
+        assert_eq!(resolved.confidence, 100);
+
+        let taxonomy = store.active_email_taxonomy().await.unwrap();
+        assert!(taxonomy
+            .categories
+            .iter()
+            .any(|category| category.name == "new_category" && category.source == "ai"));
+        assert!(taxonomy
+            .topics
+            .iter()
+            .any(|topic| topic.name == "new_topic" && topic.source == "ai"));
+
+        store
+            .record_email_classification(&key, &resolved, "agent", None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.email_classification(&key),
+            Some(StoredEmailClassification {
+                category: "new_category".to_string(),
+                topics: vec!["dense_mem".to_string(), "new_topic".to_string()],
+                reason: "category and topic are model-created".to_string(),
+                confidence: 100,
+                decision_source: "agent".to_string(),
+                matched_rule_name: None,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_store_defaults_empty_topics_to_general() {
+        let store = MemoryProcessingStore::default();
+
+        let resolved = store
+            .resolve_email_classification(&EmailClassification {
+                category: "question".to_string(),
+                topics: vec![],
+                reason: "asks about setup".to_string(),
+                confidence: 87,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(resolved.category, "question");
+        assert_eq!(resolved.topics, vec!["general"]);
+        assert_eq!(resolved.confidence, 87);
+    }
+
+    #[tokio::test]
+    async fn memory_store_matches_topic_specific_rule_before_general_rule() {
+        let store = MemoryProcessingStore::default();
+        let taxonomy = store.active_email_taxonomy().await.unwrap();
+        let question = taxonomy
+            .categories
+            .iter()
+            .find(|category| category.name == "question")
+            .unwrap();
+        let dense_mem = taxonomy
+            .topics
+            .iter()
+            .find(|topic| topic.name == "dense_mem")
+            .unwrap();
+
+        let general = store.add_email_rule(NewEmailRule {
+            mailbox_id: "support".to_string(),
+            name: "General question rule".to_string(),
+            category_id: question.id,
+            topic_ids: vec![],
+            action: EmailRuleAction::Forward,
+            reply_goal: "Forward broad questions to Mark.".to_string(),
+            enabled: true,
+            priority: 1,
+        });
+        let topic_specific = store.add_email_rule(NewEmailRule {
+            mailbox_id: "support".to_string(),
+            name: "Dense-Mem answer rule".to_string(),
+            category_id: question.id,
+            topic_ids: vec![dense_mem.id],
+            action: EmailRuleAction::Reply,
+            reply_goal: "Answer Dense-Mem setup questions.".to_string(),
+            enabled: true,
+            priority: 100,
+        });
+        store.add_email_rule(NewEmailRule {
+            mailbox_id: "support".to_string(),
+            name: "Disabled Dense-Mem rule".to_string(),
+            category_id: question.id,
+            topic_ids: vec![dense_mem.id],
+            action: EmailRuleAction::Noop,
+            reply_goal: String::new(),
+            enabled: false,
+            priority: 0,
+        });
+
+        let resolved = store
+            .resolve_email_classification(&EmailClassification {
+                category: "question".to_string(),
+                topics: vec!["dense_mem".to_string()],
+                reason: "asks about Dense-Mem".to_string(),
+                confidence: 91,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store
+                .find_matching_email_rule("support", &resolved)
+                .await
+                .unwrap(),
+            Some(topic_specific.clone())
+        );
+        assert_eq!(
+            store
+                .find_matching_email_rule("other", &resolved)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_ne!(general.id, topic_specific.id);
+    }
+
+    #[tokio::test]
+    async fn memory_store_seeds_default_marketing_rule_once_per_mailbox() {
+        let store = MemoryProcessingStore::default();
+        let config = app_config_with_mailboxes(vec!["support", "sales"]);
+
+        store
+            .ensure_default_classification_policy(&config)
+            .await
+            .unwrap();
+        store
+            .ensure_default_classification_policy(&config)
+            .await
+            .unwrap();
+
+        let resolved = store
+            .resolve_email_classification(&EmailClassification {
+                category: "marketing_vendor".to_string(),
+                topics: vec!["general".to_string()],
+                reason: "offers paid ads".to_string(),
+                confidence: 94,
+            })
+            .await
+            .unwrap();
+
+        let support_rule = store
+            .find_matching_email_rule("support", &resolved)
+            .await
+            .unwrap()
+            .unwrap();
+        let sales_rule = store
+            .find_matching_email_rule("sales", &resolved)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(support_rule.name, "Auto-decline marketing/vendor outreach");
+        assert_eq!(support_rule.reply_goal, DEFAULT_MARKETING_REPLY_GOAL);
+        assert_eq!(sales_rule.name, "Auto-decline marketing/vendor outreach");
+        assert_ne!(support_rule.id, sales_rule.id);
+    }
+
+    struct MinimalStore;
+
+    #[async_trait::async_trait]
+    impl ProcessingStore for MinimalStore {
+        async fn claim_message(
+            &self,
+            _run_id: &str,
+            _message: &InboundMessage,
+        ) -> Result<ProcessingClaim, StorageError> {
+            Ok(ProcessingClaim::Claimed)
+        }
+
+        async fn update_message_status(
+            &self,
+            _key: &DedupeKey,
+            _status: &str,
+            _outbound_action: Option<&OutboundActionKind>,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn record_safety_result(
+            &self,
+            _key: &DedupeKey,
+            _category: &SafetyCategory,
+            _reason: &str,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn upsert_sender_review(
+            &self,
+            _sender: &str,
+            _mailbox_id: &str,
+            _reason: &str,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn processing_store_trait_defaults_are_noops() {
+        let store = MinimalStore;
+        let message = message(47);
+        let key = message.metadata.dedupe_key();
+        let action = OutboundAction {
+            kind: OutboundActionKind::Noop,
+            recipients: vec![],
+            subject: String::new(),
+            body: String::new(),
+            reason: "nothing to do".to_string(),
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
+        };
+        let decision = AgentDecision {
+            action,
+            safety_notes: "safe".to_string(),
+        };
+
+        store.record_agent_decision(&key, &decision).await.unwrap();
+        store
+            .record_outbound_action(&key, &decision.action)
+            .await
+            .unwrap();
+        store
+            .record_outbound_review(&key, "approved", "safe")
+            .await
+            .unwrap();
+        store
+            .ensure_default_classification_policy(&app_config_with_mailboxes(vec!["support"]))
+            .await
+            .unwrap();
+
+        let taxonomy = store.active_email_taxonomy().await.unwrap();
+        assert!(taxonomy
+            .categories
+            .iter()
+            .any(|category| category.name == "question"));
+
+        let resolved = store
+            .resolve_email_classification(&EmailClassification {
+                category: "question".to_string(),
+                topics: vec!["general".to_string()],
+                reason: "default implementation".to_string(),
+                confidence: 99,
+            })
+            .await
+            .unwrap();
+        assert_eq!(resolved.category, "question");
+        assert_eq!(
+            store
+                .find_matching_email_rule("support", &resolved)
+                .await
+                .unwrap(),
+            None
+        );
+        store
+            .record_email_classification(&key, &resolved, "agent", None)
+            .await
+            .unwrap();
+    }
+
     fn message(uid: u64) -> InboundMessage {
         InboundMessage {
             metadata: MessageMetadata {
@@ -942,6 +1666,74 @@ mod tests {
                 subject: "Question".to_string(),
             },
             plain_text: "Body".to_string(),
+        }
+    }
+
+    fn app_config_with_mailboxes(ids: Vec<&str>) -> AppConfig {
+        AppConfig {
+            version: 1,
+            database: DatabaseConfig {
+                host: "postgres".to_string(),
+                port: 5432,
+                username: "user".to_string(),
+                password: "secret".to_string(),
+                database: "ai_memmail".to_string(),
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+                format: "json".to_string(),
+                verbose_actions: true,
+                retention_days: 180,
+            },
+            prompts: PromptConfig {
+                root: "prompts".into(),
+                safety_scan: "safety.md".into(),
+                email_classifier: "email-classifier.md".into(),
+                rule_action: "rule-action.md".into(),
+            },
+            ai: AiConfig {
+                protocol: AiProtocol::Openai,
+                api_url: "https://api.example/v1".to_string(),
+                api_secret: "secret".to_string(),
+                model: "model".to_string(),
+                review: ReviewConfig {
+                    enabled: false,
+                    prompt_path: "review.md".into(),
+                },
+            },
+            mcp_servers: Default::default(),
+            mailboxes: ids
+                .into_iter()
+                .map(|id| MailboxConfig {
+                    id: id.to_string(),
+                    address: format!("{id}@example.com"),
+                    enabled: true,
+                    poll_interval_seconds: 30,
+                    safety_forward_to: vec!["human@example.com".to_string()],
+                    mcp_servers: vec![],
+                    agent: AgentConfig {
+                        system_prompt_path: "agent.md".into(),
+                        default_forward_to: vec!["human@example.com".to_string()],
+                    },
+                    imap: ImapConfig {
+                        host: "imap.example.com".to_string(),
+                        port: 993,
+                        tls: true,
+                        username: format!("{id}@example.com"),
+                        password: "secret".to_string(),
+                        folder: "INBOX".to_string(),
+                    },
+                    smtp: SmtpConfig {
+                        host: "smtp.example.com".to_string(),
+                        port: 587,
+                        starttls: true,
+                        username: format!("{id}@example.com"),
+                        password: "secret".to_string(),
+                        from: format!("{id}@example.com"),
+                    },
+                })
+                .collect(),
+            banned_senders: vec![],
         }
     }
 }
