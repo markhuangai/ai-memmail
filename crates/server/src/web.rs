@@ -4,18 +4,19 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tower_http::services::ServeDir;
 use uuid::Uuid;
 
+use crate::classification::{EmailClassificationConfig, NewEmailRule};
 use crate::config::{AppConfig, ConfigError};
-use crate::storage::{PgStore, ProcessedEmail, StorageError};
+use crate::storage::{PgStore, ProcessedEmail, ProcessingStore, StorageError};
 use crate::worker;
 
 const SESSION_COOKIE: &str = "ai_memmail_session";
@@ -63,6 +64,18 @@ pub struct MessagesResponse {
     pub messages: Vec<ProcessedEmail>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct EmailClassificationConfigResponse {
+    pub classification: EmailClassificationConfig,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+pub struct LabelRequest {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ErrorResponse {
     pub error: String,
@@ -93,6 +106,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/logout", post(logout))
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/messages", get(get_messages))
+        .route("/api/email-classification", get(get_email_classification))
+        .route("/api/email-categories", post(create_email_category))
+        .route("/api/email-topics", post(create_email_topic))
+        .route("/api/email-rules", post(create_email_rule))
+        .route(
+            "/api/email-rules/:id",
+            put(update_email_rule).delete(delete_email_rule),
+        )
         .with_state(state)
         .fallback_service(ServeDir::new("web/dist").append_index_html_on_directories(true))
 }
@@ -240,6 +261,121 @@ async fn get_messages(
     Ok(Json(MessagesResponse { messages }))
 }
 
+async fn get_email_classification(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<EmailClassificationConfigResponse>, ApiError> {
+    require_auth(&state, &headers)?;
+    Ok(Json(EmailClassificationConfigResponse {
+        classification: load_email_classification_config(&state).await?,
+    }))
+}
+
+async fn create_email_category(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<LabelRequest>,
+) -> Result<Json<EmailClassificationConfigResponse>, ApiError> {
+    require_auth(&state, &headers)?;
+    let store = connect_store(&state).await?;
+    store
+        .create_email_category(&request.name, &request.description)
+        .await
+        .map_err(ApiError::from_storage)?;
+    Ok(Json(EmailClassificationConfigResponse {
+        classification: load_email_classification_config(&state).await?,
+    }))
+}
+
+async fn create_email_topic(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<LabelRequest>,
+) -> Result<Json<EmailClassificationConfigResponse>, ApiError> {
+    require_auth(&state, &headers)?;
+    let store = connect_store(&state).await?;
+    store
+        .create_email_topic(&request.name, &request.description)
+        .await
+        .map_err(ApiError::from_storage)?;
+    Ok(Json(EmailClassificationConfigResponse {
+        classification: load_email_classification_config(&state).await?,
+    }))
+}
+
+async fn create_email_rule(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(rule): Json<NewEmailRule>,
+) -> Result<Json<EmailClassificationConfigResponse>, ApiError> {
+    require_auth(&state, &headers)?;
+    let store = connect_store(&state).await?;
+    store
+        .create_email_rule(rule)
+        .await
+        .map_err(ApiError::from_storage)?;
+    Ok(Json(EmailClassificationConfigResponse {
+        classification: load_email_classification_config(&state).await?,
+    }))
+}
+
+async fn update_email_rule(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(rule): Json<NewEmailRule>,
+) -> Result<Json<EmailClassificationConfigResponse>, ApiError> {
+    require_auth(&state, &headers)?;
+    let store = connect_store(&state).await?;
+    store
+        .update_email_rule(id, rule)
+        .await
+        .map_err(ApiError::from_storage)?;
+    Ok(Json(EmailClassificationConfigResponse {
+        classification: load_email_classification_config(&state).await?,
+    }))
+}
+
+async fn delete_email_rule(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Result<Json<EmailClassificationConfigResponse>, ApiError> {
+    require_auth(&state, &headers)?;
+    let store = connect_store(&state).await?;
+    store
+        .delete_email_rule(id)
+        .await
+        .map_err(ApiError::from_storage)?;
+    Ok(Json(EmailClassificationConfigResponse {
+        classification: load_email_classification_config(&state).await?,
+    }))
+}
+
+async fn load_email_classification_config(
+    state: &AppState,
+) -> Result<EmailClassificationConfig, ApiError> {
+    let config = state.config.read().expect("config lock poisoned").clone();
+    let store = PgStore::connect(&config.database)
+        .await
+        .map_err(ApiError::from_storage)?;
+    store
+        .ensure_default_classification_policy(&config)
+        .await
+        .map_err(ApiError::from_storage)?;
+    store
+        .list_email_classification_config()
+        .await
+        .map_err(ApiError::from_storage)
+}
+
+async fn connect_store(state: &AppState) -> Result<PgStore, ApiError> {
+    let config = state.config.read().expect("config lock poisoned").clone();
+    PgStore::connect(&config.database)
+        .await
+        .map_err(ApiError::from_storage)
+}
+
 fn control_panel_key_from_env() -> Result<String, ConfigError> {
     let key = std::env::var("CONTROL_PANEL_KEY").map_err(|_| {
         ConfigError::Invalid("CONTROL_PANEL_KEY environment variable is required".to_string())
@@ -291,8 +427,13 @@ impl ApiError {
     }
 
     fn from_storage(error: StorageError) -> Self {
+        let status = match &error {
+            StorageError::ClassificationNotFound(_) => StatusCode::NOT_FOUND,
+            StorageError::InvalidClassification(_) => StatusCode::BAD_REQUEST,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
         Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
+            status,
             message: error.to_string(),
         }
     }
@@ -345,6 +486,8 @@ mod tests {
             prompts: PromptConfig {
                 root: "prompts".into(),
                 safety_scan: "safety.md".into(),
+                email_classifier: "email-classifier.md".into(),
+                rule_action: "rule-action.md".into(),
             },
             ai: AiConfig {
                 protocol: AiProtocol::Openai,

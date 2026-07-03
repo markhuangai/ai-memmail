@@ -31,6 +31,8 @@ export interface LoggingConfig {
 export interface PromptConfig {
   root: string;
   safety_scan: string;
+  email_classifier: string;
+  rule_action: string;
 }
 
 export interface AiConfig {
@@ -129,6 +131,14 @@ export interface ProcessedEmail {
   outbound_reason?: string | null;
   outbound_review_status?: string | null;
   outbound_review_reason?: string | null;
+  classification_category?: string | null;
+  classification_topics: string[];
+  classification_reason?: string | null;
+  classification_confidence?: number | null;
+  decision_source?: string | null;
+  matched_rule_id?: number | null;
+  matched_rule_name?: string | null;
+  matched_rule_goal?: string | null;
   created_at: string;
   updated_at: string;
   logs: ProcessedEmailLog[];
@@ -142,4 +152,59 @@ export interface ProcessedEmailLog {
   duration_ms: number;
   detail?: string | null;
   created_at: string;
+}
+
+export interface EmailCategory {
+  id: number;
+  name: string;
+  description: string;
+  status: string;
+  source: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EmailTopic {
+  id: number;
+  name: string;
+  description: string;
+  status: string;
+  source: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type EmailRuleAction = "reply" | "forward" | "noop";
+
+export interface EmailRule {
+  id: number;
+  mailbox_id: string;
+  name: string;
+  category_id: number;
+  category: string;
+  topic_ids: number[];
+  topics: string[];
+  action: EmailRuleAction;
+  reply_goal: string;
+  enabled: boolean;
+  priority: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NewEmailRule {
+  mailbox_id: string;
+  name: string;
+  category_id: number;
+  topic_ids: number[];
+  action: EmailRuleAction;
+  reply_goal: string;
+  enabled: boolean;
+  priority: number;
+}
+
+export interface EmailClassificationConfig {
+  categories: EmailCategory[];
+  topics: EmailTopic[];
+  rules: EmailRule[];
 }

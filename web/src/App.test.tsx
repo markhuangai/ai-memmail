@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import { sampleConfig, sampleMessages } from "./fixtures";
+import { sampleClassification, sampleConfig, sampleMessages } from "./fixtures";
 import type { AppConfig } from "./types";
 
 function jsonResponse(body: unknown, init?: ResponseInit) {
@@ -12,6 +12,10 @@ function jsonResponse(body: unknown, init?: ResponseInit) {
       ...init
     })
   );
+}
+
+function classificationResponse() {
+  return jsonResponse({ classification: sampleClassification });
 }
 
 describe("App", () => {
@@ -40,7 +44,8 @@ describe("App", () => {
         })
       )
       .mockImplementationOnce(() => jsonResponse({ config: sampleConfig }))
-      .mockImplementationOnce(() => jsonResponse({ messages: sampleMessages }));
+      .mockImplementationOnce(() => jsonResponse({ messages: sampleMessages }))
+      .mockImplementationOnce(() => classificationResponse());
 
     render(<App />);
 
@@ -51,7 +56,7 @@ describe("App", () => {
 
     expect(await screen.findByText("MCP servers")).toBeInTheDocument();
     expect(screen.getByText("1/1")).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 
   it("renders processed email history details", async () => {
@@ -66,6 +71,9 @@ describe("App", () => {
       }
       if (path === "/api/messages") {
         return jsonResponse({ messages: sampleMessages });
+      }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
       }
       return jsonResponse({ config: sampleConfig });
     });
@@ -97,6 +105,9 @@ describe("App", () => {
       }
       if (path === "/api/messages") {
         return jsonResponse({ messages: [] });
+      }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
       }
       return jsonResponse({ config: sampleConfig });
     });
@@ -138,6 +149,9 @@ describe("App", () => {
       }
       if (path === "/api/messages") {
         return jsonResponse({ messages: [sampleMessages[0], followUp] });
+      }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
       }
       return jsonResponse({ config: sampleConfig });
     });
@@ -195,6 +209,9 @@ describe("App", () => {
       if (path === "/api/messages") {
         return jsonResponse({ messages: variantMessages });
       }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
+      }
       return jsonResponse({ config: sampleConfig });
     });
 
@@ -223,6 +240,9 @@ describe("App", () => {
       if (path === "/api/messages") {
         return jsonResponse({ error: "database unavailable" }, { status: 500 });
       }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
+      }
       return jsonResponse({ config: sampleConfig });
     });
 
@@ -230,6 +250,68 @@ describe("App", () => {
 
     expect(await screen.findByText("database unavailable")).toBeInTheDocument();
     expect(screen.getByText("MCP servers")).toBeInTheDocument();
+  });
+
+  it("creates email processing rules from the rules tab", async () => {
+    const savedRules: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((path, init) => {
+      if (path === "/api/status") {
+        return jsonResponse({
+          service: "ai-memmail",
+          authenticated: true,
+          uptime_seconds: 3,
+          enabled_mailboxes: 1
+        });
+      }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
+      }
+      if (path === "/api/email-rules" && init?.method === "POST") {
+        savedRules.push(String(init.body));
+        return jsonResponse({
+          classification: {
+            ...sampleClassification,
+            rules: [
+              ...sampleClassification.rules,
+              {
+                ...sampleClassification.rules[0],
+                id: 2,
+                name: "Decline PR agency outreach",
+                reply_goal: "Politely decline paid PR agency services."
+              }
+            ]
+          }
+        });
+      }
+      return jsonResponse({ config: sampleConfig });
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^rules$/i }));
+    expect(screen.getByText("Auto-decline marketing/vendor outreach")).toBeInTheDocument();
+    expect(screen.getByText("category:marketing_vendor")).toBeInTheDocument();
+
+    fireEvent.change(screen.getAllByLabelText(/rule name/i)[0], {
+      target: { value: "Decline PR agency outreach" }
+    });
+    fireEvent.change(screen.getAllByLabelText(/response goal/i)[0], {
+      target: { value: "Politely decline paid PR agency services." }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add rule/i }));
+
+    await waitFor(() => expect(savedRules).toHaveLength(1));
+    expect(JSON.parse(savedRules[0])).toMatchObject({
+      mailbox_id: "support",
+      name: "Decline PR agency outreach",
+      category_id: 1,
+      topic_ids: [],
+      action: "reply",
+      reply_goal: "Politely decline paid PR agency services.",
+      enabled: true,
+      priority: 100
+    });
+    expect(await screen.findByText("Decline PR agency outreach")).toBeInTheDocument();
   });
 
   it("edits mailbox polling and saves config", async () => {
@@ -246,6 +328,9 @@ describe("App", () => {
       if (path === "/api/config" && init?.method === "PUT") {
         savedBodies.push(String(init.body));
         return jsonResponse({ config: sampleConfig });
+      }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
       }
       return jsonResponse({ config: sampleConfig });
     });
@@ -276,6 +361,9 @@ describe("App", () => {
       if (path === "/api/config" && init?.method === "PUT") {
         savedBodies.push(String(init.body));
         return jsonResponse({ config: JSON.parse(String(init.body)) as AppConfig });
+      }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
       }
       return jsonResponse({ config: sampleConfig });
     });
@@ -383,6 +471,9 @@ describe("App", () => {
         savedBodies.push(String(init.body));
         return jsonResponse({ config: JSON.parse(String(init.body)) as AppConfig });
       }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
+      }
       return jsonResponse({ config: emptyConfig });
     });
 
@@ -422,6 +513,9 @@ describe("App", () => {
       if (path === "/api/config" && init?.method === "PUT") {
         savedBodies.push(String(init.body));
         return jsonResponse({ config: JSON.parse(String(init.body)) as AppConfig });
+      }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
       }
       return jsonResponse({ config: sampleConfig });
     });
@@ -470,6 +564,9 @@ describe("App", () => {
         savedBodies.push(String(init.body));
         return jsonResponse({ config: JSON.parse(String(init.body)) as AppConfig });
       }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
+      }
       return jsonResponse({ config: sampleConfig });
     });
 
@@ -503,6 +600,12 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText(/safety prompt/i), {
       target: { value: "scan-changed.md" }
     });
+    fireEvent.change(screen.getByLabelText(/classifier prompt/i), {
+      target: { value: "classifier-changed.md" }
+    });
+    fireEvent.change(screen.getByLabelText(/rule action prompt/i), {
+      target: { value: "rule-changed.md" }
+    });
     fireEvent.change(screen.getByLabelText(/log level/i), {
       target: { value: "debug" }
     });
@@ -524,7 +627,9 @@ describe("App", () => {
     expect(saved.ai.AI_MODEL).toBe("model-changed");
     expect(saved.prompts).toMatchObject({
       root: "./prompt-changed",
-      safety_scan: "scan-changed.md"
+      safety_scan: "scan-changed.md",
+      email_classifier: "classifier-changed.md",
+      rule_action: "rule-changed.md"
     });
     expect(saved.logging).toMatchObject({
       level: "debug",
@@ -541,6 +646,9 @@ describe("App", () => {
           uptime_seconds: 3,
           enabled_mailboxes: 1
         });
+      }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
       }
       return jsonResponse({ config: sampleConfig });
     });
@@ -576,6 +684,9 @@ describe("App", () => {
           enabled_mailboxes: 1
         });
       }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
+      }
       return jsonResponse({ config: sampleConfig });
     });
 
@@ -606,6 +717,9 @@ describe("App", () => {
       }
       if (path === "/api/config" && init?.method === "PUT") {
         return jsonResponse({ error: "invalid config" }, { status: 400 });
+      }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
       }
       return jsonResponse({ config: sampleConfig });
     });

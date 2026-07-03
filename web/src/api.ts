@@ -1,4 +1,10 @@
-import type { AppConfig, ProcessedEmail, StatusResponse } from "./types";
+import type {
+  AppConfig,
+  EmailClassificationConfig,
+  NewEmailRule,
+  ProcessedEmail,
+  StatusResponse
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -77,6 +83,75 @@ export async function loadMessages(
   return payload.messages ?? [];
 }
 
+export async function loadEmailClassification(
+  fetchImpl?: typeof fetch
+): Promise<EmailClassificationConfig> {
+  const payload = await requestJson<{ classification: EmailClassificationConfig }>(
+    "/api/email-classification",
+    {},
+    fetchImpl
+  );
+  return payload.classification;
+}
+
+export async function createEmailCategory(
+  name: string,
+  description: string,
+  fetchImpl?: typeof fetch
+): Promise<EmailClassificationConfig> {
+  return mutateEmailClassification(
+    "/api/email-categories",
+    { name, description },
+    "POST",
+    fetchImpl
+  );
+}
+
+export async function createEmailTopic(
+  name: string,
+  description: string,
+  fetchImpl?: typeof fetch
+): Promise<EmailClassificationConfig> {
+  return mutateEmailClassification(
+    "/api/email-topics",
+    { name, description },
+    "POST",
+    fetchImpl
+  );
+}
+
+export async function createEmailRule(
+  rule: NewEmailRule,
+  fetchImpl?: typeof fetch
+): Promise<EmailClassificationConfig> {
+  return mutateEmailClassification("/api/email-rules", rule, "POST", fetchImpl);
+}
+
+export async function updateEmailRule(
+  id: number,
+  rule: NewEmailRule,
+  fetchImpl?: typeof fetch
+): Promise<EmailClassificationConfig> {
+  return mutateEmailClassification(
+    `/api/email-rules/${id}`,
+    rule,
+    "PUT",
+    fetchImpl
+  );
+}
+
+export async function deleteEmailRule(
+  id: number,
+  fetchImpl?: typeof fetch
+): Promise<EmailClassificationConfig> {
+  const payload = await requestJson<{ classification: EmailClassificationConfig }>(
+    `/api/email-rules/${id}`,
+    { method: "DELETE" },
+    fetchImpl
+  );
+  return payload.classification;
+}
+
 export async function saveConfig(
   config: AppConfig,
   fetchImpl?: typeof fetch
@@ -90,4 +165,21 @@ export async function saveConfig(
     fetchImpl
   );
   return payload.config;
+}
+
+async function mutateEmailClassification(
+  path: string,
+  body: unknown,
+  method: "POST" | "PUT",
+  fetchImpl?: typeof fetch
+): Promise<EmailClassificationConfig> {
+  const payload = await requestJson<{ classification: EmailClassificationConfig }>(
+    path,
+    {
+      method,
+      body: JSON.stringify(body)
+    },
+    fetchImpl
+  );
+  return payload.classification;
 }

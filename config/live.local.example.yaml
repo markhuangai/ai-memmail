@@ -16,6 +16,8 @@ logging:
 prompts:
   root: "./prompts"
   safety_scan: "safety-scan.md"
+  email_classifier: "email-classifier.md"
+  rule_action: "rule-action.md"
 
 ai:
   protocol: openai

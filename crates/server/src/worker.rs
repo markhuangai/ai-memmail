@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::ai::{AgentDecision, DecisionEngine, LiveDecisionEngine, OutboundReviewDecision};
+use crate::classification::{EmailRule, ResolvedEmailClassification};
 use crate::config::{AppConfig, ConfigError, MailboxConfig};
 use crate::logging::{
     action_event, ActionEvent, ActionLogger, FanoutLogger, LogLevel, StdoutLogger,
@@ -126,6 +127,23 @@ pub async fn run_once_with_store(
             started.elapsed(),
         ))
         .await;
+
+    if let Err(error) = processing
+        .ensure_default_classification_policy(config)
+        .await
+    {
+        logger
+            .log(action_event(
+                LogLevel::Error,
+                run_id,
+                "classification_policy_seed",
+                "failed",
+                started.elapsed(),
+            ))
+            .await;
+        tracing::error!(%error, "failed to seed classification policy");
+        return;
+    }
 
     for mailbox in config.mailboxes.iter().filter(|mailbox| mailbox.enabled) {
         process_mailbox(config, mailbox, logger, run_id, mail, decisions, processing).await;
@@ -335,17 +353,18 @@ async fn process_message(
         return;
     }
 
-    let decision = match decisions.agent_decision(config, mailbox, &message).await {
-        Ok(decision) => decision,
+    let classification_started = Instant::now();
+    let taxonomy = match processing.active_email_taxonomy().await {
+        Ok(taxonomy) => taxonomy,
         Err(error) => {
             logger
                 .log(message_event(
                     LogLevel::Error,
                     run_id,
                     &message,
-                    "agent_decision",
+                    "email_taxonomy",
                     "failed",
-                    started.elapsed(),
+                    classification_started.elapsed(),
                     Some(error.to_string()),
                 ))
                 .await;
@@ -361,7 +380,205 @@ async fn process_message(
             return;
         }
     };
-    log_agent_decision(logger, run_id, &message, &decision, started.elapsed()).await;
+    let raw_classification = match decisions
+        .classify_email(config, mailbox, &message, &taxonomy)
+        .await
+    {
+        Ok(classification) => classification,
+        Err(error) => {
+            logger
+                .log(message_event(
+                    LogLevel::Error,
+                    run_id,
+                    &message,
+                    "email_classification",
+                    "failed",
+                    classification_started.elapsed(),
+                    Some(error.to_string()),
+                ))
+                .await;
+            update_processing_status(
+                processing,
+                logger,
+                run_id,
+                &message,
+                PROCESSING_STATUS_RETRYABLE_FAILED,
+                None,
+            )
+            .await;
+            return;
+        }
+    };
+    let classification = match processing
+        .resolve_email_classification(&raw_classification)
+        .await
+    {
+        Ok(classification) => classification,
+        Err(error) => {
+            logger
+                .log(message_event(
+                    LogLevel::Error,
+                    run_id,
+                    &message,
+                    "email_classification_resolve",
+                    "failed",
+                    classification_started.elapsed(),
+                    Some(error.to_string()),
+                ))
+                .await;
+            update_processing_status(
+                processing,
+                logger,
+                run_id,
+                &message,
+                PROCESSING_STATUS_RETRYABLE_FAILED,
+                None,
+            )
+            .await;
+            return;
+        }
+    };
+    log_email_classification(
+        logger,
+        run_id,
+        &message,
+        &classification,
+        classification_started.elapsed(),
+    )
+    .await;
+    let matched_rule = match processing
+        .find_matching_email_rule(&mailbox.id, &classification)
+        .await
+    {
+        Ok(rule) => rule,
+        Err(error) => {
+            logger
+                .log(message_event(
+                    LogLevel::Error,
+                    run_id,
+                    &message,
+                    "rule_match",
+                    "failed",
+                    classification_started.elapsed(),
+                    Some(error.to_string()),
+                ))
+                .await;
+            update_processing_status(
+                processing,
+                logger,
+                run_id,
+                &message,
+                PROCESSING_STATUS_RETRYABLE_FAILED,
+                None,
+            )
+            .await;
+            return;
+        }
+    };
+    let decision_source = if matched_rule.is_some() {
+        "rule"
+    } else {
+        "agent"
+    };
+    log_rule_match(
+        logger,
+        run_id,
+        &message,
+        matched_rule.as_ref(),
+        classification_started.elapsed(),
+    )
+    .await;
+    record_email_classification_for_history(
+        processing,
+        logger,
+        run_id,
+        &message,
+        &classification,
+        decision_source,
+        matched_rule.as_ref(),
+    )
+    .await;
+
+    let decision_started = Instant::now();
+    let decision = if let Some(rule) = &matched_rule {
+        match decisions
+            .rule_decision(config, mailbox, &message, &raw_classification, rule)
+            .await
+        {
+            Ok(decision) => {
+                log_decision(
+                    logger,
+                    run_id,
+                    &message,
+                    &decision,
+                    "rule_decision",
+                    decision_started.elapsed(),
+                )
+                .await;
+                decision
+            }
+            Err(error) => {
+                logger
+                    .log(message_event(
+                        LogLevel::Error,
+                        run_id,
+                        &message,
+                        "rule_decision",
+                        "failed",
+                        decision_started.elapsed(),
+                        Some(error.to_string()),
+                    ))
+                    .await;
+                update_processing_status(
+                    processing,
+                    logger,
+                    run_id,
+                    &message,
+                    PROCESSING_STATUS_RETRYABLE_FAILED,
+                    None,
+                )
+                .await;
+                return;
+            }
+        }
+    } else {
+        match decisions.agent_decision(config, mailbox, &message).await {
+            Ok(decision) => {
+                log_agent_decision(
+                    logger,
+                    run_id,
+                    &message,
+                    &decision,
+                    decision_started.elapsed(),
+                )
+                .await;
+                decision
+            }
+            Err(error) => {
+                logger
+                    .log(message_event(
+                        LogLevel::Error,
+                        run_id,
+                        &message,
+                        "agent_decision",
+                        "failed",
+                        decision_started.elapsed(),
+                        Some(error.to_string()),
+                    ))
+                    .await;
+                update_processing_status(
+                    processing,
+                    logger,
+                    run_id,
+                    &message,
+                    PROCESSING_STATUS_RETRYABLE_FAILED,
+                    None,
+                )
+                .await;
+                return;
+            }
+        }
+    };
     record_agent_decision_for_history(processing, logger, run_id, &message, &decision).await;
     let outbound_decision = decision_with_runtime_fields(mailbox, &message, &decision);
 
@@ -669,15 +886,86 @@ async fn log_agent_decision(
     decision: &AgentDecision,
     duration: Duration,
 ) {
+    log_decision(
+        logger,
+        run_id,
+        message,
+        decision,
+        "agent_decision",
+        duration,
+    )
+    .await;
+}
+
+async fn log_decision(
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    message: &InboundMessage,
+    decision: &AgentDecision,
+    action_name: &str,
+    duration: Duration,
+) {
     logger
         .log(message_event(
             LogLevel::Info,
             run_id,
             message,
-            "agent_decision",
+            action_name,
             crate::storage::outbound_action_value(&decision.action.kind),
             duration,
             Some(decision.action.reason.clone()),
+        ))
+        .await;
+}
+
+async fn log_email_classification(
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    message: &InboundMessage,
+    classification: &ResolvedEmailClassification,
+    duration: Duration,
+) {
+    logger
+        .log(message_event(
+            LogLevel::Info,
+            run_id,
+            message,
+            "email_classification",
+            &classification.category,
+            duration,
+            Some(format!(
+                "topics={}; confidence={}; {}",
+                classification.topics.join(","),
+                classification.confidence,
+                classification.reason
+            )),
+        ))
+        .await;
+}
+
+async fn log_rule_match(
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    message: &InboundMessage,
+    rule: Option<&EmailRule>,
+    duration: Duration,
+) {
+    let (status, detail) = match rule {
+        Some(rule) => (
+            "matched",
+            Some(format!("{}: {}", rule.name, rule.reply_goal)),
+        ),
+        None => ("no_match", None),
+    };
+    logger
+        .log(message_event(
+            LogLevel::Info,
+            run_id,
+            message,
+            "rule_match",
+            status,
+            duration,
+            detail,
         ))
         .await;
 }
@@ -726,6 +1014,39 @@ async fn record_agent_decision_for_history(
                 run_id,
                 message,
                 "agent_decision_persist",
+                "failed",
+                started.elapsed(),
+                Some(error.to_string()),
+            ))
+            .await;
+    }
+}
+
+async fn record_email_classification_for_history(
+    processing: &dyn ProcessingStore,
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    message: &InboundMessage,
+    classification: &ResolvedEmailClassification,
+    decision_source: &str,
+    matched_rule: Option<&EmailRule>,
+) {
+    let started = Instant::now();
+    if let Err(error) = processing
+        .record_email_classification(
+            &message.metadata.dedupe_key(),
+            classification,
+            decision_source,
+            matched_rule,
+        )
+        .await
+    {
+        logger
+            .log(message_event(
+                LogLevel::Error,
+                run_id,
+                message,
+                "email_classification_persist",
                 "failed",
                 started.elapsed(),
                 Some(error.to_string()),
@@ -1073,6 +1394,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::ai::{AgentDecision, AiError};
+    use crate::classification::{EmailClassification, EmailRule, EmailTaxonomy};
     use crate::config::{
         AgentConfig, AiConfig, AiProtocol, BannedSenderConfig, BannedSenderKind, DatabaseConfig,
         ImapConfig, LoggingConfig, PromptConfig, ReviewConfig, SmtpConfig,
@@ -1101,6 +1423,8 @@ mod tests {
             prompts: PromptConfig {
                 root: "prompts".into(),
                 safety_scan: "safety.md".into(),
+                email_classifier: "classifier.md".into(),
+                rule_action: "rule-action.md".into(),
             },
             ai: AiConfig {
                 protocol: AiProtocol::Openai,
@@ -1248,10 +1572,14 @@ mod tests {
 
     struct FakeDecisionEngine {
         scan: SafetyScanResult,
+        classification: EmailClassification,
         decision: AgentDecision,
+        rule_decision: AgentDecision,
         review: OutboundReviewDecision,
         fail_safety: bool,
+        fail_classification: bool,
         fail_agent: bool,
+        fail_rule: bool,
         fail_review: bool,
         calls: Arc<Mutex<DecisionCallCounts>>,
         reviewed_actions: Arc<Mutex<Vec<OutboundAction>>>,
@@ -1260,7 +1588,9 @@ mod tests {
     #[derive(Debug, Default, Clone, PartialEq, Eq)]
     struct DecisionCallCounts {
         safety_scan: usize,
+        classify_email: usize,
         agent_decision: usize,
+        rule_decision: usize,
         outbound_review: usize,
     }
 
@@ -1292,6 +1622,23 @@ mod tests {
             Ok(self.scan.clone())
         }
 
+        async fn classify_email(
+            &self,
+            _config: &AppConfig,
+            _mailbox: &MailboxConfig,
+            _message: &InboundMessage,
+            _taxonomy: &EmailTaxonomy,
+        ) -> Result<EmailClassification, AiError> {
+            self.calls
+                .lock()
+                .expect("decision calls lock")
+                .classify_email += 1;
+            if self.fail_classification {
+                return Err(AiError::Provider("classification failed".to_string()));
+            }
+            Ok(self.classification.clone())
+        }
+
         async fn agent_decision(
             &self,
             _config: &AppConfig,
@@ -1306,6 +1653,24 @@ mod tests {
                 return Err(AiError::Provider("agent failed".to_string()));
             }
             Ok(self.decision.clone())
+        }
+
+        async fn rule_decision(
+            &self,
+            _config: &AppConfig,
+            _mailbox: &MailboxConfig,
+            _message: &InboundMessage,
+            _classification: &EmailClassification,
+            _rule: &EmailRule,
+        ) -> Result<AgentDecision, AiError> {
+            self.calls
+                .lock()
+                .expect("decision calls lock")
+                .rule_decision += 1;
+            if self.fail_rule {
+                return Err(AiError::Provider("rule failed".to_string()));
+            }
+            Ok(self.rule_decision.clone())
         }
 
         async fn outbound_review(
@@ -1424,16 +1789,23 @@ mod tests {
     fn fake_decisions(scan: SafetyScanResult, action: OutboundAction) -> FakeDecisionEngine {
         FakeDecisionEngine {
             scan,
+            classification: question_classification(),
             decision: AgentDecision {
-                action,
+                action: action.clone(),
                 safety_notes: "tested".to_string(),
+            },
+            rule_decision: AgentDecision {
+                action,
+                safety_notes: "rule tested".to_string(),
             },
             review: OutboundReviewDecision {
                 approved: true,
                 reason: "approved".to_string(),
             },
             fail_safety: false,
+            fail_classification: false,
             fail_agent: false,
+            fail_rule: false,
             fail_review: false,
             calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
             reviewed_actions: Arc::new(Mutex::new(Vec::new())),
@@ -1443,16 +1815,23 @@ mod tests {
     fn rejecting_review_decisions() -> FakeDecisionEngine {
         FakeDecisionEngine {
             scan: safe_scan(),
+            classification: question_classification(),
             decision: AgentDecision {
-                action: reply_action(),
+                action: reply_action().clone(),
                 safety_notes: "tested".to_string(),
+            },
+            rule_decision: AgentDecision {
+                action: reply_action(),
+                safety_notes: "rule tested".to_string(),
             },
             review: OutboundReviewDecision {
                 approved: false,
                 reason: "unexpected recipient".to_string(),
             },
             fail_safety: false,
+            fail_classification: false,
             fail_agent: false,
+            fail_rule: false,
             fail_review: false,
             calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
             reviewed_actions: Arc::new(Mutex::new(Vec::new())),
@@ -1462,16 +1841,23 @@ mod tests {
     fn failing_review_decisions() -> FakeDecisionEngine {
         FakeDecisionEngine {
             scan: safe_scan(),
+            classification: question_classification(),
             decision: AgentDecision {
-                action: reply_action(),
+                action: reply_action().clone(),
                 safety_notes: "tested".to_string(),
+            },
+            rule_decision: AgentDecision {
+                action: reply_action(),
+                safety_notes: "rule tested".to_string(),
             },
             review: OutboundReviewDecision {
                 approved: true,
                 reason: "approved".to_string(),
             },
             fail_safety: false,
+            fail_classification: false,
             fail_agent: false,
+            fail_rule: false,
             fail_review: true,
             calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
             reviewed_actions: Arc::new(Mutex::new(Vec::new())),
@@ -1481,16 +1867,23 @@ mod tests {
     fn failing_safety_decisions() -> FakeDecisionEngine {
         FakeDecisionEngine {
             scan: safe_scan(),
+            classification: question_classification(),
             decision: AgentDecision {
-                action: reply_action(),
+                action: reply_action().clone(),
                 safety_notes: "tested".to_string(),
+            },
+            rule_decision: AgentDecision {
+                action: reply_action(),
+                safety_notes: "rule tested".to_string(),
             },
             review: OutboundReviewDecision {
                 approved: true,
                 reason: "approved".to_string(),
             },
             fail_safety: true,
+            fail_classification: false,
             fail_agent: false,
+            fail_rule: false,
             fail_review: false,
             calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
             reviewed_actions: Arc::new(Mutex::new(Vec::new())),
@@ -1500,19 +1893,44 @@ mod tests {
     fn failing_agent_decisions() -> FakeDecisionEngine {
         FakeDecisionEngine {
             scan: safe_scan(),
+            classification: question_classification(),
             decision: AgentDecision {
-                action: reply_action(),
+                action: reply_action().clone(),
                 safety_notes: "tested".to_string(),
+            },
+            rule_decision: AgentDecision {
+                action: reply_action(),
+                safety_notes: "rule tested".to_string(),
             },
             review: OutboundReviewDecision {
                 approved: true,
                 reason: "approved".to_string(),
             },
             fail_safety: false,
+            fail_classification: false,
             fail_agent: true,
+            fail_rule: false,
             fail_review: false,
             calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
             reviewed_actions: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn question_classification() -> EmailClassification {
+        EmailClassification {
+            category: "question".to_string(),
+            topics: vec!["general".to_string()],
+            reason: "asks a routine question".to_string(),
+            confidence: 90,
+        }
+    }
+
+    fn marketing_classification() -> EmailClassification {
+        EmailClassification {
+            category: "marketing_vendor".to_string(),
+            topics: vec!["general".to_string()],
+            reason: "offers a paid promotion service".to_string(),
+            confidence: 94,
         }
     }
 
@@ -1661,10 +2079,87 @@ mod tests {
             .as_deref()
             .is_some_and(|message_id| message_id.ends_with("@example.com>")));
         assert_eq!(mail.seen()[0].uid, 42);
+        assert_eq!(
+            decisions.call_counts(),
+            DecisionCallCounts {
+                safety_scan: 1,
+                classify_email: 1,
+                agent_decision: 1,
+                rule_decision: 0,
+                outbound_review: 0,
+            }
+        );
         assert!(logger
             .events()
             .iter()
             .any(|event| event.action == "smtp_send" && event.status == "replied"));
+    }
+
+    #[tokio::test]
+    async fn marketing_vendor_message_uses_seeded_auto_decline_rule() {
+        let logger = crate::logging::MemoryLogger::default();
+        let processing = MemoryProcessingStore::default();
+        let message = inbound(
+            66,
+            "agency@example.com",
+            "Grow your audience",
+            "We can sell you a paid PR campaign.",
+        );
+        let key = message.metadata.dedupe_key();
+        let mail = FakeMail::new(vec![message]);
+        let mut rule_action = reply_action();
+        rule_action.body =
+            "Thanks for reaching out, but I am not interested in paid marketing services."
+                .to_string();
+        rule_action.reason = "matched marketing vendor auto-decline rule".to_string();
+        let mut decisions = fake_decisions(safe_scan(), forward_action());
+        decisions.classification = marketing_classification();
+        decisions.rule_decision = AgentDecision {
+            action: rule_action,
+            safety_notes: "rule-generated response".to_string(),
+        };
+
+        run_once_with_store(
+            &config(),
+            &logger,
+            "run-test",
+            &mail,
+            &decisions,
+            &processing,
+        )
+        .await;
+
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].kind, OutboundActionKind::Reply);
+        assert!(sent[0]
+            .body
+            .contains("not interested in paid marketing services"));
+        assert_eq!(
+            decisions.call_counts(),
+            DecisionCallCounts {
+                safety_scan: 1,
+                classify_email: 1,
+                agent_decision: 0,
+                rule_decision: 1,
+                outbound_review: 0,
+            }
+        );
+        assert_eq!(
+            processing.email_classification(&key),
+            Some(crate::storage::StoredEmailClassification {
+                category: "marketing_vendor".to_string(),
+                topics: vec!["general".to_string()],
+                reason: "offers a paid promotion service".to_string(),
+                confidence: 94,
+                decision_source: "rule".to_string(),
+                matched_rule_name: Some("Auto-decline marketing/vendor outreach".to_string()),
+            })
+        );
+        assert!(logger
+            .events()
+            .iter()
+            .any(|event| event.action == "rule_match" && event.status == "matched"));
     }
 
     #[tokio::test]

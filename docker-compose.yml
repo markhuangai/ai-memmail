@@ -23,7 +23,7 @@ services:
       AI_MEMMAIL_BIND: 0.0.0.0:8080
       CONTROL_PANEL_KEY: ${CONTROL_PANEL_KEY:?CONTROL_PANEL_KEY is required}
     ports:
-      - "18080:8080"
+      - "${AI_MEMMAIL_HTTP_PORT:-18080}:8080"
     volumes:
       - ./config/config.yaml:/app/config/config.yaml
       - ./prompts:/app/prompts:ro

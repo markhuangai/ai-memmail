@@ -1,5 +1,6 @@
 pub mod ai;
 mod ai_external;
+pub mod classification;
 pub mod config;
 pub mod logging;
 pub mod mail;

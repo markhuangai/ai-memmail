@@ -1,4 +1,4 @@
-import type { AppConfig, ProcessedEmail } from "./types";
+import type { AppConfig, EmailClassificationConfig, ProcessedEmail } from "./types";
 
 export const sampleConfig: AppConfig = {
   version: 1,
@@ -17,7 +17,9 @@ export const sampleConfig: AppConfig = {
   },
   prompts: {
     root: "./prompts",
-    safety_scan: "safety-scan.md"
+    safety_scan: "safety-scan.md",
+    email_classifier: "email-classifier.md",
+    rule_action: "rule-action.md"
   },
   ai: {
     protocol: "openai",
@@ -108,6 +110,14 @@ export const sampleMessages: ProcessedEmail[] = [
     outbound_reason: "memory supported answer",
     outbound_review_status: "approved",
     outbound_review_reason: "reply matches policy",
+    classification_category: "question",
+    classification_topics: ["general"],
+    classification_reason: "sender asks a concrete question",
+    classification_confidence: 91,
+    decision_source: "agent",
+    matched_rule_id: null,
+    matched_rule_name: null,
+    matched_rule_goal: null,
     created_at: "2026-07-01 00:00:00+00",
     updated_at: "2026-07-01 00:01:00+00",
     logs: [
@@ -158,6 +168,14 @@ export const sampleMessages: ProcessedEmail[] = [
     outbound_reason: "message contains prompt-injection language",
     outbound_review_status: null,
     outbound_review_reason: null,
+    classification_category: null,
+    classification_topics: [],
+    classification_reason: null,
+    classification_confidence: null,
+    decision_source: null,
+    matched_rule_id: null,
+    matched_rule_name: null,
+    matched_rule_goal: null,
     created_at: "2026-07-01 00:02:00+00",
     updated_at: "2026-07-01 00:03:00+00",
     logs: [
@@ -173,3 +191,81 @@ export const sampleMessages: ProcessedEmail[] = [
     ]
   }
 ];
+
+export const sampleClassification: EmailClassificationConfig = {
+  categories: [
+    {
+      id: 1,
+      name: "marketing_vendor",
+      description: "Paid marketing, growth, SEO, lead-generation, advertising, PR, agency, tool, or vendor service outreach.",
+      status: "active",
+      source: "seed",
+      created_at: "2026-07-01 00:00:00+00",
+      updated_at: "2026-07-01 00:00:00+00"
+    },
+    {
+      id: 2,
+      name: "question",
+      description: "A concrete question about Mark, a project, article, setup, usage, or technical direction.",
+      status: "active",
+      source: "seed",
+      created_at: "2026-07-01 00:00:00+00",
+      updated_at: "2026-07-01 00:00:00+00"
+    },
+    {
+      id: 3,
+      name: "project_opportunity",
+      description: "A collaboration, contribution, integration, partnership, investment, job, speaking, or project opportunity.",
+      status: "active",
+      source: "seed",
+      created_at: "2026-07-01 00:00:00+00",
+      updated_at: "2026-07-01 00:00:00+00"
+    }
+  ],
+  topics: [
+    {
+      id: 1,
+      name: "dense_mem",
+      description: "Dense-Mem project and memory infrastructure.",
+      status: "active",
+      source: "seed",
+      created_at: "2026-07-01 00:00:00+00",
+      updated_at: "2026-07-01 00:00:00+00"
+    },
+    {
+      id: 2,
+      name: "ai_memmail",
+      description: "ai-memmail workflow and control panel.",
+      status: "active",
+      source: "seed",
+      created_at: "2026-07-01 00:00:00+00",
+      updated_at: "2026-07-01 00:00:00+00"
+    },
+    {
+      id: 3,
+      name: "general",
+      description: "General or unclear topic.",
+      status: "active",
+      source: "seed",
+      created_at: "2026-07-01 00:00:00+00",
+      updated_at: "2026-07-01 00:00:00+00"
+    }
+  ],
+  rules: [
+    {
+      id: 1,
+      mailbox_id: "support",
+      name: "Auto-decline marketing/vendor outreach",
+      category_id: 1,
+      category: "marketing_vendor",
+      topic_ids: [],
+      topics: [],
+      action: "reply",
+      reply_goal: "Politely thank the sender and decline paid marketing, growth, SEO, lead-generation, advertising, PR, or vendor service offers.",
+      enabled: true,
+      priority: 100,
+      created_at: "2026-07-01 00:00:00+00",
+      updated_at: "2026-07-01 00:00:00+00"
+    }
+  ]
+};

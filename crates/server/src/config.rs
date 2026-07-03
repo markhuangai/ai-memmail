@@ -58,6 +58,10 @@ pub struct LoggingConfig {
 pub struct PromptConfig {
     pub root: PathBuf,
     pub safety_scan: PathBuf,
+    #[serde(default = "default_email_classifier_prompt")]
+    pub email_classifier: PathBuf,
+    #[serde(default = "default_rule_action_prompt")]
+    pub rule_action: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -214,6 +218,8 @@ impl AppConfig {
             ));
         }
         validate_prompt_path(&self.prompts.safety_scan, "prompts.safety_scan")?;
+        validate_prompt_path(&self.prompts.email_classifier, "prompts.email_classifier")?;
+        validate_prompt_path(&self.prompts.rule_action, "prompts.rule_action")?;
         validate_prompt_path(&self.ai.review.prompt_path, "ai.review.prompt_path")?;
 
         let mut ids = BTreeSet::new();
@@ -363,6 +369,14 @@ fn validate_prompt_path(path: &Path, field: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn default_email_classifier_prompt() -> PathBuf {
+    "email-classifier.md".into()
+}
+
+fn default_rule_action_prompt() -> PathBuf {
+    "rule-action.md".into()
+}
+
 fn is_prompt_escape_component(component: Component<'_>) -> bool {
     matches!(
         component,
@@ -423,6 +437,8 @@ mod tests {
             prompts: PromptConfig {
                 root: "./prompts".into(),
                 safety_scan: "safety-scan.md".into(),
+                email_classifier: "email-classifier.md".into(),
+                rule_action: "rule-action.md".into(),
             },
             ai: AiConfig {
                 protocol: AiProtocol::Openai,
@@ -511,6 +527,16 @@ mod tests {
         config.prompts.safety_scan = "../config/config.yaml".into();
         let error = config.validate().unwrap_err().to_string();
         assert!(error.contains("prompts.safety_scan must not contain parent"));
+
+        let mut config = valid_config();
+        config.prompts.email_classifier = "../classifier.md".into();
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("prompts.email_classifier must not contain parent"));
+
+        let mut config = valid_config();
+        config.prompts.rule_action = "../rule-action.md".into();
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("prompts.rule_action must not contain parent"));
 
         let mut config = valid_config();
         config.ai.review.prompt_path = "reviews/../secret.md".into();
@@ -782,6 +808,22 @@ mod tests {
     fn rejects_empty_prompt_paths() {
         let mut config = valid_config();
         config.prompts.safety_scan = PathBuf::new();
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("required"));
+
+        let mut config = valid_config();
+        config.prompts.email_classifier = PathBuf::new();
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("required"));
+
+        let mut config = valid_config();
+        config.prompts.rule_action = PathBuf::new();
         assert!(config
             .validate()
             .unwrap_err()

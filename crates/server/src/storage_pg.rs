@@ -1,7 +1,12 @@
 use std::collections::HashMap;
 
 use crate::ai::AgentDecision;
-use crate::config::DatabaseConfig;
+use crate::classification::{
+    default_categories, default_topics, normalize_label_name, EmailCategory, EmailClassification,
+    EmailClassificationConfig, EmailRule, EmailRuleAction, EmailTaxonomy, EmailTopic, NewEmailRule,
+    ResolvedEmailClassification, DEFAULT_MARKETING_REPLY_GOAL,
+};
+use crate::config::{AppConfig, DatabaseConfig};
 use crate::logging::{ActionEvent, ActionLogger};
 use crate::mail::{DedupeKey, InboundMessage, OutboundAction, OutboundActionKind};
 use crate::safety::SafetyCategory;
@@ -155,16 +160,28 @@ impl PgStore {
         let rows = self
             .client
             .query(
-                "SELECT run_id::text, mailbox_id, uid_validity, uid,
-                    COALESCE(thread_id, message_id, mailbox_id || ':' || uid_validity::text || ':' || uid::text),
-                    message_id, in_reply_to, message_references, from_addr, subject,
-                    inbound_body, inbound_body_truncated, status, safety_category, safety_reason,
-                    agent_action, agent_safety_notes, outbound_action, outbound_recipients, outbound_subject,
-                    outbound_body, outbound_body_redacted, outbound_message_id, outbound_reason,
-                    outbound_review_status, outbound_review_reason, created_at::text,
-                    updated_at::text
-                FROM processing_runs
-                ORDER BY updated_at DESC
+                "SELECT pr.run_id::text, pr.mailbox_id, pr.uid_validity, pr.uid,
+                    COALESCE(pr.thread_id, pr.message_id, pr.mailbox_id || ':' || pr.uid_validity::text || ':' || pr.uid::text),
+                    pr.message_id, pr.in_reply_to, pr.message_references, pr.from_addr, pr.subject,
+                    pr.inbound_body, pr.inbound_body_truncated, pr.status, pr.safety_category, pr.safety_reason,
+                    pr.agent_action, pr.agent_safety_notes, pr.outbound_action, pr.outbound_recipients, pr.outbound_subject,
+                    pr.outbound_body, pr.outbound_body_redacted, pr.outbound_message_id, pr.outbound_reason,
+                    pr.outbound_review_status, pr.outbound_review_reason,
+                    c.name, COALESCE(
+                        ARRAY(
+                            SELECT t.name
+                            FROM email_topics t
+                            WHERE t.id = ANY(pr.classification_topic_ids)
+                            ORDER BY t.name
+                        ),
+                        '{}'
+                    ),
+                    pr.classification_reason, pr.classification_confidence, pr.decision_source,
+                    pr.matched_rule_id, pr.matched_rule_name, pr.matched_rule_goal,
+                    pr.created_at::text, pr.updated_at::text
+                FROM processing_runs pr
+                LEFT JOIN email_categories c ON c.id = pr.classification_category_id
+                ORDER BY pr.updated_at DESC
                 LIMIT $1",
                 &[&limit],
             )
@@ -205,8 +222,16 @@ impl PgStore {
                 outbound_reason: row.get(23),
                 outbound_review_status: row.get(24),
                 outbound_review_reason: row.get(25),
-                created_at: row.get(26),
-                updated_at: row.get(27),
+                classification_category: row.get(26),
+                classification_topics: row.get(27),
+                classification_reason: row.get(28),
+                classification_confidence: row.get::<_, Option<i16>>(29).map(|value| value as u16),
+                decision_source: row.get(30),
+                matched_rule_id: row.get(31),
+                matched_rule_name: row.get(32),
+                matched_rule_goal: row.get(33),
+                created_at: row.get(34),
+                updated_at: row.get(35),
                 logs,
             });
         }
@@ -279,6 +304,505 @@ impl PgStore {
             .filter(|thread_id| !thread_id.trim().is_empty())
             .unwrap_or_else(|| message.metadata.thread_id()))
     }
+
+    pub async fn list_email_classification_config(
+        &self,
+    ) -> Result<EmailClassificationConfig, StorageError> {
+        Ok(EmailClassificationConfig {
+            categories: self.list_email_categories().await?,
+            topics: self.list_email_topics().await?,
+            rules: self.list_email_rules().await?,
+        })
+    }
+
+    async fn list_email_categories(&self) -> Result<Vec<EmailCategory>, StorageError> {
+        let rows = self
+            .client
+            .query(
+                "SELECT id, name, description, status, source, created_at::text, updated_at::text
+                FROM email_categories
+                ORDER BY name ASC",
+                &[],
+            )
+            .await?;
+        Ok(rows.into_iter().map(email_category_from_row).collect())
+    }
+
+    async fn list_email_topics(&self) -> Result<Vec<EmailTopic>, StorageError> {
+        let rows = self
+            .client
+            .query(
+                "SELECT id, name, description, status, source, created_at::text, updated_at::text
+                FROM email_topics
+                ORDER BY name ASC",
+                &[],
+            )
+            .await?;
+        Ok(rows.into_iter().map(email_topic_from_row).collect())
+    }
+
+    async fn list_email_rules(&self) -> Result<Vec<EmailRule>, StorageError> {
+        let rows = self
+            .client
+            .query(
+                "SELECT r.id, r.mailbox_id, r.name, r.category_id, c.name,
+                    COALESCE(array_remove(array_agg(rt.topic_id ORDER BY t.name), NULL), '{}'),
+                    COALESCE(array_remove(array_agg(t.name ORDER BY t.name), NULL), '{}'),
+                    r.action, r.reply_goal, r.enabled, r.priority, r.created_at::text, r.updated_at::text
+                FROM email_rules r
+                JOIN email_categories c ON c.id = r.category_id
+                LEFT JOIN email_rule_topics rt ON rt.rule_id = r.id
+                LEFT JOIN email_topics t ON t.id = rt.topic_id
+                GROUP BY r.id, c.name
+                ORDER BY r.mailbox_id ASC, r.priority ASC, r.id ASC",
+                &[],
+            )
+            .await?;
+        rows.into_iter().map(email_rule_from_row).collect()
+    }
+
+    pub async fn create_email_category(
+        &self,
+        name: &str,
+        description: &str,
+    ) -> Result<EmailCategory, StorageError> {
+        let name = normalize_label_name(name);
+        let row = self
+            .client
+            .query_one(
+                "INSERT INTO email_categories (name, description, source)
+                VALUES ($1, $2, 'user')
+                ON CONFLICT (name) DO UPDATE
+                SET description = EXCLUDED.description,
+                    status = 'active',
+                    updated_at = now()
+                RETURNING id, name, description, status, source, created_at::text, updated_at::text",
+                &[&name, &description],
+            )
+            .await?;
+        Ok(email_category_from_row(row))
+    }
+
+    pub async fn update_email_category(
+        &self,
+        id: i64,
+        name: &str,
+        description: &str,
+        status: &str,
+    ) -> Result<EmailCategory, StorageError> {
+        validate_label_status(status)?;
+        let name = normalize_label_name(name);
+        let row = self
+            .client
+            .query_opt(
+                "UPDATE email_categories
+                SET name = $1, description = $2, status = $3, updated_at = now()
+                WHERE id = $4
+                RETURNING id, name, description, status, source, created_at::text, updated_at::text",
+                &[&name, &description, &status, &id],
+            )
+            .await?
+            .ok_or_else(|| StorageError::ClassificationNotFound(format!("category {id}")))?;
+        Ok(email_category_from_row(row))
+    }
+
+    pub async fn delete_email_category(&self, id: i64) -> Result<(), StorageError> {
+        let deleted = self
+            .client
+            .execute("DELETE FROM email_categories WHERE id = $1", &[&id])
+            .await?;
+        if deleted == 0 {
+            return Err(StorageError::ClassificationNotFound(format!(
+                "category {id}"
+            )));
+        }
+        Ok(())
+    }
+
+    pub async fn merge_email_category(
+        &self,
+        source_id: i64,
+        target_id: i64,
+    ) -> Result<(), StorageError> {
+        if source_id == target_id {
+            return Err(StorageError::InvalidClassification(
+                "source and target category must differ".to_string(),
+            ));
+        }
+        self.client.batch_execute("BEGIN").await?;
+        let result: Result<(), StorageError> = async {
+            self.require_category(target_id).await?;
+            self.require_category(source_id).await?;
+            self.client
+                .execute(
+                    "UPDATE processing_runs
+                    SET classification_category_id = $1, updated_at = now()
+                    WHERE classification_category_id = $2",
+                    &[&target_id, &source_id],
+                )
+                .await?;
+            self.client
+                .execute(
+                    "UPDATE email_rules
+                    SET category_id = $1, updated_at = now()
+                    WHERE category_id = $2",
+                    &[&target_id, &source_id],
+                )
+                .await?;
+            self.client
+                .execute("DELETE FROM email_categories WHERE id = $1", &[&source_id])
+                .await?;
+            Ok(())
+        }
+        .await;
+        self.finish_transaction(result).await
+    }
+
+    pub async fn create_email_topic(
+        &self,
+        name: &str,
+        description: &str,
+    ) -> Result<EmailTopic, StorageError> {
+        let name = normalize_label_name(name);
+        let row = self
+            .client
+            .query_one(
+                "INSERT INTO email_topics (name, description, source)
+                VALUES ($1, $2, 'user')
+                ON CONFLICT (name) DO UPDATE
+                SET description = EXCLUDED.description,
+                    status = 'active',
+                    updated_at = now()
+                RETURNING id, name, description, status, source, created_at::text, updated_at::text",
+                &[&name, &description],
+            )
+            .await?;
+        Ok(email_topic_from_row(row))
+    }
+
+    pub async fn update_email_topic(
+        &self,
+        id: i64,
+        name: &str,
+        description: &str,
+        status: &str,
+    ) -> Result<EmailTopic, StorageError> {
+        validate_label_status(status)?;
+        let name = normalize_label_name(name);
+        let row = self
+            .client
+            .query_opt(
+                "UPDATE email_topics
+                SET name = $1, description = $2, status = $3, updated_at = now()
+                WHERE id = $4
+                RETURNING id, name, description, status, source, created_at::text, updated_at::text",
+                &[&name, &description, &status, &id],
+            )
+            .await?
+            .ok_or_else(|| StorageError::ClassificationNotFound(format!("topic {id}")))?;
+        Ok(email_topic_from_row(row))
+    }
+
+    pub async fn delete_email_topic(&self, id: i64) -> Result<(), StorageError> {
+        let deleted = self
+            .client
+            .execute("DELETE FROM email_topics WHERE id = $1", &[&id])
+            .await?;
+        if deleted == 0 {
+            return Err(StorageError::ClassificationNotFound(format!("topic {id}")));
+        }
+        Ok(())
+    }
+
+    pub async fn merge_email_topic(
+        &self,
+        source_id: i64,
+        target_id: i64,
+    ) -> Result<(), StorageError> {
+        if source_id == target_id {
+            return Err(StorageError::InvalidClassification(
+                "source and target topic must differ".to_string(),
+            ));
+        }
+        self.client.batch_execute("BEGIN").await?;
+        let result: Result<(), StorageError> = async {
+            self.require_topic(target_id).await?;
+            self.require_topic(source_id).await?;
+            self.client
+                .execute(
+                    "UPDATE processing_runs
+                    SET classification_topic_ids = ARRAY(
+                        SELECT DISTINCT CASE WHEN topic_id = $1 THEN $2 ELSE topic_id END
+                        FROM unnest(classification_topic_ids) AS topic_id
+                    ),
+                    updated_at = now()
+                    WHERE $1 = ANY(classification_topic_ids)",
+                    &[&source_id, &target_id],
+                )
+                .await?;
+            self.client
+                .execute(
+                    "INSERT INTO email_rule_topics (rule_id, topic_id)
+                    SELECT rule_id, $1 FROM email_rule_topics WHERE topic_id = $2
+                    ON CONFLICT DO NOTHING",
+                    &[&target_id, &source_id],
+                )
+                .await?;
+            self.client
+                .execute(
+                    "DELETE FROM email_rule_topics WHERE topic_id = $1",
+                    &[&source_id],
+                )
+                .await?;
+            self.client
+                .execute("DELETE FROM email_topics WHERE id = $1", &[&source_id])
+                .await?;
+            Ok(())
+        }
+        .await;
+        self.finish_transaction(result).await
+    }
+
+    pub async fn create_email_rule(&self, rule: NewEmailRule) -> Result<EmailRule, StorageError> {
+        validate_rule(&rule)?;
+        self.client.batch_execute("BEGIN").await?;
+        let result = self.insert_email_rule(rule).await;
+        self.finish_transaction(result).await
+    }
+
+    pub async fn update_email_rule(
+        &self,
+        id: i64,
+        rule: NewEmailRule,
+    ) -> Result<EmailRule, StorageError> {
+        validate_rule(&rule)?;
+        self.client.batch_execute("BEGIN").await?;
+        let result: Result<EmailRule, StorageError> = async {
+            let row = self
+                .client
+                .query_opt(
+                    "UPDATE email_rules
+                    SET mailbox_id = $1, name = $2, category_id = $3, action = $4,
+                        reply_goal = $5, enabled = $6, priority = $7, updated_at = now()
+                    WHERE id = $8
+                    RETURNING id",
+                    &[
+                        &rule.mailbox_id,
+                        &rule.name,
+                        &rule.category_id,
+                        &rule.action.as_str(),
+                        &rule.reply_goal,
+                        &rule.enabled,
+                        &rule.priority,
+                        &id,
+                    ],
+                )
+                .await?
+                .ok_or_else(|| StorageError::ClassificationNotFound(format!("rule {id}")))?;
+            let rule_id: i64 = row.get(0);
+            self.replace_rule_topics(rule_id, &rule.topic_ids).await?;
+            self.get_email_rule(rule_id).await
+        }
+        .await;
+        self.finish_transaction(result).await
+    }
+
+    pub async fn delete_email_rule(&self, id: i64) -> Result<(), StorageError> {
+        let deleted = self
+            .client
+            .execute("DELETE FROM email_rules WHERE id = $1", &[&id])
+            .await?;
+        if deleted == 0 {
+            return Err(StorageError::ClassificationNotFound(format!("rule {id}")));
+        }
+        Ok(())
+    }
+
+    async fn insert_email_rule(&self, rule: NewEmailRule) -> Result<EmailRule, StorageError> {
+        let row = self
+            .client
+            .query_one(
+                "INSERT INTO email_rules
+                (mailbox_id, name, category_id, action, reply_goal, enabled, priority)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING id",
+                &[
+                    &rule.mailbox_id,
+                    &rule.name,
+                    &rule.category_id,
+                    &rule.action.as_str(),
+                    &rule.reply_goal,
+                    &rule.enabled,
+                    &rule.priority,
+                ],
+            )
+            .await?;
+        let rule_id: i64 = row.get(0);
+        self.replace_rule_topics(rule_id, &rule.topic_ids).await?;
+        self.get_email_rule(rule_id).await
+    }
+
+    async fn replace_rule_topics(
+        &self,
+        rule_id: i64,
+        topic_ids: &[i64],
+    ) -> Result<(), StorageError> {
+        self.client
+            .execute(
+                "DELETE FROM email_rule_topics WHERE rule_id = $1",
+                &[&rule_id],
+            )
+            .await?;
+        for topic_id in topic_ids {
+            self.client
+                .execute(
+                    "INSERT INTO email_rule_topics (rule_id, topic_id)
+                    VALUES ($1, $2)
+                    ON CONFLICT DO NOTHING",
+                    &[&rule_id, topic_id],
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn get_email_rule(&self, id: i64) -> Result<EmailRule, StorageError> {
+        let row = self
+            .client
+            .query_opt(
+                "SELECT r.id, r.mailbox_id, r.name, r.category_id, c.name,
+                    COALESCE(array_remove(array_agg(rt.topic_id ORDER BY t.name), NULL), '{}'),
+                    COALESCE(array_remove(array_agg(t.name ORDER BY t.name), NULL), '{}'),
+                    r.action, r.reply_goal, r.enabled, r.priority, r.created_at::text, r.updated_at::text
+                FROM email_rules r
+                JOIN email_categories c ON c.id = r.category_id
+                LEFT JOIN email_rule_topics rt ON rt.rule_id = r.id
+                LEFT JOIN email_topics t ON t.id = rt.topic_id
+                WHERE r.id = $1
+                GROUP BY r.id, c.name",
+                &[&id],
+            )
+            .await?
+            .ok_or_else(|| StorageError::ClassificationNotFound(format!("rule {id}")))?;
+        email_rule_from_row(row)
+    }
+
+    async fn require_category(&self, id: i64) -> Result<(), StorageError> {
+        let exists = self
+            .client
+            .query_opt("SELECT 1 FROM email_categories WHERE id = $1", &[&id])
+            .await?
+            .is_some();
+        if exists {
+            Ok(())
+        } else {
+            Err(StorageError::ClassificationNotFound(format!(
+                "category {id}"
+            )))
+        }
+    }
+
+    async fn require_topic(&self, id: i64) -> Result<(), StorageError> {
+        let exists = self
+            .client
+            .query_opt("SELECT 1 FROM email_topics WHERE id = $1", &[&id])
+            .await?
+            .is_some();
+        if exists {
+            Ok(())
+        } else {
+            Err(StorageError::ClassificationNotFound(format!("topic {id}")))
+        }
+    }
+
+    async fn finish_transaction<T>(
+        &self,
+        result: Result<T, StorageError>,
+    ) -> Result<T, StorageError> {
+        match result {
+            Ok(value) => {
+                self.client.batch_execute("COMMIT").await?;
+                Ok(value)
+            }
+            Err(error) => {
+                let _ = self.client.batch_execute("ROLLBACK").await;
+                Err(error)
+            }
+        }
+    }
+}
+
+fn email_category_from_row(row: tokio_postgres::Row) -> EmailCategory {
+    EmailCategory {
+        id: row.get(0),
+        name: row.get(1),
+        description: row.get(2),
+        status: row.get(3),
+        source: row.get(4),
+        created_at: row.get(5),
+        updated_at: row.get(6),
+    }
+}
+
+fn email_topic_from_row(row: tokio_postgres::Row) -> EmailTopic {
+    EmailTopic {
+        id: row.get(0),
+        name: row.get(1),
+        description: row.get(2),
+        status: row.get(3),
+        source: row.get(4),
+        created_at: row.get(5),
+        updated_at: row.get(6),
+    }
+}
+
+fn email_rule_from_row(row: tokio_postgres::Row) -> Result<EmailRule, StorageError> {
+    let action: String = row.get(7);
+    Ok(EmailRule {
+        id: row.get(0),
+        mailbox_id: row.get(1),
+        name: row.get(2),
+        category_id: row.get(3),
+        category: row.get(4),
+        topic_ids: row.get(5),
+        topics: row.get(6),
+        action: EmailRuleAction::try_from(action.as_str())
+            .map_err(StorageError::InvalidClassification)?,
+        reply_goal: row.get(8),
+        enabled: row.get(9),
+        priority: row.get(10),
+        created_at: row.get(11),
+        updated_at: row.get(12),
+    })
+}
+
+fn validate_label_status(status: &str) -> Result<(), StorageError> {
+    if matches!(status, "active" | "archived") {
+        Ok(())
+    } else {
+        Err(StorageError::InvalidClassification(format!(
+            "label status must be active or archived, got {status}"
+        )))
+    }
+}
+
+fn validate_rule(rule: &NewEmailRule) -> Result<(), StorageError> {
+    if rule.mailbox_id.trim().is_empty() {
+        return Err(StorageError::InvalidClassification(
+            "rule mailbox_id is required".to_string(),
+        ));
+    }
+    if rule.name.trim().is_empty() {
+        return Err(StorageError::InvalidClassification(
+            "rule name is required".to_string(),
+        ));
+    }
+    if !matches!(rule.action, EmailRuleAction::Noop) && rule.reply_goal.trim().is_empty() {
+        return Err(StorageError::InvalidClassification(
+            "reply_goal is required for reply and forward rules".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[async_trait::async_trait]
@@ -503,6 +1027,247 @@ impl ProcessingStore for PgStore {
         Ok(())
     }
 
+    async fn ensure_default_classification_policy(
+        &self,
+        config: &AppConfig,
+    ) -> Result<(), StorageError> {
+        for (name, description) in default_categories() {
+            self.client
+                .execute(
+                    "INSERT INTO email_categories (name, description, source)
+                    VALUES ($1, $2, 'seed')
+                    ON CONFLICT (name) DO UPDATE
+                    SET description = EXCLUDED.description,
+                        status = 'active',
+                        updated_at = now()",
+                    &[&name, &description],
+                )
+                .await?;
+        }
+        for (name, description) in default_topics() {
+            self.client
+                .execute(
+                    "INSERT INTO email_topics (name, description, source)
+                    VALUES ($1, $2, 'seed')
+                    ON CONFLICT (name) DO UPDATE
+                    SET description = EXCLUDED.description,
+                        status = 'active',
+                        updated_at = now()",
+                    &[&name, &description],
+                )
+                .await?;
+        }
+
+        let category_row = self
+            .client
+            .query_one(
+                "SELECT id FROM email_categories WHERE name = 'marketing_vendor'",
+                &[],
+            )
+            .await?;
+        let category_id: i64 = category_row.get(0);
+        for mailbox in &config.mailboxes {
+            let seeded = self
+                .client
+                .execute(
+                    "INSERT INTO email_rule_mailbox_seeds (mailbox_id)
+                    VALUES ($1)
+                    ON CONFLICT DO NOTHING",
+                    &[&mailbox.id],
+                )
+                .await?;
+            if seeded == 0 {
+                continue;
+            }
+            self.client
+                .execute(
+                    "INSERT INTO email_rules
+                    (mailbox_id, name, category_id, action, reply_goal, enabled, priority)
+                    SELECT $1, $2, $3, $4, $5, TRUE, 100
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM email_rules WHERE mailbox_id = $1 AND category_id = $3
+                    )",
+                    &[
+                        &mailbox.id,
+                        &"Auto-decline marketing/vendor outreach",
+                        &category_id,
+                        &EmailRuleAction::Reply.as_str(),
+                        &DEFAULT_MARKETING_REPLY_GOAL,
+                    ],
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn active_email_taxonomy(&self) -> Result<EmailTaxonomy, StorageError> {
+        let categories = self
+            .client
+            .query(
+                "SELECT id, name, description, status, source, created_at::text, updated_at::text
+                FROM email_categories
+                WHERE status = 'active'
+                ORDER BY name ASC",
+                &[],
+            )
+            .await?
+            .into_iter()
+            .map(email_category_from_row)
+            .collect();
+        let topics = self
+            .client
+            .query(
+                "SELECT id, name, description, status, source, created_at::text, updated_at::text
+                FROM email_topics
+                WHERE status = 'active'
+                ORDER BY name ASC",
+                &[],
+            )
+            .await?
+            .into_iter()
+            .map(email_topic_from_row)
+            .collect();
+        Ok(EmailTaxonomy { categories, topics })
+    }
+
+    async fn resolve_email_classification(
+        &self,
+        classification: &EmailClassification,
+    ) -> Result<ResolvedEmailClassification, StorageError> {
+        let category_name = normalize_label_name(&classification.category);
+        let category_row = self
+            .client
+            .query_one(
+                "INSERT INTO email_categories (name, description, source)
+                VALUES ($1, 'AI-created category', 'ai')
+                ON CONFLICT (name) DO UPDATE
+                SET status = 'active', updated_at = now()
+                RETURNING id, name",
+                &[&category_name],
+            )
+            .await?;
+        let category_id: i64 = category_row.get(0);
+        let category: String = category_row.get(1);
+
+        let topic_names = if classification.topics.is_empty() {
+            vec!["general".to_string()]
+        } else {
+            classification
+                .topics
+                .iter()
+                .map(|topic| normalize_label_name(topic))
+                .collect::<Vec<_>>()
+        };
+        let mut topic_ids = Vec::new();
+        let mut topics = Vec::new();
+        for topic_name in topic_names {
+            let topic_row = self
+                .client
+                .query_one(
+                    "INSERT INTO email_topics (name, description, source)
+                    VALUES ($1, 'AI-created topic', 'ai')
+                    ON CONFLICT (name) DO UPDATE
+                    SET status = 'active', updated_at = now()
+                    RETURNING id, name",
+                    &[&topic_name],
+                )
+                .await?;
+            let topic_id: i64 = topic_row.get(0);
+            let topic: String = topic_row.get(1);
+            if !topic_ids.contains(&topic_id) {
+                topic_ids.push(topic_id);
+                topics.push(topic);
+            }
+        }
+
+        Ok(ResolvedEmailClassification {
+            category_id,
+            category,
+            topic_ids,
+            topics,
+            reason: classification.reason.clone(),
+            confidence: classification.confidence.min(100),
+        })
+    }
+
+    async fn find_matching_email_rule(
+        &self,
+        mailbox_id: &str,
+        classification: &ResolvedEmailClassification,
+    ) -> Result<Option<EmailRule>, StorageError> {
+        let rows = self
+            .client
+            .query(
+                "SELECT r.id, r.mailbox_id, r.name, r.category_id, c.name,
+                    COALESCE(array_remove(array_agg(rt.topic_id ORDER BY t.name), NULL), '{}'),
+                    COALESCE(array_remove(array_agg(t.name ORDER BY t.name), NULL), '{}'),
+                    r.action, r.reply_goal, r.enabled, r.priority, r.created_at::text, r.updated_at::text
+                FROM email_rules r
+                JOIN email_categories c ON c.id = r.category_id
+                LEFT JOIN email_rule_topics rt ON rt.rule_id = r.id
+                LEFT JOIN email_topics t ON t.id = rt.topic_id
+                WHERE r.mailbox_id = $1 AND r.category_id = $2 AND r.enabled = TRUE
+                GROUP BY r.id, c.name
+                ORDER BY CASE WHEN COUNT(rt.topic_id) = 0 THEN 1 ELSE 0 END, r.priority ASC, r.id ASC",
+                &[&mailbox_id, &classification.category_id],
+            )
+            .await?;
+        for row in rows {
+            let rule = email_rule_from_row(row)?;
+            if rule.topic_ids.is_empty()
+                || rule
+                    .topic_ids
+                    .iter()
+                    .any(|topic_id| classification.topic_ids.contains(topic_id))
+            {
+                return Ok(Some(rule));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn record_email_classification(
+        &self,
+        key: &DedupeKey,
+        classification: &ResolvedEmailClassification,
+        decision_source: &str,
+        matched_rule: Option<&EmailRule>,
+    ) -> Result<(), StorageError> {
+        let confidence = classification.confidence as i16;
+        let matched_rule_id = matched_rule.map(|rule| rule.id);
+        let matched_rule_name = matched_rule.map(|rule| rule.name.clone());
+        let matched_rule_goal = matched_rule.map(|rule| rule.reply_goal.clone());
+        self.client
+            .execute(
+                "UPDATE processing_runs
+                SET classification_category_id = $1,
+                    classification_topic_ids = $2,
+                    classification_reason = $3,
+                    classification_confidence = $4,
+                    decision_source = $5,
+                    matched_rule_id = $6,
+                    matched_rule_name = $7,
+                    matched_rule_goal = $8,
+                    updated_at = now()
+                WHERE mailbox_id = $9 AND uid_validity = $10 AND uid = $11",
+                &[
+                    &classification.category_id,
+                    &classification.topic_ids,
+                    &classification.reason,
+                    &confidence,
+                    &decision_source,
+                    &matched_rule_id,
+                    &matched_rule_name,
+                    &matched_rule_goal,
+                    &key.mailbox_id,
+                    &(key.uid_validity as i64),
+                    &(key.uid as i64),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn upsert_sender_review(
         &self,
         sender: &str,
@@ -539,7 +1304,7 @@ mod tests {
     use super::*;
     use crate::logging::LogLevel;
     use crate::mail::MessageMetadata;
-    use crate::storage::{HISTORY_BODY_THREADING_SQL, INIT_SQL};
+    use crate::storage::{EMAIL_CLASSIFICATION_RULES_SQL, HISTORY_BODY_THREADING_SQL, INIT_SQL};
 
     #[tokio::test]
     async fn pg_store_migrates_idempotently_and_tracks_checksum() {
@@ -559,7 +1324,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].get::<_, i32>(0), 1);
         assert_eq!(rows[0].get::<_, String>(1), "001_init");
         assert_eq!(rows[0].get::<_, String>(2), migration_checksum(INIT_SQL));
@@ -568,6 +1333,15 @@ mod tests {
         assert_eq!(
             rows[1].get::<_, String>(2),
             migration_checksum(HISTORY_BODY_THREADING_SQL)
+        );
+        assert_eq!(rows[2].get::<_, i32>(0), 3);
+        assert_eq!(
+            rows[2].get::<_, String>(1),
+            "003_email_classification_rules"
+        );
+        assert_eq!(
+            rows[2].get::<_, String>(2),
+            migration_checksum(EMAIL_CLASSIFICATION_RULES_SQL)
         );
 
         pg.cleanup().await;
@@ -673,6 +1447,46 @@ mod tests {
             .record_outbound_review(&key, "approved", "looks safe")
             .await
             .unwrap();
+        let category = pg
+            .store
+            .create_email_category("question", "A project question")
+            .await
+            .unwrap();
+        let topic = pg
+            .store
+            .create_email_topic("dense_mem", "Dense-Mem")
+            .await
+            .unwrap();
+        let rule = pg
+            .store
+            .create_email_rule(NewEmailRule {
+                mailbox_id: "support".to_string(),
+                name: "Answer Dense-Mem questions".to_string(),
+                category_id: category.id,
+                topic_ids: vec![topic.id],
+                action: EmailRuleAction::Reply,
+                reply_goal: "Answer using project context.".to_string(),
+                enabled: true,
+                priority: 20,
+            })
+            .await
+            .unwrap();
+        pg.store
+            .record_email_classification(
+                &key,
+                &ResolvedEmailClassification {
+                    category_id: category.id,
+                    category: category.name.clone(),
+                    topic_ids: vec![topic.id],
+                    topics: vec![topic.name.clone()],
+                    reason: "asks about Dense-Mem".to_string(),
+                    confidence: 88,
+                },
+                "rule",
+                Some(&rule),
+            )
+            .await
+            .unwrap();
         pg.store
             .update_message_status(&key, "replied", Some(&OutboundActionKind::Reply))
             .await
@@ -753,6 +1567,23 @@ mod tests {
         assert_eq!(email.outbound_reason, Some("known answer".to_string()));
         assert_eq!(email.outbound_review_status, Some("approved".to_string()));
         assert_eq!(email.outbound_review_reason, Some("looks safe".to_string()));
+        assert_eq!(email.classification_category, Some("question".to_string()));
+        assert_eq!(email.classification_topics, vec!["dense_mem"]);
+        assert_eq!(
+            email.classification_reason,
+            Some("asks about Dense-Mem".to_string())
+        );
+        assert_eq!(email.classification_confidence, Some(88));
+        assert_eq!(email.decision_source, Some("rule".to_string()));
+        assert_eq!(email.matched_rule_id, Some(rule.id));
+        assert_eq!(
+            email.matched_rule_name,
+            Some("Answer Dense-Mem questions".to_string())
+        );
+        assert_eq!(
+            email.matched_rule_goal,
+            Some("Answer using project context.".to_string())
+        );
         assert_eq!(
             email
                 .logs
