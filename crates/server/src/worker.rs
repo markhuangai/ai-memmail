@@ -3,7 +3,10 @@ use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
-use crate::ai::{AgentDecision, DecisionEngine, LiveDecisionEngine, OutboundReviewDecision};
+use crate::ai::{
+    forward_decision, human_review_requested, AgentDecision, DecisionEngine, LiveDecisionEngine,
+    OutboundReviewDecision,
+};
 use crate::classification::{EmailRule, ResolvedEmailClassification};
 use crate::config::{AppConfig, ConfigError, MailboxConfig};
 use crate::logging::{
@@ -446,48 +449,69 @@ async fn process_message(
         classification_started.elapsed(),
     )
     .await;
-    let matched_rule = match processing
-        .find_matching_email_rule(&mailbox.id, &classification)
-        .await
-    {
-        Ok(rule) => rule,
-        Err(error) => {
-            logger
-                .log(message_event(
-                    LogLevel::Error,
+    let needs_human_review = human_review_requested(&message);
+    let matched_rule = if needs_human_review {
+        None
+    } else {
+        match processing
+            .find_matching_email_rule(&mailbox.id, &classification)
+            .await
+        {
+            Ok(rule) => rule,
+            Err(error) => {
+                logger
+                    .log(message_event(
+                        LogLevel::Error,
+                        run_id,
+                        &message,
+                        "rule_match",
+                        "failed",
+                        classification_started.elapsed(),
+                        Some(error.to_string()),
+                    ))
+                    .await;
+                update_processing_status(
+                    processing,
+                    logger,
                     run_id,
                     &message,
-                    "rule_match",
-                    "failed",
-                    classification_started.elapsed(),
-                    Some(error.to_string()),
-                ))
+                    PROCESSING_STATUS_RETRYABLE_FAILED,
+                    None,
+                )
                 .await;
-            update_processing_status(
-                processing,
-                logger,
-                run_id,
-                &message,
-                PROCESSING_STATUS_RETRYABLE_FAILED,
-                None,
-            )
-            .await;
-            return;
+                return;
+            }
         }
     };
-    let decision_source = if matched_rule.is_some() {
+    let decision_source = if needs_human_review {
+        "human_review"
+    } else if matched_rule.is_some() {
         "rule"
     } else {
         "agent"
     };
-    log_rule_match(
-        logger,
-        run_id,
-        &message,
-        matched_rule.as_ref(),
-        classification_started.elapsed(),
-    )
-    .await;
+    if needs_human_review {
+        logger
+            .log(message_event(
+                LogLevel::Info,
+                run_id,
+                &message,
+                "rule_match",
+                "skipped",
+                classification_started.elapsed(),
+                Some("sender requested human review".to_string()),
+            ))
+            .await;
+    } else {
+        log_rule_match(
+            logger,
+            run_id,
+            &message,
+            matched_rule.as_ref(),
+            classification_started.elapsed(),
+        )
+        .await;
+    }
     record_email_classification_for_history(
         processing,
         logger,
@@ -500,7 +524,19 @@ async fn process_message(
     .await;
 
     let decision_started = Instant::now();
-    let decision = if let Some(rule) = &matched_rule {
+    let decision = if needs_human_review {
+        let decision = forward_decision(mailbox, &message, "sender requested human review");
+        log_decision(
+            logger,
+            run_id,
+            &message,
+            &decision,
+            "human_review",
+            decision_started.elapsed(),
+        )
+        .await;
+        decision
+    } else if let Some(rule) = &matched_rule {
         match decisions
             .rule_decision(config, mailbox, &message, &raw_classification, rule)
             .await
@@ -2312,6 +2348,80 @@ mod tests {
             .events()
             .iter()
             .any(|event| event.action == "rule_match" && event.status == "matched"));
+    }
+
+    #[tokio::test]
+    async fn human_review_request_skips_matching_rule() {
+        let logger = crate::logging::MemoryLogger::default();
+        let message = inbound(
+            67,
+            "agency@example.com",
+            "Grow your audience",
+            "We can sell you a paid PR campaign. Please escalate to human.",
+        );
+        let key = message.metadata.dedupe_key();
+        let mail = FakeMail::new(vec![message]);
+        let mut decisions = fake_decisions(safe_scan(), reply_action());
+        decisions.classification = marketing_classification();
+        decisions.rule_decision = AgentDecision {
+            action: reply_action(),
+            safety_notes: "rule-generated response".to_string(),
+        };
+        let processing = MemoryProcessingStore::default();
+
+        run_once_with_store(
+            &config(),
+            &logger,
+            "run-test",
+            &mail,
+            &decisions,
+            &processing,
+        )
+        .await;
+
+        let sent = mail.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].kind, OutboundActionKind::Forward);
+        assert_eq!(sent[0].recipients, vec!["human@example.com"]);
+        assert_eq!(sent[0].reason, "sender requested human review");
+        assert_eq!(
+            decisions.call_counts(),
+            DecisionCallCounts {
+                safety_scan: 1,
+                classify_email: 1,
+                agent_decision: 0,
+                rule_decision: 0,
+                outbound_review: 0,
+            }
+        );
+        assert_eq!(
+            processing.email_classification(&key),
+            Some(crate::storage::StoredEmailClassification {
+                category: "marketing_vendor".to_string(),
+                topics: vec!["general".to_string()],
+                reason: "offers a paid promotion service".to_string(),
+                confidence: 94,
+                decision_source: "human_review".to_string(),
+                matched_rule_name: None,
+            })
+        );
+        let resolved = processing
+            .resolve_email_classification(&marketing_classification())
+            .await
+            .unwrap();
+        assert!(processing
+            .find_matching_email_rule("support", &resolved)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(logger
+            .events()
+            .iter()
+            .any(|event| event.action == "rule_match" && event.status == "skipped"));
+        assert!(logger
+            .events()
+            .iter()
+            .any(|event| event.action == "human_review" && event.status == "forward"));
     }
 
     #[tokio::test]

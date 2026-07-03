@@ -1066,38 +1066,39 @@ impl ProcessingStore for PgStore {
             )
             .await?;
         let category_id: i64 = category_row.get(0);
-        for mailbox in &config.mailboxes {
-            let seeded = self
-                .client
-                .execute(
-                    "INSERT INTO email_rule_mailbox_seeds (mailbox_id)
-                    VALUES ($1)
-                    ON CONFLICT DO NOTHING",
-                    &[&mailbox.id],
-                )
-                .await?;
-            if seeded == 0 {
-                continue;
-            }
-            self.client
-                .execute(
-                    "INSERT INTO email_rules
+        self.client.batch_execute("BEGIN").await?;
+        let result: Result<(), StorageError> = async {
+            for mailbox in &config.mailboxes {
+                self.client
+                    .execute(
+                        "INSERT INTO email_rules
                     (mailbox_id, name, category_id, action, reply_goal, enabled, priority)
                     SELECT $1, $2, $3, $4, $5, TRUE, 100
                     WHERE NOT EXISTS (
                         SELECT 1 FROM email_rules WHERE mailbox_id = $1 AND category_id = $3
                     )",
-                    &[
-                        &mailbox.id,
-                        &"Auto-decline marketing/vendor outreach",
-                        &category_id,
-                        &EmailRuleAction::Reply.as_str(),
-                        &DEFAULT_MARKETING_REPLY_GOAL,
-                    ],
-                )
-                .await?;
+                        &[
+                            &mailbox.id,
+                            &"Auto-decline marketing/vendor outreach",
+                            &category_id,
+                            &EmailRuleAction::Reply.as_str(),
+                            &DEFAULT_MARKETING_REPLY_GOAL,
+                        ],
+                    )
+                    .await?;
+                self.client
+                    .execute(
+                        "INSERT INTO email_rule_mailbox_seeds (mailbox_id)
+                    VALUES ($1)
+                    ON CONFLICT DO NOTHING",
+                        &[&mailbox.id],
+                    )
+                    .await?;
+            }
+            Ok(())
         }
-        Ok(())
+        .await;
+        self.finish_transaction(result).await
     }
 
     async fn active_email_taxonomy(&self) -> Result<EmailTaxonomy, StorageError> {
@@ -1301,7 +1302,13 @@ impl ActionLogger for PgStore {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+    use crate::config::{
+        AgentConfig, AiConfig, AiProtocol, ImapConfig, LoggingConfig, MailboxConfig, PromptConfig,
+        ReviewConfig, SmtpConfig,
+    };
     use crate::logging::LogLevel;
     use crate::mail::MessageMetadata;
     use crate::storage::{EMAIL_CLASSIFICATION_RULES_SQL, HISTORY_BODY_THREADING_SQL, INIT_SQL};
@@ -1716,6 +1723,61 @@ mod tests {
         pg.cleanup().await;
     }
 
+    #[tokio::test]
+    async fn pg_store_recovers_default_rule_when_seed_marker_exists_without_rule() {
+        let Some(pg) = TestPgStore::create().await else {
+            return;
+        };
+        pg.store.migrate().await.unwrap();
+        let config = app_config_with_mailboxes(vec!["support"]);
+
+        pg.store
+            .ensure_default_classification_policy(&config)
+            .await
+            .unwrap();
+        pg.store
+            .client
+            .execute(
+                "DELETE FROM email_rules WHERE mailbox_id = $1",
+                &[&"support"],
+            )
+            .await
+            .unwrap();
+        let marker_count = pg
+            .store
+            .client
+            .query_one(
+                "SELECT count(*) FROM email_rule_mailbox_seeds WHERE mailbox_id = $1",
+                &[&"support"],
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0);
+        assert_eq!(marker_count, 1);
+
+        pg.store
+            .ensure_default_classification_policy(&config)
+            .await
+            .unwrap();
+
+        let rule_count = pg
+            .store
+            .client
+            .query_one(
+                "SELECT count(*)
+                FROM email_rules r
+                JOIN email_categories c ON c.id = r.category_id
+                WHERE r.mailbox_id = $1 AND c.name = 'marketing_vendor'",
+                &[&"support"],
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0);
+        assert_eq!(rule_count, 1);
+
+        pg.cleanup().await;
+    }
+
     fn message(uid: u64) -> InboundMessage {
         InboundMessage {
             metadata: MessageMetadata {
@@ -1729,6 +1791,74 @@ mod tests {
                 subject: "Question".to_string(),
             },
             plain_text: "Body".to_string(),
+        }
+    }
+
+    fn app_config_with_mailboxes(mailbox_ids: Vec<&str>) -> AppConfig {
+        AppConfig {
+            version: 1,
+            database: DatabaseConfig {
+                host: "postgres".to_string(),
+                port: 5432,
+                username: "user".to_string(),
+                password: "db-secret".to_string(),
+                database: "ai_memmail".to_string(),
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+                format: "json".to_string(),
+                verbose_actions: true,
+                retention_days: 180,
+            },
+            prompts: PromptConfig {
+                root: "prompts".into(),
+                safety_scan: "safety.md".into(),
+                email_classifier: "classifier.md".into(),
+                rule_action: "rule-action.md".into(),
+            },
+            ai: AiConfig {
+                protocol: AiProtocol::Openai,
+                api_url: "https://api.example/v1".to_string(),
+                api_secret: "secret".to_string(),
+                model: "model".to_string(),
+                review: ReviewConfig {
+                    enabled: false,
+                    prompt_path: "review.md".into(),
+                },
+            },
+            mcp_servers: BTreeMap::new(),
+            mailboxes: mailbox_ids
+                .into_iter()
+                .map(|id| MailboxConfig {
+                    id: id.to_string(),
+                    address: format!("{id}@example.com"),
+                    enabled: true,
+                    poll_interval_seconds: 30,
+                    safety_forward_to: vec!["human@example.com".to_string()],
+                    mcp_servers: vec![],
+                    agent: AgentConfig {
+                        system_prompt_path: "agent.md".into(),
+                        default_forward_to: vec![],
+                    },
+                    imap: ImapConfig {
+                        host: "imap.example.com".to_string(),
+                        port: 993,
+                        tls: true,
+                        username: format!("{id}@example.com"),
+                        password: "secret".to_string(),
+                        folder: "INBOX".to_string(),
+                    },
+                    smtp: SmtpConfig {
+                        host: "smtp.example.com".to_string(),
+                        port: 587,
+                        starttls: true,
+                        username: format!("{id}@example.com"),
+                        password: "secret".to_string(),
+                        from: format!("{id}@example.com"),
+                    },
+                })
+                .collect(),
+            banned_senders: vec![],
         }
     }
 
