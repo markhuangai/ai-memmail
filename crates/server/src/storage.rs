@@ -970,6 +970,10 @@ pub(crate) fn log_level_value(level: LogLevel) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{
+        AgentConfig, AiConfig, AiProtocol, DatabaseConfig, ImapConfig, LoggingConfig,
+        MailboxConfig, PromptConfig, ReviewConfig, SmtpConfig,
+    };
     use crate::mail::{InboundMessage, MessageMetadata};
 
     #[test]
@@ -1346,6 +1350,294 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn memory_store_resolves_unknown_labels_and_records_classification() {
+        let store = MemoryProcessingStore::default();
+        let message = message(46);
+        let key = message.metadata.dedupe_key();
+
+        let resolved = store
+            .resolve_email_classification(&EmailClassification {
+                category: "New Category!".to_string(),
+                topics: vec![
+                    "Dense Mem".to_string(),
+                    "Dense Mem".to_string(),
+                    "New Topic".to_string(),
+                ],
+                reason: "category and topic are model-created".to_string(),
+                confidence: 255,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(resolved.category, "new_category");
+        assert_eq!(resolved.topics, vec!["dense_mem", "new_topic"]);
+        assert_eq!(resolved.confidence, 100);
+
+        let taxonomy = store.active_email_taxonomy().await.unwrap();
+        assert!(taxonomy
+            .categories
+            .iter()
+            .any(|category| category.name == "new_category" && category.source == "ai"));
+        assert!(taxonomy
+            .topics
+            .iter()
+            .any(|topic| topic.name == "new_topic" && topic.source == "ai"));
+
+        store
+            .record_email_classification(&key, &resolved, "agent", None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.email_classification(&key),
+            Some(StoredEmailClassification {
+                category: "new_category".to_string(),
+                topics: vec!["dense_mem".to_string(), "new_topic".to_string()],
+                reason: "category and topic are model-created".to_string(),
+                confidence: 100,
+                decision_source: "agent".to_string(),
+                matched_rule_name: None,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_store_defaults_empty_topics_to_general() {
+        let store = MemoryProcessingStore::default();
+
+        let resolved = store
+            .resolve_email_classification(&EmailClassification {
+                category: "question".to_string(),
+                topics: vec![],
+                reason: "asks about setup".to_string(),
+                confidence: 87,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(resolved.category, "question");
+        assert_eq!(resolved.topics, vec!["general"]);
+        assert_eq!(resolved.confidence, 87);
+    }
+
+    #[tokio::test]
+    async fn memory_store_matches_topic_specific_rule_before_general_rule() {
+        let store = MemoryProcessingStore::default();
+        let taxonomy = store.active_email_taxonomy().await.unwrap();
+        let question = taxonomy
+            .categories
+            .iter()
+            .find(|category| category.name == "question")
+            .unwrap();
+        let dense_mem = taxonomy
+            .topics
+            .iter()
+            .find(|topic| topic.name == "dense_mem")
+            .unwrap();
+
+        let general = store.add_email_rule(NewEmailRule {
+            mailbox_id: "support".to_string(),
+            name: "General question rule".to_string(),
+            category_id: question.id,
+            topic_ids: vec![],
+            action: EmailRuleAction::Forward,
+            reply_goal: "Forward broad questions to Mark.".to_string(),
+            enabled: true,
+            priority: 1,
+        });
+        let topic_specific = store.add_email_rule(NewEmailRule {
+            mailbox_id: "support".to_string(),
+            name: "Dense-Mem answer rule".to_string(),
+            category_id: question.id,
+            topic_ids: vec![dense_mem.id],
+            action: EmailRuleAction::Reply,
+            reply_goal: "Answer Dense-Mem setup questions.".to_string(),
+            enabled: true,
+            priority: 100,
+        });
+        store.add_email_rule(NewEmailRule {
+            mailbox_id: "support".to_string(),
+            name: "Disabled Dense-Mem rule".to_string(),
+            category_id: question.id,
+            topic_ids: vec![dense_mem.id],
+            action: EmailRuleAction::Noop,
+            reply_goal: String::new(),
+            enabled: false,
+            priority: 0,
+        });
+
+        let resolved = store
+            .resolve_email_classification(&EmailClassification {
+                category: "question".to_string(),
+                topics: vec!["dense_mem".to_string()],
+                reason: "asks about Dense-Mem".to_string(),
+                confidence: 91,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store
+                .find_matching_email_rule("support", &resolved)
+                .await
+                .unwrap(),
+            Some(topic_specific.clone())
+        );
+        assert_eq!(
+            store
+                .find_matching_email_rule("other", &resolved)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_ne!(general.id, topic_specific.id);
+    }
+
+    #[tokio::test]
+    async fn memory_store_seeds_default_marketing_rule_once_per_mailbox() {
+        let store = MemoryProcessingStore::default();
+        let config = app_config_with_mailboxes(vec!["support", "sales"]);
+
+        store
+            .ensure_default_classification_policy(&config)
+            .await
+            .unwrap();
+        store
+            .ensure_default_classification_policy(&config)
+            .await
+            .unwrap();
+
+        let resolved = store
+            .resolve_email_classification(&EmailClassification {
+                category: "marketing_vendor".to_string(),
+                topics: vec!["general".to_string()],
+                reason: "offers paid ads".to_string(),
+                confidence: 94,
+            })
+            .await
+            .unwrap();
+
+        let support_rule = store
+            .find_matching_email_rule("support", &resolved)
+            .await
+            .unwrap()
+            .unwrap();
+        let sales_rule = store
+            .find_matching_email_rule("sales", &resolved)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(support_rule.name, "Auto-decline marketing/vendor outreach");
+        assert_eq!(support_rule.reply_goal, DEFAULT_MARKETING_REPLY_GOAL);
+        assert_eq!(sales_rule.name, "Auto-decline marketing/vendor outreach");
+        assert_ne!(support_rule.id, sales_rule.id);
+    }
+
+    struct MinimalStore;
+
+    #[async_trait::async_trait]
+    impl ProcessingStore for MinimalStore {
+        async fn claim_message(
+            &self,
+            _run_id: &str,
+            _message: &InboundMessage,
+        ) -> Result<ProcessingClaim, StorageError> {
+            Ok(ProcessingClaim::Claimed)
+        }
+
+        async fn update_message_status(
+            &self,
+            _key: &DedupeKey,
+            _status: &str,
+            _outbound_action: Option<&OutboundActionKind>,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn record_safety_result(
+            &self,
+            _key: &DedupeKey,
+            _category: &SafetyCategory,
+            _reason: &str,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn upsert_sender_review(
+            &self,
+            _sender: &str,
+            _mailbox_id: &str,
+            _reason: &str,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn processing_store_trait_defaults_are_noops() {
+        let store = MinimalStore;
+        let message = message(47);
+        let key = message.metadata.dedupe_key();
+        let action = OutboundAction {
+            kind: OutboundActionKind::Noop,
+            recipients: vec![],
+            subject: String::new(),
+            body: String::new(),
+            reason: "nothing to do".to_string(),
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
+        };
+        let decision = AgentDecision {
+            action,
+            safety_notes: "safe".to_string(),
+        };
+
+        store.record_agent_decision(&key, &decision).await.unwrap();
+        store
+            .record_outbound_action(&key, &decision.action)
+            .await
+            .unwrap();
+        store
+            .record_outbound_review(&key, "approved", "safe")
+            .await
+            .unwrap();
+        store
+            .ensure_default_classification_policy(&app_config_with_mailboxes(vec!["support"]))
+            .await
+            .unwrap();
+
+        let taxonomy = store.active_email_taxonomy().await.unwrap();
+        assert!(taxonomy
+            .categories
+            .iter()
+            .any(|category| category.name == "question"));
+
+        let resolved = store
+            .resolve_email_classification(&EmailClassification {
+                category: "question".to_string(),
+                topics: vec!["general".to_string()],
+                reason: "default implementation".to_string(),
+                confidence: 99,
+            })
+            .await
+            .unwrap();
+        assert_eq!(resolved.category, "question");
+        assert_eq!(
+            store
+                .find_matching_email_rule("support", &resolved)
+                .await
+                .unwrap(),
+            None
+        );
+        store
+            .record_email_classification(&key, &resolved, "agent", None)
+            .await
+            .unwrap();
+    }
+
     fn message(uid: u64) -> InboundMessage {
         InboundMessage {
             metadata: MessageMetadata {
@@ -1359,6 +1651,74 @@ mod tests {
                 subject: "Question".to_string(),
             },
             plain_text: "Body".to_string(),
+        }
+    }
+
+    fn app_config_with_mailboxes(ids: Vec<&str>) -> AppConfig {
+        AppConfig {
+            version: 1,
+            database: DatabaseConfig {
+                host: "postgres".to_string(),
+                port: 5432,
+                username: "user".to_string(),
+                password: "secret".to_string(),
+                database: "ai_memmail".to_string(),
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+                format: "json".to_string(),
+                verbose_actions: true,
+                retention_days: 180,
+            },
+            prompts: PromptConfig {
+                root: "prompts".into(),
+                safety_scan: "safety.md".into(),
+                email_classifier: "email-classifier.md".into(),
+                rule_action: "rule-action.md".into(),
+            },
+            ai: AiConfig {
+                protocol: AiProtocol::Openai,
+                api_url: "https://api.example/v1".to_string(),
+                api_secret: "secret".to_string(),
+                model: "model".to_string(),
+                review: ReviewConfig {
+                    enabled: false,
+                    prompt_path: "review.md".into(),
+                },
+            },
+            mcp_servers: Default::default(),
+            mailboxes: ids
+                .into_iter()
+                .map(|id| MailboxConfig {
+                    id: id.to_string(),
+                    address: format!("{id}@example.com"),
+                    enabled: true,
+                    poll_interval_seconds: 30,
+                    safety_forward_to: vec!["human@example.com".to_string()],
+                    mcp_servers: vec![],
+                    agent: AgentConfig {
+                        system_prompt_path: "agent.md".into(),
+                        default_forward_to: vec!["human@example.com".to_string()],
+                    },
+                    imap: ImapConfig {
+                        host: "imap.example.com".to_string(),
+                        port: 993,
+                        tls: true,
+                        username: format!("{id}@example.com"),
+                        password: "secret".to_string(),
+                        folder: "INBOX".to_string(),
+                    },
+                    smtp: SmtpConfig {
+                        host: "smtp.example.com".to_string(),
+                        port: 587,
+                        starttls: true,
+                        username: format!("{id}@example.com"),
+                        password: "secret".to_string(),
+                        from: format!("{id}@example.com"),
+                    },
+                })
+                .collect(),
+            banned_senders: vec![],
         }
     }
 }

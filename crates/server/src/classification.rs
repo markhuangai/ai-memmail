@@ -232,5 +232,36 @@ mod tests {
             OutboundActionKind::Reply
         );
         assert_eq!(EmailRuleAction::Forward.as_str(), "forward");
+        assert_eq!(
+            EmailRuleAction::Forward.outbound_kind(),
+            OutboundActionKind::Forward
+        );
+        assert_eq!(
+            EmailRuleAction::Noop.outbound_kind(),
+            OutboundActionKind::Noop
+        );
+        assert_eq!(EmailRuleAction::Noop.as_str(), "noop");
+    }
+
+    #[test]
+    fn parses_rule_actions_from_storage_values() {
+        assert_eq!(
+            EmailRuleAction::try_from("reply"),
+            Ok(EmailRuleAction::Reply)
+        );
+        assert_eq!(
+            EmailRuleAction::try_from("forward"),
+            Ok(EmailRuleAction::Forward)
+        );
+        assert_eq!(EmailRuleAction::try_from("noop"), Ok(EmailRuleAction::Noop));
+        assert!(EmailRuleAction::try_from("archive")
+            .unwrap_err()
+            .contains("unknown email rule action"));
+    }
+
+    #[test]
+    fn confidence_must_be_percentage() {
+        assert!(valid_confidence(0));
+        assert!(valid_confidence(100));
     }
 }
