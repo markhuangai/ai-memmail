@@ -49,6 +49,8 @@ pub const HISTORY_BODY_THREADING_SQL: &str =
     include_str!("../migrations/002_history_body_threading.sql");
 pub const EMAIL_CLASSIFICATION_RULES_SQL: &str =
     include_str!("../migrations/003_email_classification_rules.sql");
+pub const DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL: &str =
+    include_str!("../migrations/004_default_email_rule_seed_uniqueness.sql");
 pub(crate) const MIGRATION_LOCK_ID: i64 = 4_971_774_501_001;
 pub(crate) const SCHEMA_MIGRATIONS_SQL: &str = "
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -73,6 +75,11 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         version: 3,
         name: "003_email_classification_rules",
         sql: EMAIL_CLASSIFICATION_RULES_SQL,
+    },
+    Migration {
+        version: 4,
+        name: "004_default_email_rule_seed_uniqueness",
+        sql: DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL,
     },
 ];
 pub const PROCESSING_STATUS_PROCESSING: &str = "processing";
@@ -1000,6 +1007,8 @@ mod tests {
         assert!(HISTORY_BODY_THREADING_SQL.contains("ADD COLUMN IF NOT EXISTS inbound_body"));
         assert!(HISTORY_BODY_THREADING_SQL.contains("ADD COLUMN IF NOT EXISTS thread_id"));
         assert!(HISTORY_BODY_THREADING_SQL.contains("ADD COLUMN IF NOT EXISTS outbound_message_id"));
+        assert!(DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL
+            .contains("email_rules_default_marketing_seed_unique_idx"));
     }
 
     #[test]
@@ -1013,6 +1022,12 @@ mod tests {
         assert_eq!(MIGRATIONS[1].version, 2);
         assert_eq!(MIGRATIONS[1].name, "002_history_body_threading");
         assert_eq!(MIGRATIONS[1].sql, HISTORY_BODY_THREADING_SQL);
+        assert_eq!(MIGRATIONS[2].version, 3);
+        assert_eq!(MIGRATIONS[2].name, "003_email_classification_rules");
+        assert_eq!(MIGRATIONS[2].sql, EMAIL_CLASSIFICATION_RULES_SQL);
+        assert_eq!(MIGRATIONS[3].version, 4);
+        assert_eq!(MIGRATIONS[3].name, "004_default_email_rule_seed_uniqueness");
+        assert_eq!(MIGRATIONS[3].sql, DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL);
     }
 
     #[test]

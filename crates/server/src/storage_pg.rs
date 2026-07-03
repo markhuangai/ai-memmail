@@ -1073,10 +1073,10 @@ impl ProcessingStore for PgStore {
                     .execute(
                         "INSERT INTO email_rules
                     (mailbox_id, name, category_id, action, reply_goal, enabled, priority)
-                    SELECT $1, $2, $3, $4, $5, TRUE, 100
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM email_rules WHERE mailbox_id = $1 AND category_id = $3
-                    )",
+                    VALUES ($1, $2, $3, $4, $5, TRUE, 100)
+                    ON CONFLICT (mailbox_id, category_id, name)
+                    WHERE name = 'Auto-decline marketing/vendor outreach'
+                    DO NOTHING",
                         &[
                             &mailbox.id,
                             &"Auto-decline marketing/vendor outreach",
@@ -1311,7 +1311,10 @@ mod tests {
     };
     use crate::logging::LogLevel;
     use crate::mail::MessageMetadata;
-    use crate::storage::{EMAIL_CLASSIFICATION_RULES_SQL, HISTORY_BODY_THREADING_SQL, INIT_SQL};
+    use crate::storage::{
+        DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL, EMAIL_CLASSIFICATION_RULES_SQL,
+        HISTORY_BODY_THREADING_SQL, INIT_SQL,
+    };
 
     #[tokio::test]
     async fn pg_store_migrates_idempotently_and_tracks_checksum() {
@@ -1331,7 +1334,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.len(), 4);
         assert_eq!(rows[0].get::<_, i32>(0), 1);
         assert_eq!(rows[0].get::<_, String>(1), "001_init");
         assert_eq!(rows[0].get::<_, String>(2), migration_checksum(INIT_SQL));
@@ -1349,6 +1352,15 @@ mod tests {
         assert_eq!(
             rows[2].get::<_, String>(2),
             migration_checksum(EMAIL_CLASSIFICATION_RULES_SQL)
+        );
+        assert_eq!(rows[3].get::<_, i32>(0), 4);
+        assert_eq!(
+            rows[3].get::<_, String>(1),
+            "004_default_email_rule_seed_uniqueness"
+        );
+        assert_eq!(
+            rows[3].get::<_, String>(2),
+            migration_checksum(DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL)
         );
 
         pg.cleanup().await;
@@ -1778,6 +1790,51 @@ mod tests {
         pg.cleanup().await;
     }
 
+    #[tokio::test]
+    async fn pg_store_concurrent_default_policy_seeding_creates_one_rule() {
+        let Some(pg) = TestPgStore::create().await else {
+            return;
+        };
+        pg.store.migrate().await.unwrap();
+        let config = app_config_with_mailboxes(vec!["support"]);
+        let store_config = pg.store_config();
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let config = config.clone();
+            let store_config = store_config.clone();
+            handles.push(tokio::spawn(async move {
+                let store = PgStore::connect(&store_config).await.unwrap();
+                store
+                    .ensure_default_classification_policy(&config)
+                    .await
+                    .unwrap();
+            }));
+        }
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        let rule_count = pg
+            .store
+            .client
+            .query_one(
+                "SELECT count(*)
+                FROM email_rules r
+                JOIN email_categories c ON c.id = r.category_id
+                WHERE r.mailbox_id = $1
+                  AND c.name = 'marketing_vendor'
+                  AND r.name = 'Auto-decline marketing/vendor outreach'",
+                &[&"support"],
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0);
+        assert_eq!(rule_count, 1);
+
+        pg.cleanup().await;
+    }
+
     fn message(uid: u64) -> InboundMessage {
         InboundMessage {
             metadata: MessageMetadata {
@@ -1886,6 +1943,12 @@ mod tests {
                 admin_config,
                 database_name,
             })
+        }
+
+        fn store_config(&self) -> DatabaseConfig {
+            let mut config = self.admin_config.clone();
+            config.database = self.database_name.clone();
+            config
         }
 
         async fn cleanup(self) {
