@@ -70,7 +70,7 @@ describe("App history", () => {
   });
 
   it("loads more processed email history when the current limit is full", async () => {
-    const firstBatch = Array.from({ length: 100 }, (_, index) => ({
+    const firstBatch = Array.from({ length: 2 }, (_, index) => ({
       ...sampleMessages[0],
       run_id: `run-${index}`,
       uid: index + 1,
@@ -82,11 +82,11 @@ describe("App history", () => {
       ...firstBatch,
       {
         ...sampleMessages[0],
-        run_id: "run-101",
-        uid: 101,
-        thread_id: "<101@example.com>",
-        message_id: "<101@example.com>",
-        subject: "Message 101"
+        run_id: "run-3",
+        uid: 3,
+        thread_id: "<3@example.com>",
+        message_id: "<3@example.com>",
+        subject: "Message 3"
       }
     ];
     const messageRequests: string[] = [];
@@ -111,16 +111,16 @@ describe("App history", () => {
       return jsonResponse({ config: sampleConfig });
     });
 
-    render(<App />);
+    render(<App initialHistoryLimit={2} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
     fireEvent.click(await screen.findByRole("button", { name: /load more/i }));
 
     await waitFor(() => expect(messageRequests).toEqual([
-      "/api/messages?limit=100",
-      "/api/messages?limit=200"
+      "/api/messages?limit=2",
+      "/api/messages?limit=102"
     ]));
-    expect(screen.getByRole("button", { name: /Message 101/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Message 3/i })).toBeInTheDocument();
   });
 
   it("links processed messages in the same email chain", async () => {

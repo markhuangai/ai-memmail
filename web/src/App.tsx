@@ -45,14 +45,18 @@ const tabs: Array<{ id: TabId; label: string; icon: typeof Activity }> = [
   { id: "settings", label: "Settings", icon: Settings }
 ];
 
-export function App() {
+export function App({
+  initialHistoryLimit = DEFAULT_HISTORY_LIMIT
+}: {
+  initialHistoryLimit?: number;
+} = {}) {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [messages, setMessages] = useState<ProcessedEmail[]>([]);
   const [classification, setClassification] = useState<EmailClassificationConfig | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [loginKey, setLoginKey] = useState("");
-  const [messageLimit, setMessageLimit] = useState(DEFAULT_HISTORY_LIMIT);
+  const [messageLimit, setMessageLimit] = useState(initialHistoryLimit);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
