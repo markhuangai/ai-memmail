@@ -324,7 +324,7 @@ fn automated_reply_body_appends_escalation_notice_once() {
 
     assert_eq!(
         body,
-        "Answer\n\n--\nThis automated reply was sent on behalf of this mailbox. If this needs Mark's attention, reply with: escalation to human"
+        "Answer\n\n--\nThis automated reply was sent on Mark's behalf. If this needs Mark's attention, reply with: escalation to human"
     );
     assert_eq!(automated_reply_body(&body), body);
 }
