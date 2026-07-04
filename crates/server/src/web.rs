@@ -1,10 +1,11 @@
 use std::collections::HashMap;
+use std::fs;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -16,11 +17,14 @@ use uuid::Uuid;
 
 use crate::classification::{EmailClassificationConfig, NewEmailRule};
 use crate::config::{AppConfig, ConfigError};
+use crate::prompts;
 use crate::storage::{PgStore, ProcessedEmail, ProcessingStore, StorageError};
 use crate::worker;
 
 const SESSION_COOKIE: &str = "ai_memmail_session";
 const SESSION_TTL_SECONDS: u64 = 86_400;
+const DEFAULT_MESSAGE_LIMIT: i64 = 100;
+const MAX_MESSAGE_LIMIT: i64 = 500;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -62,6 +66,27 @@ pub struct ConfigResponse {
 #[derive(Debug, Serialize)]
 pub struct MessagesResponse {
     pub messages: Vec<ProcessedEmail>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+pub struct MessagesQuery {
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+pub struct PromptPathQuery {
+    pub path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptFileResponse {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptFileRequest {
+    pub content: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -106,6 +131,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/logout", post(logout))
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/messages", get(get_messages))
+        .route(
+            "/api/prompt-file",
+            get(get_prompt_file).put(update_prompt_file),
+        )
         .route("/api/email-classification", get(get_email_classification))
         .route("/api/email-categories", post(create_email_category))
         .route("/api/email-topics", post(create_email_topic))
@@ -247,18 +276,95 @@ async fn update_config(
 
 async fn get_messages(
     State(state): State<AppState>,
+    Query(query): Query<MessagesQuery>,
     headers: HeaderMap,
 ) -> Result<Json<MessagesResponse>, ApiError> {
     require_auth(&state, &headers)?;
     let config = state.config.read().expect("config lock poisoned").clone();
+    let limit = message_limit(&query);
     let store = PgStore::connect(&config.database)
         .await
         .map_err(ApiError::from_storage)?;
     let messages = store
-        .list_processed_emails(100)
+        .list_processed_emails(limit)
         .await
         .map_err(ApiError::from_storage)?;
     Ok(Json(MessagesResponse { messages }))
+}
+
+async fn get_prompt_file(
+    State(state): State<AppState>,
+    Query(query): Query<PromptPathQuery>,
+    headers: HeaderMap,
+) -> Result<Json<PromptFileResponse>, ApiError> {
+    require_auth(&state, &headers)?;
+    let config = state.config.read().expect("config lock poisoned").clone();
+    let resolved = resolve_prompt_file(&config, &query.path)?;
+    let content = fs::read_to_string(&resolved).map_err(|source| ApiError {
+        status: StatusCode::BAD_REQUEST,
+        message: format!("failed to read prompt {}: {source}", resolved.display()),
+    })?;
+    Ok(Json(PromptFileResponse {
+        path: query.path,
+        content,
+    }))
+}
+
+async fn update_prompt_file(
+    State(state): State<AppState>,
+    Query(query): Query<PromptPathQuery>,
+    headers: HeaderMap,
+    Json(request): Json<PromptFileRequest>,
+) -> Result<Json<PromptFileResponse>, ApiError> {
+    require_auth(&state, &headers)?;
+    if request.content.trim().is_empty() {
+        return Err(ApiError {
+            status: StatusCode::BAD_REQUEST,
+            message: "prompt content must not be empty".to_string(),
+        });
+    }
+    let config = state.config.read().expect("config lock poisoned").clone();
+    let resolved = resolve_prompt_file(&config, &query.path)?;
+    fs::write(&resolved, &request.content).map_err(|source| ApiError {
+        status: StatusCode::BAD_REQUEST,
+        message: format!("failed to write prompt {}: {source}", resolved.display()),
+    })?;
+    Ok(Json(PromptFileResponse {
+        path: query.path,
+        content: request.content,
+    }))
+}
+
+fn resolve_prompt_file(config: &AppConfig, path: &str) -> Result<PathBuf, ApiError> {
+    let prompt_path = FsPath::new(path);
+    if !prompt_path_is_configured(config, prompt_path) {
+        return Err(ApiError {
+            status: StatusCode::BAD_REQUEST,
+            message: format!("prompt path is not configured: {path}"),
+        });
+    }
+    prompts::resolve_prompt_path(&config.prompts.root, prompt_path).map_err(|error| ApiError {
+        status: StatusCode::BAD_REQUEST,
+        message: error.to_string(),
+    })
+}
+
+fn prompt_path_is_configured(config: &AppConfig, path: &FsPath) -> bool {
+    config.prompts.safety_scan.as_path() == path
+        || config.prompts.email_classifier.as_path() == path
+        || config.prompts.rule_action.as_path() == path
+        || config.ai.review.prompt_path.as_path() == path
+        || config
+            .mailboxes
+            .iter()
+            .any(|mailbox| mailbox.agent.system_prompt_path.as_path() == path)
+}
+
+fn message_limit(query: &MessagesQuery) -> i64 {
+    query
+        .limit
+        .unwrap_or(DEFAULT_MESSAGE_LIMIT)
+        .clamp(1, MAX_MESSAGE_LIMIT)
 }
 
 async fn get_email_classification(
@@ -452,523 +558,4 @@ impl IntoResponse for ApiError {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use axum::body::Body;
-    use axum::http::{header::SET_COOKIE, Method, Request};
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
-
-    use crate::config::{
-        AgentConfig, AiConfig, AiProtocol, DatabaseConfig, ImapConfig, LoggingConfig,
-        MailboxConfig, McpServerConfig, McpTransport, PromptConfig, ReviewConfig, SmtpConfig,
-    };
-
-    use super::*;
-
-    fn config() -> AppConfig {
-        AppConfig {
-            version: 1,
-            database: DatabaseConfig {
-                host: "postgres".to_string(),
-                port: 5432,
-                username: "user".to_string(),
-                password: "db-secret".to_string(),
-                database: "ai_memmail".to_string(),
-            },
-            logging: LoggingConfig {
-                level: "info".to_string(),
-                format: "json".to_string(),
-                verbose_actions: true,
-                retention_days: 180,
-            },
-            prompts: PromptConfig {
-                root: "prompts".into(),
-                safety_scan: "safety.md".into(),
-                email_classifier: "email-classifier.md".into(),
-                rule_action: "rule-action.md".into(),
-            },
-            ai: AiConfig {
-                protocol: AiProtocol::Openai,
-                api_url: "https://api.example/v1".to_string(),
-                api_secret: "secret".to_string(),
-                model: "model".to_string(),
-                review: ReviewConfig {
-                    enabled: false,
-                    prompt_path: "review.md".into(),
-                },
-            },
-            mcp_servers: BTreeMap::from([(
-                "dense_mem".to_string(),
-                McpServerConfig {
-                    transport: McpTransport::Stdio,
-                    command: Some("npx".to_string()),
-                    args: vec![],
-                    env: BTreeMap::from([
-                        ("DENSE_MEM_PASSWORD".to_string(), "mcp-password".to_string()),
-                        (
-                            "DENSE_MEM_MCP_URL".to_string(),
-                            "http://dense-mem".to_string(),
-                        ),
-                    ]),
-                    url: None,
-                },
-            )]),
-            mailboxes: vec![MailboxConfig {
-                id: "support".to_string(),
-                address: "support@example.com".to_string(),
-                enabled: true,
-                poll_interval_seconds: 30,
-                safety_forward_to: vec!["human@example.com".to_string()],
-                mcp_servers: vec![],
-                agent: AgentConfig {
-                    system_prompt_path: "agent.md".into(),
-                    default_forward_to: vec![],
-                },
-                imap: ImapConfig {
-                    host: "imap.example.com".to_string(),
-                    port: 993,
-                    tls: true,
-                    username: "support@example.com".to_string(),
-                    password: "imap-secret".to_string(),
-                    folder: "INBOX".to_string(),
-                },
-                smtp: SmtpConfig {
-                    host: "smtp.example.com".to_string(),
-                    port: 587,
-                    starttls: true,
-                    username: "support@example.com".to_string(),
-                    password: "smtp-secret".to_string(),
-                    from: "support@example.com".to_string(),
-                },
-            }],
-            banned_senders: vec![],
-        }
-    }
-
-    fn test_state(path: PathBuf) -> AppState {
-        AppState::new(path, config(), "panel-key".to_string())
-    }
-
-    async fn response_body(response: Response) -> serde_json::Value {
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        serde_json::from_slice(&bytes).unwrap()
-    }
-
-    #[tokio::test]
-    async fn login_rejects_wrong_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = router(test_state(dir.path().join("config.yaml")));
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/api/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"key":"wrong"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn config_requires_login() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = router(test_state(dir.path().join("config.yaml")));
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method(Method::GET)
-                    .uri("/api/config")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn messages_requires_login() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = router(test_state(dir.path().join("config.yaml")));
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method(Method::GET)
-                    .uri("/api/messages")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn status_reports_session_state_and_mailbox_count() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = router(test_state(dir.path().join("config.yaml")));
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method(Method::GET)
-                    .uri("/api/status")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        assert_eq!(body["service"], "ai-memmail");
-        assert_eq!(body["authenticated"], false);
-        assert_eq!(body["enabled_mailboxes"], 1);
-    }
-
-    #[tokio::test]
-    async fn authenticated_config_is_redacted() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = router(test_state(dir.path().join("config.yaml")));
-        let login_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/api/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"key":"panel-key"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let cookie = login_response
-            .headers()
-            .get(SET_COOKIE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method(Method::GET)
-                    .uri("/api/config")
-                    .header(COOKIE, cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body(response).await;
-        assert_eq!(body["config"]["database"]["password"], "********");
-        assert_eq!(body["config"]["ai"]["AI_API_SECRET"], "********");
-        assert_eq!(
-            body["config"]["mailboxes"][0]["imap"]["password"],
-            "********"
-        );
-        assert_eq!(
-            body["config"]["mcp_servers"]["dense_mem"]["env"]["DENSE_MEM_PASSWORD"],
-            "********"
-        );
-        assert_eq!(
-            body["config"]["mcp_servers"]["dense_mem"]["env"]["DENSE_MEM_MCP_URL"],
-            "http://dense-mem"
-        );
-    }
-
-    #[tokio::test]
-    async fn login_cookie_uses_server_session_ttl() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = router(test_state(dir.path().join("config.yaml")));
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/api/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"key":"panel-key"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let cookie = response
-            .headers()
-            .get(SET_COOKIE)
-            .unwrap()
-            .to_str()
-            .unwrap();
-        assert!(cookie.contains(&format!("Max-Age={SESSION_TTL_SECONDS}")));
-    }
-
-    #[test]
-    fn expired_sessions_are_rejected_and_pruned() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = test_state(dir.path().join("config.yaml"));
-        let active = state.create_session();
-        let expired = state.create_session();
-        {
-            let mut tokens = state.sessions.tokens.lock().expect("session lock poisoned");
-            tokens.insert(expired.clone(), SystemTime::now() - Duration::from_secs(1));
-        }
-
-        assert!(!state.has_session(&expired));
-        assert!(state.has_session(&active));
-        assert!(!state
-            .sessions
-            .tokens
-            .lock()
-            .expect("session lock poisoned")
-            .contains_key(&expired));
-    }
-
-    #[tokio::test]
-    async fn logout_removes_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = router(test_state(dir.path().join("config.yaml")));
-        let login_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/api/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"key":"panel-key"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let cookie = login_response
-            .headers()
-            .get(SET_COOKIE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-
-        let logout_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/api/logout")
-                    .header(COOKIE, cookie.clone())
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(logout_response.status(), StatusCode::OK);
-
-        let config_response = app
-            .oneshot(
-                Request::builder()
-                    .method(Method::GET)
-                    .uri("/api/config")
-                    .header(COOKIE, cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(config_response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn update_config_validates_and_persists() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.yaml");
-        let state = test_state(path.clone());
-        let app = router(state);
-        let login_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/api/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"key":"panel-key"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let cookie = login_response
-            .headers()
-            .get(SET_COOKIE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-
-        let mut next = config();
-        next.mailboxes[0].poll_interval_seconds = 45;
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method(Method::PUT)
-                    .uri("/api/config")
-                    .header(COOKIE, cookie)
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&next).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let saved = AppConfig::load(&path).unwrap();
-        assert_eq!(saved.mailboxes[0].poll_interval_seconds, 45);
-    }
-
-    #[tokio::test]
-    async fn update_config_preserves_redacted_secrets() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.yaml");
-        let state = test_state(path.clone());
-        let app = router(state);
-        let login_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/api/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"key":"panel-key"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let cookie = login_response
-            .headers()
-            .get(SET_COOKIE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-
-        let get_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::GET)
-                    .uri("/api/config")
-                    .header(COOKIE, cookie.clone())
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(get_response.status(), StatusCode::OK);
-        let body = response_body(get_response).await;
-        let mut next: ConfigResponse = serde_json::from_value(body).unwrap();
-        assert_eq!(next.config.database.password, "********");
-        assert_eq!(next.config.ai.api_secret, "********");
-
-        next.config.database.host = "db.changed.test".to_string();
-        next.config.ai.model = "changed-model".to_string();
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method(Method::PUT)
-                    .uri("/api/config")
-                    .header(COOKIE, cookie)
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&next.config).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let saved = AppConfig::load(&path).unwrap();
-        assert_eq!(saved.database.host, "db.changed.test");
-        assert_eq!(saved.database.password, "db-secret");
-        assert_eq!(saved.ai.api_secret, "secret");
-        assert_eq!(saved.mailboxes[0].imap.password, "imap-secret");
-        assert_eq!(saved.mailboxes[0].smtp.password, "smtp-secret");
-    }
-
-    #[tokio::test]
-    async fn update_config_rejects_invalid_payload() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = router(test_state(dir.path().join("config.yaml")));
-        let login_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/api/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"key":"panel-key"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let cookie = login_response
-            .headers()
-            .get(SET_COOKIE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-
-        let mut next = config();
-        next.database.host.clear();
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method(Method::PUT)
-                    .uri("/api/config")
-                    .header(COOKIE, cookie)
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&next).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = response_body(response).await;
-        assert!(body["error"].as_str().unwrap().contains("database.host"));
-    }
-
-    #[test]
-    fn control_panel_key_requires_non_empty_env() {
-        std::env::remove_var("CONTROL_PANEL_KEY");
-        let missing = control_panel_key_from_env().unwrap_err().to_string();
-        assert!(missing.contains("CONTROL_PANEL_KEY"));
-
-        std::env::set_var("CONTROL_PANEL_KEY", " ");
-        let empty = control_panel_key_from_env().unwrap_err().to_string();
-        assert!(empty.contains("CONTROL_PANEL_KEY"));
-
-        std::env::set_var("CONTROL_PANEL_KEY", "panel-key");
-        assert_eq!(control_panel_key_from_env().unwrap(), "panel-key");
-        std::env::remove_var("CONTROL_PANEL_KEY");
-    }
-
-    #[test]
-    fn extracts_session_token_from_cookie_header() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            COOKIE,
-            "theme=dark; ai_memmail_session=abc; other=1"
-                .parse()
-                .unwrap(),
-        );
-        assert_eq!(session_token(&headers), Some("abc".to_string()));
-    }
-
-    #[test]
-    fn missing_or_malformed_cookie_has_no_session_token() {
-        let headers = HeaderMap::new();
-        assert_eq!(session_token(&headers), None);
-
-        let mut headers = HeaderMap::new();
-        headers.insert(COOKIE, "bad-cookie".parse().unwrap());
-        assert_eq!(session_token(&headers), None);
-    }
-}
+mod tests;

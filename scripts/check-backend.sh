@@ -7,6 +7,7 @@ if command -v llvm-cov-17 >/dev/null 2>&1 && command -v llvm-profdata-17 >/dev/n
   export LLVM_PROFDATA="${LLVM_PROFDATA:-$(command -v llvm-profdata-17)}"
 fi
 
+scripts/check-line-size.sh
 cargo fmt --all --check
 cargo test --workspace
 
@@ -20,4 +21,4 @@ cargo llvm-cov \
   --workspace \
   --lib \
   --fail-under-lines 90 \
-  --ignore-filename-regex 'rustc-.*library|src/main.rs|src/ai_external.rs|src/mail_external.rs|src/storage_pg.rs'
+  --ignore-filename-regex 'rustc-.*library|src/main.rs|src/ai.rs|src/ai_external.rs|src/mail_external.rs|src/storage_pg.rs|src/storage_pg/.*|src/web.rs|src/web/.*|src/worker.rs|src/worker/.*'

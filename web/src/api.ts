@@ -3,6 +3,7 @@ import type {
   EmailClassificationConfig,
   NewEmailRule,
   ProcessedEmail,
+  PromptFile,
   StatusResponse
 } from "./types";
 
@@ -73,14 +74,43 @@ export async function loadConfig(
 }
 
 export async function loadMessages(
+  limitOrFetch?: number | typeof fetch,
   fetchImpl?: typeof fetch
 ): Promise<ProcessedEmail[]> {
+  const limit = typeof limitOrFetch === "number" ? limitOrFetch : undefined;
+  const fetcher = typeof limitOrFetch === "function" ? limitOrFetch : fetchImpl;
+  const path =
+    limit === undefined
+      ? "/api/messages"
+      : `/api/messages?limit=${encodeURIComponent(String(limit))}`;
   const payload = await requestJson<{ messages?: ProcessedEmail[] }>(
-    "/api/messages",
+    path,
     {},
-    fetchImpl
+    fetcher
   );
   return payload.messages ?? [];
+}
+
+export async function loadPromptFile(
+  path: string,
+  fetchImpl?: typeof fetch
+): Promise<PromptFile> {
+  return requestJson<PromptFile>(promptFilePath(path), {}, fetchImpl);
+}
+
+export async function savePromptFile(
+  path: string,
+  content: string,
+  fetchImpl?: typeof fetch
+): Promise<PromptFile> {
+  return requestJson<PromptFile>(
+    promptFilePath(path),
+    {
+      method: "PUT",
+      body: JSON.stringify({ content })
+    },
+    fetchImpl
+  );
 }
 
 export async function loadEmailClassification(
@@ -182,4 +212,8 @@ async function mutateEmailClassification(
     fetchImpl
   );
   return payload.classification;
+}
+
+function promptFilePath(path: string): string {
+  return `/api/prompt-file?path=${encodeURIComponent(path)}`;
 }

@@ -154,6 +154,11 @@ export interface ProcessedEmailLog {
   created_at: string;
 }
 
+export interface PromptFile {
+  path: string;
+  content: string;
+}
+
 export interface EmailCategory {
   id: number;
   name: string;
