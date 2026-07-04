@@ -192,6 +192,8 @@ struct FakeDecisionEngine {
     fail_agent: bool,
     fail_rule: bool,
     fail_review: bool,
+    missing_classifier_prompt: bool,
+    missing_rule_prompt: bool,
     calls: Arc<Mutex<DecisionCallCounts>>,
     reviewed_actions: Arc<Mutex<Vec<OutboundAction>>>,
 }
@@ -220,6 +222,14 @@ impl FakeDecisionEngine {
 
 #[async_trait::async_trait]
 impl DecisionEngine for FakeDecisionEngine {
+    fn classifier_prompt_missing(&self, _config: &AppConfig) -> Result<bool, AiError> {
+        Ok(self.missing_classifier_prompt)
+    }
+
+    fn rule_prompt_missing(&self, _config: &AppConfig) -> Result<bool, AiError> {
+        Ok(self.missing_rule_prompt)
+    }
+
     async fn safety_scan(
         &self,
         _config: &AppConfig,
@@ -498,6 +508,8 @@ fn fake_decisions(scan: SafetyScanResult, action: OutboundAction) -> FakeDecisio
         fail_agent: false,
         fail_rule: false,
         fail_review: false,
+        missing_classifier_prompt: false,
+        missing_rule_prompt: false,
         calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
         reviewed_actions: Arc::new(Mutex::new(Vec::new())),
     }
@@ -524,6 +536,8 @@ fn rejecting_review_decisions() -> FakeDecisionEngine {
         fail_agent: false,
         fail_rule: false,
         fail_review: false,
+        missing_classifier_prompt: false,
+        missing_rule_prompt: false,
         calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
         reviewed_actions: Arc::new(Mutex::new(Vec::new())),
     }
@@ -550,6 +564,8 @@ fn failing_review_decisions() -> FakeDecisionEngine {
         fail_agent: false,
         fail_rule: false,
         fail_review: true,
+        missing_classifier_prompt: false,
+        missing_rule_prompt: false,
         calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
         reviewed_actions: Arc::new(Mutex::new(Vec::new())),
     }

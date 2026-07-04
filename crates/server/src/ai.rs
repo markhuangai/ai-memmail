@@ -55,6 +55,14 @@ pub enum AiError {
 
 #[async_trait]
 pub trait DecisionEngine: Send + Sync {
+    fn classifier_prompt_missing(&self, _config: &AppConfig) -> Result<bool, AiError> {
+        Ok(false)
+    }
+
+    fn rule_prompt_missing(&self, _config: &AppConfig) -> Result<bool, AiError> {
+        Ok(false)
+    }
+
     async fn safety_scan(
         &self,
         config: &AppConfig,
@@ -255,6 +263,16 @@ where
     C: ChatProvider,
     M: McpContextProvider,
 {
+    fn classifier_prompt_missing(&self, config: &AppConfig) -> Result<bool, AiError> {
+        prompts::prompt_is_missing(&config.prompts.root, &config.prompts.email_classifier)
+            .map_err(AiError::Prompt)
+    }
+
+    fn rule_prompt_missing(&self, config: &AppConfig) -> Result<bool, AiError> {
+        prompts::prompt_is_missing(&config.prompts.root, &config.prompts.rule_action)
+            .map_err(AiError::Prompt)
+    }
+
     async fn safety_scan(
         &self,
         config: &AppConfig,

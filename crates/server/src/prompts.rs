@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
@@ -43,6 +44,27 @@ pub fn read_prompt(root: &Path, prompt_path: &Path) -> Result<String, PromptErro
         return Err(PromptError::Empty(resolved));
     }
     Ok(content)
+}
+
+pub fn prompt_is_missing(root: &Path, prompt_path: &Path) -> Result<bool, PromptError> {
+    let resolved = resolve_prompt_path(root, prompt_path)?;
+    match fs::metadata(&resolved) {
+        Ok(_) => Ok(false),
+        Err(source) if source.kind() == ErrorKind::NotFound => Ok(true),
+        Err(source) => Err(PromptError::Read {
+            path: resolved,
+            source,
+        }),
+    }
+}
+
+impl PromptError {
+    pub fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            Self::Read { source, .. } if source.kind() == ErrorKind::NotFound
+        )
+    }
 }
 
 #[cfg(test)]
@@ -96,5 +118,27 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(empty.contains("prompt is empty"));
+    }
+
+    #[test]
+    fn prompt_is_missing_reports_only_missing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("prompt.md"), "Answer carefully.").unwrap();
+
+        assert!(!prompt_is_missing(dir.path(), Path::new("prompt.md")).unwrap());
+        assert!(prompt_is_missing(dir.path(), Path::new("missing.md")).unwrap());
+
+        let error = prompt_is_missing(dir.path(), Path::new("../missing.md")).unwrap_err();
+        assert!(!error.is_not_found());
+        assert!(error.to_string().contains("must not escape prompt root"));
+
+        let missing = read_prompt(dir.path(), Path::new("missing.md")).unwrap_err();
+        assert!(missing.is_not_found());
+
+        let file_root = dir.path().join("not-a-directory");
+        std::fs::write(&file_root, "not a directory").unwrap();
+        let error = prompt_is_missing(&file_root, Path::new("prompt.md")).unwrap_err();
+        assert!(!error.is_not_found());
+        assert!(error.to_string().contains("failed to read prompt"));
     }
 }
