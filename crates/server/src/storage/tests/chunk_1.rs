@@ -126,6 +126,11 @@ fn level_values_match_storage_check_constraint() {
 }
 
 #[test]
+fn processing_stale_window_matches_worker_heartbeat_expectation() {
+    assert_eq!(PROCESSING_STALE_AFTER_MINUTES, 3);
+}
+
+#[test]
 fn processing_status_reclaim_rules_retry_failed_and_stale_processing() {
     assert!(processing_status_can_reclaim(
         PROCESSING_STATUS_SEND_FAILED,

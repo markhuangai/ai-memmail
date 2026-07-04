@@ -120,6 +120,23 @@ impl ProcessingStore for PgStore {
         Ok(())
     }
 
+    async fn touch_processing(&self, key: &DedupeKey) -> Result<(), StorageError> {
+        self.client
+            .execute(
+                "UPDATE processing_runs
+                SET updated_at = now()
+                WHERE mailbox_id = $1 AND uid_validity = $2 AND uid = $3 AND status = $4",
+                &[
+                    &key.mailbox_id,
+                    &(key.uid_validity as i64),
+                    &(key.uid as i64),
+                    &PROCESSING_STATUS_PROCESSING,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn record_safety_result(
         &self,
         key: &DedupeKey,

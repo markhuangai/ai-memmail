@@ -192,6 +192,7 @@ struct FakeDecisionEngine {
     fail_agent: bool,
     fail_rule: bool,
     fail_review: bool,
+    hang_agent: bool,
     missing_classifier_prompt: bool,
     missing_rule_prompt: bool,
     calls: Arc<Mutex<DecisionCallCounts>>,
@@ -217,6 +218,11 @@ impl FakeDecisionEngine {
             .lock()
             .expect("reviewed actions lock")
             .clone()
+    }
+
+    fn with_hang_agent(mut self) -> Self {
+        self.hang_agent = true;
+        self
     }
 }
 
@@ -272,6 +278,9 @@ impl DecisionEngine for FakeDecisionEngine {
             .agent_decision += 1;
         if self.fail_agent {
             return Err(AiError::Provider("agent failed".to_string()));
+        }
+        if self.hang_agent {
+            tokio::time::sleep(WORKER_STEP_TIMEOUT + Duration::from_millis(25)).await;
         }
         Ok(self.decision.clone())
     }
@@ -331,6 +340,8 @@ struct FakeProcessingStore {
     fail_resolve: bool,
     fail_rule_match: bool,
     fail_classification_record: bool,
+    touches: Mutex<usize>,
+    statuses: Mutex<Vec<String>>,
     matched_rule: Option<EmailRule>,
 }
 
@@ -344,6 +355,8 @@ impl FakeProcessingStore {
             fail_resolve: false,
             fail_rule_match: false,
             fail_classification_record: false,
+            touches: Mutex::new(0),
+            statuses: Mutex::new(Vec::new()),
             matched_rule: None,
         }
     }
@@ -381,6 +394,14 @@ impl FakeProcessingStore {
     fn run_ids(&self) -> Vec<String> {
         self.run_ids.lock().expect("run ids lock").clone()
     }
+
+    fn touch_count(&self) -> usize {
+        *self.touches.lock().expect("touches lock")
+    }
+
+    fn statuses(&self) -> Vec<String> {
+        self.statuses.lock().expect("statuses lock").clone()
+    }
 }
 
 #[async_trait::async_trait]
@@ -414,12 +435,27 @@ impl ProcessingStore for FakeProcessingStore {
     async fn update_message_status(
         &self,
         _key: &DedupeKey,
-        _status: &str,
+        status: &str,
         _outbound_action: Option<&OutboundActionKind>,
     ) -> Result<(), crate::storage::StorageError> {
         if self.fail_update {
             return Err(crate::storage::StorageError::LockPoisoned);
         }
+        self.statuses
+            .lock()
+            .map_err(|_| crate::storage::StorageError::LockPoisoned)?
+            .push(status.to_string());
+        Ok(())
+    }
+
+    async fn touch_processing(
+        &self,
+        _key: &DedupeKey,
+    ) -> Result<(), crate::storage::StorageError> {
+        *self
+            .touches
+            .lock()
+            .map_err(|_| crate::storage::StorageError::LockPoisoned)? += 1;
         Ok(())
     }
 
@@ -508,6 +544,7 @@ fn fake_decisions(scan: SafetyScanResult, action: OutboundAction) -> FakeDecisio
         fail_agent: false,
         fail_rule: false,
         fail_review: false,
+        hang_agent: false,
         missing_classifier_prompt: false,
         missing_rule_prompt: false,
         calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
@@ -536,6 +573,7 @@ fn rejecting_review_decisions() -> FakeDecisionEngine {
         fail_agent: false,
         fail_rule: false,
         fail_review: false,
+        hang_agent: false,
         missing_classifier_prompt: false,
         missing_rule_prompt: false,
         calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
@@ -564,6 +602,7 @@ fn failing_review_decisions() -> FakeDecisionEngine {
         fail_agent: false,
         fail_rule: false,
         fail_review: true,
+        hang_agent: false,
         missing_classifier_prompt: false,
         missing_rule_prompt: false,
         calls: Arc::new(Mutex::new(DecisionCallCounts::default())),

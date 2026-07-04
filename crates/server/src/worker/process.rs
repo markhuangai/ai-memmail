@@ -96,7 +96,14 @@ async fn process_message(
         return;
     }
 
-    let scan = match decisions.safety_scan(config, mailbox, &message).await {
+    let scan = match run_ai_step(
+        processing,
+        &message,
+        "safety_scan",
+        decisions.safety_scan(config, mailbox, &message),
+    )
+    .await
+    {
         Ok(scan) => scan,
         Err(error) => {
             logger
@@ -194,9 +201,13 @@ async fn process_message(
         decision
     } else if let Some(context) = &classification_context {
         if let Some(rule) = &context.matched_rule {
-            match decisions
-                .rule_decision(config, mailbox, &message, &context.raw, rule)
-                .await
+            match run_ai_step(
+                processing,
+                &message,
+                "rule_decision",
+                decisions.rule_decision(config, mailbox, &message, &context.raw, rule),
+            )
+            .await
             {
                 Ok(decision) => {
                     log_decision(
@@ -423,9 +434,13 @@ async fn classify_message_for_rules(
             return None;
         }
     };
-    let raw = match decisions
-        .classify_email(config, mailbox, message, &taxonomy)
-        .await
+    let raw = match run_ai_step(
+        processing,
+        message,
+        "email_classification",
+        decisions.classify_email(config, mailbox, message, &taxonomy),
+    )
+    .await
     {
         Ok(classification) => classification,
         Err(error) if ai_error_is_missing_prompt(&error) => {
@@ -579,7 +594,14 @@ async fn agent_decision_or_retry(
     message: &InboundMessage,
     started: Instant,
 ) -> Option<AgentDecision> {
-    match decisions.agent_decision(config, mailbox, message).await {
+    match run_ai_step(
+        processing,
+        message,
+        "agent_decision",
+        decisions.agent_decision(config, mailbox, message),
+    )
+    .await
+    {
         Ok(decision) => {
             log_agent_decision(logger, run_id, message, &decision, started.elapsed()).await;
             Some(decision)

@@ -197,6 +197,9 @@ pub fn precheck_sender(sender: &str, config: &AppConfig) -> SenderPrecheck {
 pub fn should_forward_for_human_review(decision: &SafetyDecision) -> bool {
     decision.disposition == SafetyDisposition::QuarantineAndForward
 }
+
+include!("worker/step_timeout.rs");
+
 include!("worker/process.rs");
 
 include!("worker/outbound.rs");

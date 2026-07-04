@@ -236,6 +236,16 @@ pub fn validate_agent_decision(decision: &AgentDecision) -> Result<(), Vec<Valid
         Ok(()) => Vec::new(),
         Err(errors) => errors,
     };
+    if matches!(
+        decision.action.kind,
+        OutboundActionKind::Reply | OutboundActionKind::Forward
+    ) && reply_body_uses_system_voice(&decision.action.body)
+    {
+        errors.push(ValidationError {
+            field: "body".to_string(),
+            message: "reply body must not present the sender as an AI or mailbox agent".to_string(),
+        });
+    }
     if decision.safety_notes.trim().is_empty() {
         errors.push(ValidationError {
             field: "safety_notes".to_string(),
@@ -247,4 +257,21 @@ pub fn validate_agent_decision(decision: &AgentDecision) -> Result<(), Vec<Valid
     } else {
         Err(errors)
     }
+}
+
+fn reply_body_uses_system_voice(body: &str) -> bool {
+    let normalized = body.to_ascii_lowercase().replace(['\n', '\r'], " ");
+    [
+        "as an ai",
+        "i am an ai",
+        "i'm an ai",
+        "ai assistant",
+        "mailbox agent",
+        "email-processing agent",
+        "i can help handle mail",
+        "sent to this mailbox",
+        "this mailbox",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
 }

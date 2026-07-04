@@ -324,6 +324,12 @@ where
                 "address": mailbox.address,
                 "default_forward_to": mailbox.agent.default_forward_to,
             },
+            "reply_voice": {
+                "role": "delegated email agent",
+                "speak_on_behalf_of": "Mark",
+                "do_not_present_as": ["AI", "assistant", "mailbox", "bot", "ai-memmail"],
+                "broad_questions": "forward when useful; otherwise noop",
+            },
             "mcp_memory_context": memory_context,
             "untrusted_email": {
                 "from_addr": message.metadata.from_addr,

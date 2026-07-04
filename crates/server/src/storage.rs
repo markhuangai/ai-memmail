@@ -85,7 +85,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
 pub const PROCESSING_STATUS_PROCESSING: &str = "processing";
 pub const PROCESSING_STATUS_RETRYABLE_FAILED: &str = "retryable_failed";
 pub const PROCESSING_STATUS_SEND_FAILED: &str = "send_failed";
-pub const PROCESSING_STALE_AFTER_MINUTES: i32 = 15;
+pub const PROCESSING_STALE_AFTER_MINUTES: i32 = 3;
 pub const INBOUND_BODY_STORAGE_MAX_CHARS: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +122,10 @@ pub trait ProcessingStore: Send + Sync {
         status: &str,
         outbound_action: Option<&OutboundActionKind>,
     ) -> Result<(), StorageError>;
+
+    async fn touch_processing(&self, _key: &DedupeKey) -> Result<(), StorageError> {
+        Ok(())
+    }
 
     async fn record_safety_result(
         &self,
