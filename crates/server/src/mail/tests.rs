@@ -65,6 +65,7 @@ impl BlockingMailClient for FakeBlockingMailClient {
 async fn live_transport_delegates_to_blocking_client() {
     let client = FakeBlockingMailClient::default();
     let transport = LiveMailTransport::new(client.clone());
+    let _default_transport = LiveMailTransport::default();
     let mailbox = mailbox_config();
     let action = OutboundAction {
         kind: OutboundActionKind::Reply,
@@ -89,6 +90,26 @@ async fn live_transport_delegates_to_blocking_client() {
 }
 
 #[test]
+fn mail_error_messages_include_context() {
+    assert_eq!(
+        MailError::Task("join failed".to_string()).to_string(),
+        "mail task failed: join failed"
+    );
+    assert_eq!(
+        MailError::Imap("login failed".to_string()).to_string(),
+        "imap error: login failed"
+    );
+    assert_eq!(
+        MailError::Smtp("send failed".to_string()).to_string(),
+        "smtp error: send failed"
+    );
+    assert_eq!(
+        MailError::Build("bad header".to_string()).to_string(),
+        "message build error: bad header"
+    );
+}
+
+#[test]
 fn metadata_builds_stable_dedupe_key() {
     let metadata = MessageMetadata {
         mailbox_id: "support".to_string(),
@@ -108,6 +129,30 @@ fn metadata_builds_stable_dedupe_key() {
             uid: 42
         }
     );
+}
+
+#[test]
+fn thread_id_falls_back_through_reply_headers_and_uid() {
+    let mut metadata = MessageMetadata {
+        mailbox_id: "support".to_string(),
+        uid_validity: 7,
+        uid: 42,
+        message_id: None,
+        in_reply_to: None,
+        references: vec![],
+        from_addr: "a@example.com".to_string(),
+        subject: "Hello".to_string(),
+    };
+    assert_eq!(metadata.thread_id(), "support:7:42");
+
+    metadata.message_id = Some("<message@example.com>".to_string());
+    assert_eq!(metadata.thread_id(), "<message@example.com>");
+
+    metadata.in_reply_to = Some("<reply@example.com>".to_string());
+    assert_eq!(metadata.thread_id(), "<reply@example.com>");
+
+    metadata.references = vec!["<root@example.com>".to_string()];
+    assert_eq!(metadata.thread_id(), "<root@example.com>");
 }
 
 #[test]
@@ -220,6 +265,21 @@ fn parses_thread_headers_and_derives_thread_id() {
 }
 
 #[test]
+fn parse_inbound_message_keeps_unparseable_message_id_headers() {
+    let raw = b"From: Sender <sender@example.com>\r\nSubject: Bad IDs\r\nMessage-ID: not-a-message-id\r\nReferences: also-not-a-message-id\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nBody";
+    let message = parse_inbound_message("support", 9, 12, raw).unwrap();
+
+    assert_eq!(
+        message.metadata.message_id,
+        Some("not-a-message-id".to_string())
+    );
+    assert_eq!(
+        message.metadata.references,
+        vec!["also-not-a-message-id".to_string()]
+    );
+}
+
+#[test]
 fn reply_references_append_inbound_message_id_once() {
     let mut metadata = MessageMetadata {
         mailbox_id: "support".to_string(),
@@ -274,6 +334,14 @@ fn parses_text_part_from_multipart_message() {
     let raw = b"From: sender@example.com\r\nSubject: Multipart\r\nContent-Type: multipart/alternative; boundary=abc\r\n\r\n--abc\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nPlain body\r\n--abc\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>HTML body</p>\r\n--abc--";
     let message = parse_inbound_message("support", 1, 2, raw).unwrap();
     assert_eq!(message.plain_text.trim(), "Plain body");
+}
+
+#[test]
+fn parses_body_from_non_plain_leaf_part_when_plain_text_is_absent() {
+    let raw = b"From: sender@example.com\r\nSubject: HTML only\r\nContent-Type: multipart/alternative; boundary=abc\r\n\r\n--abc\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>HTML body</p>\r\n--abc--";
+    let message = parse_inbound_message("support", 1, 3, raw).unwrap();
+
+    assert_eq!(message.plain_text.trim(), "<p>HTML body</p>");
 }
 
 #[test]

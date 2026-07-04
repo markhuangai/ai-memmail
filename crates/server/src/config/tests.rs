@@ -133,6 +133,19 @@ fn rejects_prompt_paths_with_parent_components() {
 
 #[test]
 fn redacts_secrets_without_changing_shape() {
+    let mut config = valid_config();
+    config.database.password.clear();
+    config
+        .mcp_servers
+        .get_mut("dense_mem")
+        .unwrap()
+        .env
+        .insert("EMPTY_SECRET".to_string(), String::new());
+
+    let redacted = config.redacted();
+    assert_eq!(redacted.database.password, "");
+    assert_eq!(redacted.mcp_servers["dense_mem"].env["EMPTY_SECRET"], "");
+
     let redacted = valid_config().redacted();
     assert_eq!(redacted.database.password, "********");
     assert_eq!(redacted.ai.api_secret, "********");
@@ -217,6 +230,23 @@ fn preserves_redacted_secrets_before_saving() {
     assert_eq!(next.mailboxes[0].imap.password, "imap-secret");
     assert_eq!(next.mailboxes[0].smtp.password, "smtp-secret");
     assert_eq!(next.database.host, "db.changed.test");
+}
+
+#[test]
+fn prompt_config_defaults_classifier_and_rule_paths() {
+    let prompts: PromptConfig = serde_yaml_ng::from_str(
+        r#"
+root: prompts
+safety_scan: safety.md
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        prompts.email_classifier,
+        PathBuf::from("email-classifier.md")
+    );
+    assert_eq!(prompts.rule_action, PathBuf::from("rule-action.md"));
 }
 
 #[test]

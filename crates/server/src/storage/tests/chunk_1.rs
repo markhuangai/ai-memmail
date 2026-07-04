@@ -197,6 +197,18 @@ fn outbound_body_storage_keeps_replies_and_redacts_forwards() {
         references: vec![],
     };
     assert_eq!(outbound_body_for_storage(&forward), (None, true));
+
+    let noop = OutboundAction {
+        kind: OutboundActionKind::Noop,
+        recipients: vec![],
+        subject: String::new(),
+        body: String::new(),
+        reason: "nothing to do".to_string(),
+        message_id: None,
+        in_reply_to: None,
+        references: vec![],
+    };
+    assert_eq!(outbound_body_for_storage(&noop), (None, false));
 }
 
 #[test]
@@ -208,6 +220,11 @@ fn inbound_body_storage_caps_large_message_bodies() {
 
     assert_eq!(body.len(), INBOUND_BODY_STORAGE_MAX_CHARS);
     assert!(truncated);
+
+    message.plain_text = "short body".to_string();
+    let (body, truncated) = inbound_body_for_storage(&message);
+    assert_eq!(body, "short body");
+    assert!(!truncated);
 }
 
 #[test]
@@ -220,7 +237,19 @@ fn safety_category_values_match_storage_terms() {
         safety_category_value(&SafetyCategory::SensitiveExfiltration),
         "sensitive_exfiltration"
     );
+    assert_eq!(
+        safety_category_value(&SafetyCategory::Jailbreak),
+        "jailbreak"
+    );
+    assert_eq!(safety_category_value(&SafetyCategory::Hacking), "hacking");
+    assert_eq!(safety_category_value(&SafetyCategory::Unknown), "unknown");
     assert_eq!(safety_category_value(&SafetyCategory::Safe), "safe");
+}
+
+#[test]
+fn empty_string_as_none_trims_before_deciding() {
+    assert_eq!(empty_string_as_none("  "), None);
+    assert_eq!(empty_string_as_none(" value "), Some(" value "));
 }
 
 #[test]

@@ -230,12 +230,14 @@ mod tests {
         assert!(sender_is_banned("BAD@example.com", &bans));
         assert!(sender_is_banned("Bad Sender <bad@example.com>", &bans));
         assert!(sender_is_banned("\"Bad Sender\" <BAD@example.com>", &bans));
+        assert!(sender_is_banned("Team: Bad <bad@example.com>;", &bans));
         assert!(sender_is_banned("person@evil.test", &bans));
         assert!(sender_is_banned("Known Bad <person@evil.test>", &bans));
         assert!(!sender_is_banned(
             "\"bad@example.com\" <person@example.net>",
             &bans
         ));
+        assert!(!sender_is_banned("", &bans));
         assert!(!sender_is_banned("person@example.com", &bans));
         assert!(!sender_is_banned("evil.test", &bans));
     }

@@ -110,6 +110,47 @@ fn rejects_email_classification_without_reason() {
 }
 
 #[test]
+fn rejects_invalid_email_classification_payloads() {
+    let malformed = parse_email_classification("not json").unwrap_err();
+    assert!(malformed
+        .to_string()
+        .contains("invalid classification JSON"));
+
+    let missing_category = parse_email_classification(
+        r#"{"category":"","topics":["general"],"reason":"routine","confidence":80}"#,
+    )
+    .unwrap_err();
+    assert!(missing_category
+        .to_string()
+        .contains("category is required"));
+
+    let invalid_confidence = parse_email_classification(
+        r#"{"category":"question","topics":["general"],"reason":"routine","confidence":101}"#,
+    )
+    .unwrap_err();
+    assert!(invalid_confidence
+        .to_string()
+        .contains("confidence must be 0..100"));
+}
+
+#[test]
+fn rejects_invalid_rule_action_drafts() {
+    let missing_reason = parse_rule_action_draft(
+        r#"{"subject":"Re: Question","body":"Answer","reason":"","safety_notes":"safe"}"#,
+    )
+    .unwrap_err();
+    assert!(missing_reason.to_string().contains("reason is required"));
+
+    let missing_safety = parse_rule_action_draft(
+        r#"{"subject":"Re: Question","body":"Answer","reason":"known answer","safety_notes":""}"#,
+    )
+    .unwrap_err();
+    assert!(missing_safety
+        .to_string()
+        .contains("safety_notes is required"));
+}
+
+#[test]
 fn converts_rule_action_draft_to_deterministic_reply() {
     let mailbox = mailbox_config();
     let message = inbound("Paid PR", "We can get you coverage.");
@@ -131,6 +172,69 @@ fn converts_rule_action_draft_to_deterministic_reply() {
     assert_eq!(decision.action.recipients, vec!["person@example.com"]);
     assert_eq!(decision.action.subject, "Re: Paid PR");
     assert!(decision.action.body.contains("not interested"));
+}
+
+#[test]
+fn converts_rule_action_draft_to_forward_and_noop() {
+    let message = inbound("Security concern", "Please look at this.");
+    let draft = RuleActionDraft {
+        subject: "".to_string(),
+        body: "Please review.".to_string(),
+        reason: "needs human review".to_string(),
+        safety_notes: "safe to forward".to_string(),
+    };
+
+    let mut mailbox = mailbox_config();
+    let default_forward = rule_draft_to_decision(
+        &mailbox,
+        &message,
+        &email_rule(crate::classification::EmailRuleAction::Forward),
+        draft.clone(),
+    )
+    .unwrap();
+    assert_eq!(default_forward.action.recipients, vec!["human@example.com"]);
+
+    mailbox.agent.default_forward_to.clear();
+    let forward = rule_draft_to_decision(
+        &mailbox,
+        &message,
+        &email_rule(crate::classification::EmailRuleAction::Forward),
+        draft.clone(),
+    )
+    .unwrap();
+    assert_eq!(forward.action.kind, OutboundActionKind::Forward);
+    assert_eq!(forward.action.recipients, vec!["safety@example.com"]);
+    assert_eq!(forward.action.subject, "Fwd: Security concern");
+
+    let noop = rule_draft_to_decision(
+        &mailbox,
+        &message,
+        &email_rule(crate::classification::EmailRuleAction::Noop),
+        draft,
+    )
+    .unwrap();
+    assert_eq!(noop.action.kind, OutboundActionKind::Noop);
+    assert!(noop.action.recipients.is_empty());
+    assert!(noop.action.subject.is_empty());
+    assert!(noop.action.body.is_empty());
+}
+
+#[test]
+fn rejects_rule_action_draft_that_cannot_validate() {
+    let error = rule_draft_to_decision(
+        &mailbox_config(),
+        &inbound("Question", "Can you help?"),
+        &email_rule(crate::classification::EmailRuleAction::Reply),
+        RuleActionDraft {
+            subject: "Re: Question".to_string(),
+            body: "".to_string(),
+            reason: "known answer".to_string(),
+            safety_notes: "safe".to_string(),
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.contains("body"));
 }
 
 #[test]

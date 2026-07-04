@@ -26,7 +26,7 @@ jobs:
           cargo test --workspace -- --skip storage_pg::tests::
       - run: >-
           cargo llvm-cov --workspace --lib --fail-under-lines 90
-          --ignore-filename-regex 'rustc-.*library|src/main.rs|src/ai.rs|src/ai_external.rs|src/mail_external.rs|src/storage_pg.rs|src/storage_pg/.*|src/web.rs|src/web/.*|src/worker.rs|src/worker/.*'
+          --ignore-filename-regex 'rustc-.*library|src/main.rs|src/.*/tests.rs|src/.*/tests/.*|src/[^/]+/tests.rs|src/ai.rs|src/ai_external.rs|src/mail_external.rs|src/storage_pg.rs|src/storage_pg/.*|src/web.rs|src/web/.*|src/worker.rs|src/worker/.*'
           -- --skip storage_pg::tests::
 
   frontend:
