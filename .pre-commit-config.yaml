@@ -1,0 +1,8 @@
+repos:
+  - repo: local
+    hooks:
+      - id: file-line-size
+        name: file line size
+        entry: scripts/check-line-size.sh
+        language: system
+        pass_filenames: false

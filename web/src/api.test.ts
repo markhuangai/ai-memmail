@@ -8,9 +8,11 @@ import {
   loadConfig,
   loadEmailClassification,
   loadMessages,
+  loadPromptFile,
   loadStatus,
   login,
   saveConfig,
+  savePromptFile,
   updateEmailRule
 } from "./api";
 import { sampleClassification, sampleConfig, sampleMessages } from "./fixtures";
@@ -71,6 +73,41 @@ describe("api", () => {
   it("defaults missing processed message payloads to an empty list", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({}));
     await expect(loadMessages(fetchImpl as typeof fetch)).resolves.toEqual([]);
+  });
+
+  it("loads processed messages with a limit", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ messages: sampleMessages }));
+    await loadMessages(250, fetchImpl as typeof fetch);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/api/messages?limit=250",
+      expect.objectContaining({ credentials: "same-origin" })
+    );
+  });
+
+  it("loads and saves prompt files", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ path: "support-agent.md", content: "Prompt content" })
+    );
+
+    await expect(loadPromptFile("support-agent.md", fetchImpl as typeof fetch)).resolves.toEqual({
+      path: "support-agent.md",
+      content: "Prompt content"
+    });
+    await savePromptFile("support-agent.md", "Updated prompt", fetchImpl as typeof fetch);
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      "/api/prompt-file?path=support-agent.md",
+      expect.objectContaining({ credentials: "same-origin" })
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      "/api/prompt-file?path=support-agent.md",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ content: "Updated prompt" })
+      })
+    );
   });
 
   it("unwraps email classification payloads", async () => {

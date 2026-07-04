@@ -271,7 +271,11 @@ p {
 }
 
 .section-actions button,
-.panel-actions button {
+.panel-actions button,
+.panel-heading > button,
+.env-editor-heading button,
+.prompt-path-field button,
+.prompt-editor button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -313,6 +317,29 @@ p {
   min-height: 18px;
 }
 
+.checkbox-panel {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid #cbd4ca;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.checkbox-panel legend {
+  color: #526054;
+  font-size: 0.86rem;
+  font-weight: 750;
+  padding: 0 4px;
+}
+
+.checkbox-list {
+  display: flex;
+  gap: 8px 14px;
+  flex-wrap: wrap;
+}
+
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -337,368 +364,4 @@ p {
 .table-wrap {
   width: 100%;
   overflow-x: auto;
-}
-
-.history-layout {
-  display: grid;
-  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
-  gap: 14px;
-  align-items: start;
-}
-
-.message-list-panel,
-.message-detail-panel {
-  min-width: 0;
-}
-
-.message-list {
-  display: grid;
-  gap: 8px;
-}
-
-.message-row {
-  min-height: 78px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px 12px;
-  align-items: start;
-  width: 100%;
-  padding: 12px;
-  text-align: left;
-}
-
-.message-row.active,
-.message-row:hover {
-  border-color: #1e775d;
-  background: #f2faf6;
-}
-
-.message-row-main {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.message-row-main strong,
-.message-row-main span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.message-row-main span,
-.message-row-time,
-.muted {
-  color: #667367;
-}
-
-.message-row-time {
-  grid-column: 1 / -1;
-  font-size: 0.82rem;
-}
-
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 26px;
-  border: 1px solid #cbd4ca;
-  border-radius: 999px;
-  padding: 0 10px;
-  background: #f6f7f4;
-  color: #526054;
-  font-size: 0.78rem;
-  font-weight: 750;
-  white-space: nowrap;
-}
-
-.status-pill.success {
-  border-color: #b7dbc9;
-  background: #eaf7f1;
-  color: #1e775d;
-}
-
-.status-pill.pending {
-  border-color: #d8c790;
-  background: #fff8dd;
-  color: #756018;
-}
-
-.status-pill.danger {
-  border-color: #efb8ae;
-  background: #ffe9e5;
-  color: #8f2f28;
-}
-
-.message-detail-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.message-section {
-  display: grid;
-  gap: 12px;
-  margin-top: 22px;
-}
-
-.message-section h3 {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  font-size: 1rem;
-}
-
-.message-section h3 svg {
-  width: 18px;
-  height: 18px;
-  color: #1e775d;
-}
-
-.text-block {
-  display: grid;
-  gap: 6px;
-}
-
-.text-block span {
-  color: #667367;
-  font-weight: 700;
-}
-
-.text-block p,
-.message-body {
-  overflow-wrap: anywhere;
-}
-
-.message-body {
-  max-height: 320px;
-  overflow: auto;
-  margin: 0;
-  border: 1px solid #e4e8e1;
-  border-radius: 8px;
-  background: #fbfcfa;
-  padding: 12px;
-  white-space: pre-wrap;
-}
-
-.chain-list {
-  display: grid;
-  gap: 8px;
-}
-
-.chain-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  border: 1px solid #e4e8e1;
-  border-radius: 8px;
-  background: #fff;
-  color: inherit;
-  padding: 10px 12px;
-  text-align: left;
-}
-
-.chain-item.active {
-  border-color: #1e775d;
-  background: #f2faf6;
-}
-
-.chain-item > span:first-child {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.chain-item > span:first-child span {
-  color: #667367;
-  overflow-wrap: anywhere;
-}
-
-.timeline-table {
-  min-width: 860px;
-}
-
-table {
-  width: 100%;
-  min-width: 720px;
-  border-collapse: collapse;
-}
-
-th,
-td {
-  text-align: left;
-  padding: 12px;
-  border-bottom: 1px solid #e4e8e1;
-  vertical-align: top;
-}
-
-th {
-  color: #526054;
-  font-size: 0.82rem;
-  text-transform: uppercase;
-}
-
-.inline-form {
-  display: grid;
-  grid-template-columns: 140px minmax(160px, 1fr) minmax(160px, 1fr) auto;
-  gap: 10px;
-  margin: 14px 0 18px;
-}
-
-.rules-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-}
-
-.label-form,
-.rule-editor {
-  display: grid;
-  gap: 14px;
-}
-
-.label-form {
-  margin-top: 14px;
-}
-
-.label-form button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 0 14px;
-  justify-self: start;
-}
-
-.rule-list {
-  display: grid;
-  gap: 14px;
-}
-
-.rule-editor {
-  border: 1px solid #e4e8e1;
-  border-radius: 8px;
-  padding: 14px;
-  background: #fbfcfa;
-}
-
-.rule-editor.new {
-  background: #ffffff;
-}
-
-.rule-editor h3 {
-  margin: 0;
-  font-size: 1rem;
-}
-
-.topic-picker {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  border: 1px solid #e4e8e1;
-  border-radius: 8px;
-  padding: 12px;
-}
-
-.topic-picker legend {
-  color: #526054;
-  font-weight: 750;
-  padding: 0 6px;
-}
-
-.topic-picker > div {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.label-cloud {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 14px;
-}
-
-.label-chip {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  border: 1px solid #cbd4ca;
-  border-radius: 999px;
-  padding: 0 10px;
-  background: #f6f7f4;
-  color: #526054;
-  font-size: 0.8rem;
-  font-weight: 750;
-}
-
-.banner {
-  margin-bottom: 14px;
-}
-
-@media (max-width: 880px) {
-  .app-shell {
-    grid-template-columns: 1fr;
-  }
-
-  .sidebar {
-    padding: 12px;
-  }
-
-  .sidebar nav {
-    grid-template-columns: repeat(5, minmax(44px, 1fr));
-    margin-top: 12px;
-  }
-
-  .sidebar button {
-    justify-content: center;
-    font-size: 0;
-    padding: 0;
-  }
-
-  .sidebar button svg {
-    width: 20px;
-    height: 20px;
-  }
-
-  .topbar {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .topbar-actions {
-    width: 100%;
-    justify-content: stretch;
-  }
-
-  .topbar-actions button {
-    flex: 1 1 120px;
-  }
-
-  .overview-grid,
-  .history-layout,
-  .form-grid,
-  .detail-grid,
-  .inline-form,
-  .rules-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .chain-item {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .panel-heading {
-    display: grid;
-  }
-
-  .panel-actions,
-  .section-actions {
-    justify-content: stretch;
-  }
-
-  .panel-actions button,
-  .section-actions button {
-    flex: 1 1 150px;
-  }
 }

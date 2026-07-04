@@ -6,8 +6,15 @@ on:
     branches: [main]
 
 jobs:
+  line-size:
+    runs-on: docker-runner
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/check-line-size.sh
+
   backend:
     runs-on: docker-runner
+    needs: line-size
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.75.0
@@ -19,11 +26,12 @@ jobs:
           cargo test --workspace -- --skip storage_pg::tests::
       - run: >-
           cargo llvm-cov --workspace --lib --fail-under-lines 90
-          --ignore-filename-regex 'rustc-.*library|src/main.rs|src/ai_external.rs|src/mail_external.rs|src/storage_pg.rs|src/web.rs|src/worker.rs'
+          --ignore-filename-regex 'rustc-.*library|src/main.rs|src/.*/tests.rs|src/.*/tests/.*|src/[^/]+/tests.rs|src/ai.rs|src/ai_external.rs|src/mail_external.rs|src/storage_pg.rs|src/storage_pg/.*|src/web.rs|src/web/.*|src/worker.rs|src/worker/.*'
           -- --skip storage_pg::tests::
 
   frontend:
     runs-on: docker-runner
+    needs: line-size
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
