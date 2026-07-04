@@ -43,6 +43,29 @@ fn rejects_reply_that_presents_as_ai_or_mailbox_agent() {
 }
 
 #[test]
+fn rejects_reply_that_presents_as_assistant_or_bot() {
+    for body in [
+        "I'm Mark's email assistant and can help with this.",
+        "I'm a bot handling this request for Mark.",
+    ] {
+        let raw = serde_json::json!({
+            "kind": "reply",
+            "recipients": ["user@example.com"],
+            "subject": "Re: Hello",
+            "body": body,
+            "reason": "Capability answer",
+            "safety_notes": "No sensitive data"
+        })
+        .to_string();
+        let error = parse_agent_decision(&raw).unwrap_err();
+        assert!(
+            error.contains("must not present the sender as an AI or mailbox agent"),
+            "{body}"
+        );
+    }
+}
+
+#[test]
 fn allows_replies_about_project_names_without_system_voice() {
     let raw = r#"{
         "kind":"reply",
@@ -54,6 +77,20 @@ fn allows_replies_about_project_names_without_system_voice() {
     }"#;
     let decision = parse_agent_decision(raw).unwrap();
     assert!(decision.action.body.contains("ai-memmail project"));
+}
+
+#[test]
+fn allows_replies_about_assistant_products_without_self_presentation() {
+    let raw = r#"{
+        "kind":"reply",
+        "recipients":["user@example.com"],
+        "subject":"Re: assistant workflow",
+        "body":"Mark's project can process email assistant workflows through IMAP and SMTP.",
+        "reason":"Project context answer",
+        "safety_notes":"No sensitive data"
+    }"#;
+    let decision = parse_agent_decision(raw).unwrap();
+    assert!(decision.action.body.contains("email assistant workflows"));
 }
 
 #[test]
