@@ -47,6 +47,8 @@ fn rejects_reply_that_presents_as_assistant_or_bot() {
     for body in [
         "I'm Mark's email assistant and can help with this.",
         "I'm a bot handling this request for Mark.",
+        "I can respond as an assistant for Mark.",
+        "I can respond as a bot for Mark.",
     ] {
         let raw = serde_json::json!({
             "kind": "reply",

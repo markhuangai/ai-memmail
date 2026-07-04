@@ -263,6 +263,8 @@ fn reply_body_uses_system_voice(body: &str) -> bool {
     let normalized = body.to_ascii_lowercase().replace(['\n', '\r'], " ");
     [
         "as an ai",
+        "as an assistant",
+        "as a bot",
         "i am an ai",
         "i'm an ai",
         "ai assistant",
