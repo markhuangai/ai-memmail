@@ -68,9 +68,13 @@ async fn reviewed_outbound_action(
     }
 
     let started = Instant::now();
-    match decisions
-        .outbound_review(config, mailbox, message, decision)
-        .await
+    match run_ai_step(
+        processing,
+        message,
+        "outbound_review",
+        decisions.outbound_review(config, mailbox, message, decision),
+    )
+    .await
     {
         Ok(review) if review.approved => {
             logger

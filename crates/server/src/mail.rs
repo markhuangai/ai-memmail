@@ -191,7 +191,7 @@ impl MessageMetadata {
     }
 }
 
-pub const AUTOMATED_REPLY_NOTICE: &str = "This is an automated email reply from ai-memmail. If this needs to be escalated to a human, reply with: escalation to human";
+pub const AUTOMATED_REPLY_NOTICE: &str = "This automated reply was sent on Mark's behalf. If this needs Mark's attention, reply with: escalation to human";
 
 pub fn parse_inbound_message(
     mailbox_id: &str,

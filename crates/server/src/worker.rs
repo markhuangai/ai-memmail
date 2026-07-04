@@ -4,10 +4,10 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::ai::{
-    forward_decision, human_review_requested, AgentDecision, DecisionEngine, LiveDecisionEngine,
-    OutboundReviewDecision,
+    forward_decision, human_review_requested, AgentDecision, AiError, DecisionEngine,
+    LiveDecisionEngine, OutboundReviewDecision,
 };
-use crate::classification::{EmailRule, ResolvedEmailClassification};
+use crate::classification::{EmailClassification, EmailRule, ResolvedEmailClassification};
 use crate::config::{AppConfig, ConfigError, MailboxConfig};
 use crate::logging::{
     action_event, ActionEvent, ActionLogger, FanoutLogger, LogLevel, StdoutLogger,
@@ -197,6 +197,9 @@ pub fn precheck_sender(sender: &str, config: &AppConfig) -> SenderPrecheck {
 pub fn should_forward_for_human_review(decision: &SafetyDecision) -> bool {
     decision.disposition == SafetyDisposition::QuarantineAndForward
 }
+
+include!("worker/step_timeout.rs");
+
 include!("worker/process.rs");
 
 include!("worker/outbound.rs");

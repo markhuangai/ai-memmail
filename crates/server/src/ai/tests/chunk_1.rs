@@ -29,6 +29,73 @@ fn rejects_missing_safety_notes() {
 }
 
 #[test]
+fn rejects_reply_that_presents_as_ai_or_mailbox_agent() {
+    let raw = r#"{
+        "kind":"reply",
+        "recipients":["user@example.com"],
+        "subject":"Re: Hello",
+        "body":"I can help handle mail sent to this mailbox and answer questions.",
+        "reason":"Capability answer",
+        "safety_notes":"No sensitive data"
+    }"#;
+    let error = parse_agent_decision(raw).unwrap_err();
+    assert!(error.contains("must not present the sender as an AI or mailbox agent"));
+}
+
+#[test]
+fn rejects_reply_that_presents_as_assistant_or_bot() {
+    for body in [
+        "I'm Mark's email assistant and can help with this.",
+        "I'm a bot handling this request for Mark.",
+        "I can respond as an assistant for Mark.",
+        "I can respond as a bot for Mark.",
+    ] {
+        let raw = serde_json::json!({
+            "kind": "reply",
+            "recipients": ["user@example.com"],
+            "subject": "Re: Hello",
+            "body": body,
+            "reason": "Capability answer",
+            "safety_notes": "No sensitive data"
+        })
+        .to_string();
+        let error = parse_agent_decision(&raw).unwrap_err();
+        assert!(
+            error.contains("must not present the sender as an AI or mailbox agent"),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn allows_replies_about_project_names_without_system_voice() {
+    let raw = r#"{
+        "kind":"reply",
+        "recipients":["user@example.com"],
+        "subject":"Re: ai-memmail",
+        "body":"Mark's ai-memmail project processes email through IMAP and SMTP.",
+        "reason":"Project context answer",
+        "safety_notes":"No sensitive data"
+    }"#;
+    let decision = parse_agent_decision(raw).unwrap();
+    assert!(decision.action.body.contains("ai-memmail project"));
+}
+
+#[test]
+fn allows_replies_about_assistant_products_without_self_presentation() {
+    let raw = r#"{
+        "kind":"reply",
+        "recipients":["user@example.com"],
+        "subject":"Re: assistant workflow",
+        "body":"Mark's project can process email assistant workflows through IMAP and SMTP.",
+        "reason":"Project context answer",
+        "safety_notes":"No sensitive data"
+    }"#;
+    let decision = parse_agent_decision(raw).unwrap();
+    assert!(decision.action.body.contains("email assistant workflows"));
+}
+
+#[test]
 fn parses_json_inside_fenced_model_output() {
     let raw = r#"```json
     {
@@ -487,4 +554,12 @@ async fn live_decision_engine_includes_mcp_context_in_agent_prompt() {
         .as_str()
         .unwrap()
         .contains("coverage requirement: 90%"));
+    assert!(requests[0][1]["content"]
+        .as_str()
+        .unwrap()
+        .contains("\"reply_voice\""));
+    assert!(requests[0][1]["content"]
+        .as_str()
+        .unwrap()
+        .contains("\"speak_on_behalf_of\":\"Mark\""));
 }

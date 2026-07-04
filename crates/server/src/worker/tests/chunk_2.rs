@@ -19,6 +19,9 @@ fn failing_safety_decisions() -> FakeDecisionEngine {
         fail_agent: false,
         fail_rule: false,
         fail_review: false,
+        hang_agent: false,
+        missing_classifier_prompt: false,
+        missing_rule_prompt: false,
         calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
         reviewed_actions: Arc::new(Mutex::new(Vec::new())),
     }
@@ -44,6 +47,9 @@ fn failing_agent_decisions() -> FakeDecisionEngine {
         fail_agent: true,
         fail_rule: false,
         fail_review: false,
+        hang_agent: false,
+        missing_classifier_prompt: false,
+        missing_rule_prompt: false,
         calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
         reviewed_actions: Arc::new(Mutex::new(Vec::new())),
     }
@@ -476,9 +482,110 @@ async fn taxonomy_failure_leaves_message_unseen() {
 }
 
 #[tokio::test]
-async fn classification_failure_leaves_message_unseen() {
+async fn missing_classifier_prompt_uses_agent_without_taxonomy() {
     let logger = crate::logging::MemoryLogger::default();
     let mail = FakeMail::new(vec![inbound(68, "person@example.com", "Hello", "Question")]);
+    let mut decisions = fake_decisions(safe_scan(), reply_action());
+    decisions.missing_classifier_prompt = true;
+    let processing =
+        FakeProcessingStore::new(vec![FakeClaimOutcome::Claimed]).with_fail_taxonomy();
+
+    run_once_with_store(
+        &config(),
+        &logger,
+        "run-test",
+        &mail,
+        &decisions,
+        &processing,
+    )
+    .await;
+
+    assert_eq!(mail.sent().len(), 1);
+    assert_eq!(mail.seen()[0].uid, 68);
+    assert_eq!(
+        decisions.call_counts(),
+        DecisionCallCounts {
+            safety_scan: 1,
+            classify_email: 0,
+            agent_decision: 1,
+            rule_decision: 0,
+            outbound_review: 0,
+        }
+    );
+    assert!(logger
+        .events()
+        .iter()
+        .any(|event| event.action == "email_classification" && event.status == "skipped"));
+    assert!(!logger
+        .events()
+        .iter()
+        .any(|event| event.action == "email_taxonomy" && event.status == "failed"));
+}
+
+#[tokio::test]
+async fn missing_rule_prompt_records_agent_source_and_uses_agent() {
+    let logger = crate::logging::MemoryLogger::default();
+    let processing = MemoryProcessingStore::default();
+    let message = inbound(
+        69,
+        "agency@example.com",
+        "Grow your audience",
+        "We can sell you a paid PR campaign.",
+    );
+    let key = message.metadata.dedupe_key();
+    let mail = FakeMail::new(vec![message]);
+    let mut decisions = fake_decisions(safe_scan(), forward_action());
+    decisions.classification = marketing_classification();
+    decisions.missing_rule_prompt = true;
+
+    run_once_with_store(
+        &config(),
+        &logger,
+        "run-test",
+        &mail,
+        &decisions,
+        &processing,
+    )
+    .await;
+
+    let sent = mail.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].kind, OutboundActionKind::Forward);
+    assert_eq!(
+        decisions.call_counts(),
+        DecisionCallCounts {
+            safety_scan: 1,
+            classify_email: 1,
+            agent_decision: 1,
+            rule_decision: 0,
+            outbound_review: 0,
+        }
+    );
+    assert_eq!(
+        processing.email_classification(&key),
+        Some(crate::storage::StoredEmailClassification {
+            category: "marketing_vendor".to_string(),
+            topics: vec!["general".to_string()],
+            reason: "offers a paid promotion service".to_string(),
+            confidence: 94,
+            decision_source: "agent".to_string(),
+            matched_rule_name: None,
+        })
+    );
+    assert!(logger
+        .events()
+        .iter()
+        .any(|event| event.action == "rule_match" && event.status == "matched"));
+    assert!(logger
+        .events()
+        .iter()
+        .any(|event| event.action == "rule_decision" && event.status == "skipped"));
+}
+
+#[tokio::test]
+async fn classification_failure_leaves_message_unseen() {
+    let logger = crate::logging::MemoryLogger::default();
+    let mail = FakeMail::new(vec![inbound(70, "person@example.com", "Hello", "Question")]);
     let mut decisions = fake_decisions(safe_scan(), reply_action());
     decisions.fail_classification = true;
     let processing = FakeProcessingStore::new(vec![FakeClaimOutcome::Claimed]);
@@ -514,7 +621,7 @@ async fn classification_failure_leaves_message_unseen() {
 #[tokio::test]
 async fn classification_resolve_failure_leaves_message_unseen() {
     let logger = crate::logging::MemoryLogger::default();
-    let mail = FakeMail::new(vec![inbound(69, "person@example.com", "Hello", "Question")]);
+    let mail = FakeMail::new(vec![inbound(71, "person@example.com", "Hello", "Question")]);
     let decisions = fake_decisions(safe_scan(), reply_action());
     let processing =
         FakeProcessingStore::new(vec![FakeClaimOutcome::Claimed]).with_fail_resolve();
@@ -539,7 +646,7 @@ async fn classification_resolve_failure_leaves_message_unseen() {
 #[tokio::test]
 async fn rule_match_failure_leaves_message_unseen() {
     let logger = crate::logging::MemoryLogger::default();
-    let mail = FakeMail::new(vec![inbound(70, "person@example.com", "Hello", "Question")]);
+    let mail = FakeMail::new(vec![inbound(72, "person@example.com", "Hello", "Question")]);
     let decisions = fake_decisions(safe_scan(), reply_action());
     let processing =
         FakeProcessingStore::new(vec![FakeClaimOutcome::Claimed]).with_fail_rule_match();

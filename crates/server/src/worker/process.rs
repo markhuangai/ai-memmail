@@ -52,6 +52,12 @@ async fn process_mailbox(
     }
 }
 
+struct ClassificationContext {
+    raw: EmailClassification,
+    resolved: ResolvedEmailClassification,
+    matched_rule: Option<EmailRule>,
+}
+
 async fn process_message(
     config: &AppConfig,
     mailbox: &MailboxConfig,
@@ -90,7 +96,14 @@ async fn process_message(
         return;
     }
 
-    let scan = match decisions.safety_scan(config, mailbox, &message).await {
+    let scan = match run_ai_step(
+        processing,
+        &message,
+        "safety_scan",
+        decisions.safety_scan(config, mailbox, &message),
+    )
+    .await
+    {
         Ok(scan) => scan,
         Err(error) => {
             logger
@@ -156,172 +169,22 @@ async fn process_message(
         return;
     }
 
-    let classification_started = Instant::now();
-    let taxonomy = match processing.active_email_taxonomy().await {
-        Ok(taxonomy) => taxonomy,
-        Err(error) => {
-            logger
-                .log(message_event(
-                    LogLevel::Error,
-                    run_id,
-                    &message,
-                    "email_taxonomy",
-                    "failed",
-                    classification_started.elapsed(),
-                    Some(error.to_string()),
-                ))
-                .await;
-            update_processing_status(
-                processing,
-                logger,
-                run_id,
-                &message,
-                PROCESSING_STATUS_RETRYABLE_FAILED,
-                None,
-            )
-            .await;
-            return;
-        }
-    };
-    let raw_classification = match decisions
-        .classify_email(config, mailbox, &message, &taxonomy)
-        .await
-    {
-        Ok(classification) => classification,
-        Err(error) => {
-            logger
-                .log(message_event(
-                    LogLevel::Error,
-                    run_id,
-                    &message,
-                    "email_classification",
-                    "failed",
-                    classification_started.elapsed(),
-                    Some(error.to_string()),
-                ))
-                .await;
-            update_processing_status(
-                processing,
-                logger,
-                run_id,
-                &message,
-                PROCESSING_STATUS_RETRYABLE_FAILED,
-                None,
-            )
-            .await;
-            return;
-        }
-    };
-    let classification = match processing
-        .resolve_email_classification(&raw_classification)
-        .await
-    {
-        Ok(classification) => classification,
-        Err(error) => {
-            logger
-                .log(message_event(
-                    LogLevel::Error,
-                    run_id,
-                    &message,
-                    "email_classification_resolve",
-                    "failed",
-                    classification_started.elapsed(),
-                    Some(error.to_string()),
-                ))
-                .await;
-            update_processing_status(
-                processing,
-                logger,
-                run_id,
-                &message,
-                PROCESSING_STATUS_RETRYABLE_FAILED,
-                None,
-            )
-            .await;
-            return;
-        }
-    };
-    log_email_classification(
-        logger,
-        run_id,
-        &message,
-        &classification,
-        classification_started.elapsed(),
-    )
-    .await;
     let needs_human_review = human_review_requested(&message);
-    let matched_rule = if needs_human_review {
-        None
-    } else {
-        match processing
-            .find_matching_email_rule(&mailbox.id, &classification)
-            .await
-        {
-            Ok(rule) => rule,
-            Err(error) => {
-                logger
-                    .log(message_event(
-                        LogLevel::Error,
-                        run_id,
-                        &message,
-                        "rule_match",
-                        "failed",
-                        classification_started.elapsed(),
-                        Some(error.to_string()),
-                    ))
-                    .await;
-                update_processing_status(
-                    processing,
-                    logger,
-                    run_id,
-                    &message,
-                    PROCESSING_STATUS_RETRYABLE_FAILED,
-                    None,
-                )
-                .await;
-                return;
-            }
-        }
-    };
-    let decision_source = if needs_human_review {
-        "human_review"
-    } else if matched_rule.is_some() {
-        "rule"
-    } else {
-        "agent"
-    };
-    if needs_human_review {
-        logger
-            .log(message_event(
-                LogLevel::Info,
-                run_id,
-                &message,
-                "rule_match",
-                "skipped",
-                classification_started.elapsed(),
-                Some("sender requested human review".to_string()),
-            ))
-            .await;
-    } else {
-        log_rule_match(
-            logger,
-            run_id,
-            &message,
-            matched_rule.as_ref(),
-            classification_started.elapsed(),
-        )
-        .await;
-    }
-    record_email_classification_for_history(
-        processing,
+    let classification_context = match classify_message_for_rules(
+        config,
+        mailbox,
         logger,
         run_id,
+        decisions,
+        processing,
         &message,
-        &classification,
-        decision_source,
-        matched_rule.as_ref(),
+        needs_human_review,
     )
-    .await;
+    .await
+    {
+        Some(context) => context,
+        None => return,
+    };
 
     let decision_started = Instant::now();
     let decision = if needs_human_review {
@@ -336,83 +199,120 @@ async fn process_message(
         )
         .await;
         decision
-    } else if let Some(rule) = &matched_rule {
-        match decisions
-            .rule_decision(config, mailbox, &message, &raw_classification, rule)
+    } else if let Some(context) = &classification_context {
+        if let Some(rule) = &context.matched_rule {
+            match run_ai_step(
+                processing,
+                &message,
+                "rule_decision",
+                decisions.rule_decision(config, mailbox, &message, &context.raw, rule),
+            )
             .await
-        {
-            Ok(decision) => {
-                log_decision(
-                    logger,
-                    run_id,
-                    &message,
-                    &decision,
-                    "rule_decision",
-                    decision_started.elapsed(),
-                )
-                .await;
-                decision
-            }
-            Err(error) => {
-                logger
-                    .log(message_event(
-                        LogLevel::Error,
+            {
+                Ok(decision) => {
+                    log_decision(
+                        logger,
+                        run_id,
+                        &message,
+                        &decision,
+                        "rule_decision",
+                        decision_started.elapsed(),
+                    )
+                    .await;
+                    decision
+                }
+                Err(error) if ai_error_is_missing_prompt(&error) => {
+                    log_optional_prompt_skip(
+                        logger,
                         run_id,
                         &message,
                         "rule_decision",
-                        "failed",
                         decision_started.elapsed(),
-                        Some(error.to_string()),
-                    ))
+                        error.to_string(),
+                    )
                     .await;
-                update_processing_status(
-                    processing,
-                    logger,
-                    run_id,
-                    &message,
-                    PROCESSING_STATUS_RETRYABLE_FAILED,
-                    None,
-                )
-                .await;
-                return;
+                    record_email_classification_for_history(
+                        processing,
+                        logger,
+                        run_id,
+                        &message,
+                        &context.resolved,
+                        "agent",
+                        None,
+                    )
+                    .await;
+                    match agent_decision_or_retry(
+                        config,
+                        mailbox,
+                        logger,
+                        run_id,
+                        decisions,
+                        processing,
+                        &message,
+                        decision_started,
+                    )
+                    .await
+                    {
+                        Some(decision) => decision,
+                        None => return,
+                    }
+                }
+                Err(error) => {
+                    logger
+                        .log(message_event(
+                            LogLevel::Error,
+                            run_id,
+                            &message,
+                            "rule_decision",
+                            "failed",
+                            decision_started.elapsed(),
+                            Some(error.to_string()),
+                        ))
+                        .await;
+                    update_processing_status(
+                        processing,
+                        logger,
+                        run_id,
+                        &message,
+                        PROCESSING_STATUS_RETRYABLE_FAILED,
+                        None,
+                    )
+                    .await;
+                    return;
+                }
+            }
+        } else {
+            match agent_decision_or_retry(
+                config,
+                mailbox,
+                logger,
+                run_id,
+                decisions,
+                processing,
+                &message,
+                decision_started,
+            )
+            .await
+            {
+                Some(decision) => decision,
+                None => return,
             }
         }
     } else {
-        match decisions.agent_decision(config, mailbox, &message).await {
-            Ok(decision) => {
-                log_agent_decision(
-                    logger,
-                    run_id,
-                    &message,
-                    &decision,
-                    decision_started.elapsed(),
-                )
-                .await;
-                decision
-            }
-            Err(error) => {
-                logger
-                    .log(message_event(
-                        LogLevel::Error,
-                        run_id,
-                        &message,
-                        "agent_decision",
-                        "failed",
-                        decision_started.elapsed(),
-                        Some(error.to_string()),
-                    ))
-                    .await;
-                update_processing_status(
-                    processing,
-                    logger,
-                    run_id,
-                    &message,
-                    PROCESSING_STATUS_RETRYABLE_FAILED,
-                    None,
-                )
-                .await;
-                return;
-            }
+        match agent_decision_or_retry(
+            config,
+            mailbox,
+            logger,
+            run_id,
+            decisions,
+            processing,
+            &message,
+            decision_started,
+        )
+        .await
+        {
+            Some(decision) => decision,
+            None => return,
         }
     };
     record_agent_decision_for_history(processing, logger, run_id, &message, &decision).await;
@@ -473,4 +373,307 @@ async fn process_message(
             .await;
         }
     }
+}
+
+async fn classify_message_for_rules(
+    config: &AppConfig,
+    mailbox: &MailboxConfig,
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    decisions: &dyn DecisionEngine,
+    processing: &dyn ProcessingStore,
+    message: &InboundMessage,
+    needs_human_review: bool,
+) -> Option<Option<ClassificationContext>> {
+    let started = Instant::now();
+    match decisions.classifier_prompt_missing(config) {
+        Ok(true) => {
+            log_optional_prompt_skip(
+                logger,
+                run_id,
+                message,
+                "email_classification",
+                started.elapsed(),
+                format!(
+                    "optional prompt missing: {}",
+                    config.prompts.email_classifier.display()
+                ),
+            )
+            .await;
+            return Some(None);
+        }
+        Ok(false) => {}
+        Err(error) => {
+            log_retryable_message_error(
+                logger,
+                processing,
+                run_id,
+                message,
+                "email_classification",
+                started,
+                error.to_string(),
+            )
+            .await;
+            return None;
+        }
+    }
+
+    let taxonomy = match processing.active_email_taxonomy().await {
+        Ok(taxonomy) => taxonomy,
+        Err(error) => {
+            log_retryable_message_error(
+                logger,
+                processing,
+                run_id,
+                message,
+                "email_taxonomy",
+                started,
+                error.to_string(),
+            )
+            .await;
+            return None;
+        }
+    };
+    let raw = match run_ai_step(
+        processing,
+        message,
+        "email_classification",
+        decisions.classify_email(config, mailbox, message, &taxonomy),
+    )
+    .await
+    {
+        Ok(classification) => classification,
+        Err(error) if ai_error_is_missing_prompt(&error) => {
+            log_optional_prompt_skip(
+                logger,
+                run_id,
+                message,
+                "email_classification",
+                started.elapsed(),
+                error.to_string(),
+            )
+            .await;
+            return Some(None);
+        }
+        Err(error) => {
+            log_retryable_message_error(
+                logger,
+                processing,
+                run_id,
+                message,
+                "email_classification",
+                started,
+                error.to_string(),
+            )
+            .await;
+            return None;
+        }
+    };
+    let resolved = match processing.resolve_email_classification(&raw).await {
+        Ok(classification) => classification,
+        Err(error) => {
+            log_retryable_message_error(
+                logger,
+                processing,
+                run_id,
+                message,
+                "email_classification_resolve",
+                started,
+                error.to_string(),
+            )
+            .await;
+            return None;
+        }
+    };
+    log_email_classification(logger, run_id, message, &resolved, started.elapsed()).await;
+
+    let mut matched_rule = if needs_human_review {
+        None
+    } else {
+        match processing
+            .find_matching_email_rule(&mailbox.id, &resolved)
+            .await
+        {
+            Ok(rule) => rule,
+            Err(error) => {
+                log_retryable_message_error(
+                    logger,
+                    processing,
+                    run_id,
+                    message,
+                    "rule_match",
+                    started,
+                    error.to_string(),
+                )
+                .await;
+                return None;
+            }
+        }
+    };
+    let mut decision_source = if needs_human_review {
+        "human_review"
+    } else if matched_rule.is_some() {
+        "rule"
+    } else {
+        "agent"
+    };
+    if needs_human_review {
+        logger
+            .log(message_event(
+                LogLevel::Info,
+                run_id,
+                message,
+                "rule_match",
+                "skipped",
+                started.elapsed(),
+                Some("sender requested human review".to_string()),
+            ))
+            .await;
+    } else {
+        log_rule_match(logger, run_id, message, matched_rule.as_ref(), started.elapsed()).await;
+        if matched_rule.is_some() {
+            match decisions.rule_prompt_missing(config) {
+                Ok(true) => {
+                    log_optional_prompt_skip(
+                        logger,
+                        run_id,
+                        message,
+                        "rule_decision",
+                        started.elapsed(),
+                        format!(
+                            "optional prompt missing: {}",
+                            config.prompts.rule_action.display()
+                        ),
+                    )
+                    .await;
+                    matched_rule = None;
+                    decision_source = "agent";
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    log_retryable_message_error(
+                        logger,
+                        processing,
+                        run_id,
+                        message,
+                        "rule_decision",
+                        started,
+                        error.to_string(),
+                    )
+                    .await;
+                    return None;
+                }
+            }
+        }
+    }
+    record_email_classification_for_history(
+        processing,
+        logger,
+        run_id,
+        message,
+        &resolved,
+        decision_source,
+        matched_rule.as_ref(),
+    )
+    .await;
+
+    Some(Some(ClassificationContext {
+        raw,
+        resolved,
+        matched_rule,
+    }))
+}
+
+async fn agent_decision_or_retry(
+    config: &AppConfig,
+    mailbox: &MailboxConfig,
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    decisions: &dyn DecisionEngine,
+    processing: &dyn ProcessingStore,
+    message: &InboundMessage,
+    started: Instant,
+) -> Option<AgentDecision> {
+    match run_ai_step(
+        processing,
+        message,
+        "agent_decision",
+        decisions.agent_decision(config, mailbox, message),
+    )
+    .await
+    {
+        Ok(decision) => {
+            log_agent_decision(logger, run_id, message, &decision, started.elapsed()).await;
+            Some(decision)
+        }
+        Err(error) => {
+            log_retryable_message_error(
+                logger,
+                processing,
+                run_id,
+                message,
+                "agent_decision",
+                started,
+                error.to_string(),
+            )
+            .await;
+            None
+        }
+    }
+}
+
+async fn log_optional_prompt_skip(
+    logger: &dyn ActionLogger,
+    run_id: &str,
+    message: &InboundMessage,
+    action: &'static str,
+    duration: Duration,
+    detail: String,
+) {
+    logger
+        .log(message_event(
+            LogLevel::Warn,
+            run_id,
+            message,
+            action,
+            "skipped",
+            duration,
+            Some(detail),
+        ))
+        .await;
+}
+
+async fn log_retryable_message_error(
+    logger: &dyn ActionLogger,
+    processing: &dyn ProcessingStore,
+    run_id: &str,
+    message: &InboundMessage,
+    action: &'static str,
+    started: Instant,
+    detail: String,
+) {
+    logger
+        .log(message_event(
+            LogLevel::Error,
+            run_id,
+            message,
+            action,
+            "failed",
+            started.elapsed(),
+            Some(detail),
+        ))
+        .await;
+    update_processing_status(
+        processing,
+        logger,
+        run_id,
+        message,
+        PROCESSING_STATUS_RETRYABLE_FAILED,
+        None,
+    )
+    .await;
+}
+
+fn ai_error_is_missing_prompt(error: &AiError) -> bool {
+    matches!(error, AiError::Prompt(prompt) if prompt.is_not_found())
 }

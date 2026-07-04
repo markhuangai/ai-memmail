@@ -405,6 +405,39 @@ async fn agent_failure_leaves_message_unseen() {
 }
 
 #[tokio::test]
+async fn agent_timeout_heartbeats_and_marks_retryable_failed() {
+    let logger = crate::logging::MemoryLogger::default();
+    let processing = FakeProcessingStore::new(vec![FakeClaimOutcome::Claimed]);
+    let message = inbound(146, "person@example.com", "Question", "Body");
+    let mail = FakeMail::new(vec![message]);
+    let decisions = fake_decisions(safe_scan(), reply_action()).with_hang_agent();
+    run_once_with_store(
+        &config(),
+        &logger,
+        "run-test",
+        &mail,
+        &decisions,
+        &processing,
+    )
+    .await;
+
+    assert!(mail.sent().is_empty());
+    assert!(mail.seen().is_empty());
+    assert!(processing.touch_count() > 0);
+    assert!(processing
+        .statuses()
+        .contains(&PROCESSING_STATUS_RETRYABLE_FAILED.to_string()));
+    assert!(logger.events().iter().any(|event| {
+        event.action == "agent_decision"
+            && event.status == "failed"
+            && event
+                .detail
+                .as_ref()
+                .is_some_and(|detail| detail.contains("timed out"))
+    }));
+}
+
+#[tokio::test]
 async fn send_failure_does_not_mark_seen() {
     let logger = crate::logging::MemoryLogger::default();
     let mail = FakeMail::new(vec![inbound(47, "person@example.com", "Question", "Body")])
