@@ -13,8 +13,8 @@ use crate::logging::{
     action_event, ActionEvent, ActionLogger, FanoutLogger, LogLevel, StdoutLogger,
 };
 use crate::mail::{
-    automated_reply_body, forward_body, reply_references, InboundMessage, LiveMailTransport,
-    MailTransport, OutboundAction, OutboundActionKind,
+    automated_reply_body, forward_body, message_matches_accepted_conditions, reply_references,
+    InboundMessage, LiveMailTransport, MailTransport, OutboundAction, OutboundActionKind,
 };
 use crate::safety::{
     decide, sender_is_banned, suspicious_forward_intro, suspicious_forward_subject, SafetyDecision,

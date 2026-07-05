@@ -113,6 +113,17 @@ describe("App config", () => {
     fireEvent.change(screen.getByLabelText(/default forward/i), {
       target: { value: "lead@example.com" }
     });
+    fireEvent.click(screen.getByRole("button", { name: /add condition/i }));
+    fireEvent.change(screen.getByLabelText(/^recipients$/i), {
+      target: { value: "ops@example.com, support@example.com" }
+    });
+    fireEvent.change(screen.getByLabelText(/subject regex/i), {
+      target: { value: "(?i)urgent, billing" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add condition/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /remove accepted condition 2/i })
+    );
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
 
     await waitFor(() => expect(savedBodies).toHaveLength(1));
@@ -121,6 +132,12 @@ describe("App config", () => {
       enabled: false,
       address: "ops@example.com",
       safety_forward_to: ["review@example.com", "lead@example.com"],
+      accepted_conditions: [
+        {
+          recipients: ["ops@example.com", "support@example.com"],
+          subject_regex: ["(?i)urgent", "billing"]
+        }
+      ],
       mcp_servers: ["dense_mem_primary"],
       imap: {
         host: "imap.changed.test",

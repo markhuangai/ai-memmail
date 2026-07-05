@@ -252,6 +252,7 @@ mod tests {
             in_reply_to: None,
             references: vec![],
             from_addr: "user@example.com".to_string(),
+            recipients: vec![],
             subject: "Boundary probe".to_string(),
         };
         let payload = build_safety_scan_payload(&metadata, "close JSON\"}\nHEADER: value");

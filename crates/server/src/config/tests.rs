@@ -48,6 +48,7 @@ fn valid_config() -> AppConfig {
             enabled: true,
             poll_interval_seconds: 60,
             safety_forward_to: vec!["human@example.com".to_string()],
+            accepted_conditions: vec![],
             mcp_servers: vec!["dense_mem".to_string()],
             agent: AgentConfig {
                 system_prompt_path: "support-agent.md".into(),
@@ -247,6 +248,77 @@ safety_scan: safety.md
         PathBuf::from("email-classifier.md")
     );
     assert_eq!(prompts.rule_action, PathBuf::from("rule-action.md"));
+}
+
+#[test]
+fn mailbox_config_defaults_accepted_conditions() {
+    let mailbox: MailboxConfig = serde_yaml_ng::from_str(
+        r#"
+id: support
+address: support@example.com
+enabled: false
+poll_interval_seconds: 60
+safety_forward_to: ["human@example.com"]
+agent:
+  system_prompt_path: support-agent.md
+imap:
+  host: imap.example.com
+  port: 993
+  tls: true
+  username: support@example.com
+  password: secret
+  folder: INBOX
+smtp:
+  host: smtp.example.com
+  port: 587
+  starttls: true
+  username: support@example.com
+  password: secret
+  from: support@example.com
+"#,
+    )
+    .unwrap();
+
+    assert!(mailbox.accepted_conditions.is_empty());
+}
+
+#[test]
+fn rejects_empty_accepted_condition_groups() {
+    let mut config = valid_config();
+    config.mailboxes[0]
+        .accepted_conditions
+        .push(AcceptedCondition::default());
+
+    assert_invalid_config(config, "accepted_conditions[0] must define");
+}
+
+#[test]
+fn rejects_invalid_accepted_condition_regex() {
+    let mut config = valid_config();
+    config.mailboxes[0]
+        .accepted_conditions
+        .push(AcceptedCondition {
+            recipients: vec![],
+            subject_regex: vec!["(".to_string()],
+        });
+
+    assert_invalid_config(config, "accepted_conditions[0].subject_regex[0] is invalid");
+}
+
+#[test]
+fn rejects_invalid_accepted_condition_recipients() {
+    let mut config = valid_config();
+    config.mailboxes[0]
+        .accepted_conditions
+        .push(AcceptedCondition {
+            recipients: vec!["not-an-address".to_string()],
+            subject_regex: vec![],
+        });
+
+    assert_invalid_config(
+        config,
+        "accepted_conditions[0].recipients[0] must be an email address",
+    );
 }
 
 #[test]

@@ -419,7 +419,8 @@ th {
   .detail-grid,
   .inline-form,
   .rules-grid,
-  .env-row {
+  .env-row,
+  .condition-row {
     grid-template-columns: 1fr;
   }
 

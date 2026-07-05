@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 pub const REDACTED_SECRET: &str = "********";
@@ -115,10 +116,20 @@ pub struct MailboxConfig {
     pub poll_interval_seconds: u64,
     pub safety_forward_to: Vec<String>,
     #[serde(default)]
+    pub accepted_conditions: Vec<AcceptedCondition>,
+    #[serde(default)]
     pub mcp_servers: Vec<String>,
     pub agent: AgentConfig,
     pub imap: ImapConfig,
     pub smtp: SmtpConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AcceptedCondition {
+    #[serde(default)]
+    pub recipients: Vec<String>,
+    #[serde(default)]
+    pub subject_regex: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -309,6 +320,7 @@ fn validate_mailbox(
             mailbox.id
         )));
     }
+    validate_accepted_conditions(mailbox)?;
     if mailbox.enabled {
         validate_enabled_mailbox_connection(mailbox)?;
     }
@@ -322,6 +334,50 @@ fn validate_mailbox(
                 "mailbox {} references unknown MCP server {}",
                 mailbox.id, server
             )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_accepted_conditions(mailbox: &MailboxConfig) -> Result<(), ConfigError> {
+    for (index, condition) in mailbox.accepted_conditions.iter().enumerate() {
+        let field = format!("mailbox {} accepted_conditions[{index}]", mailbox.id);
+        let has_recipients = condition
+            .recipients
+            .iter()
+            .any(|recipient| !recipient.trim().is_empty());
+        let has_subject_regex = condition
+            .subject_regex
+            .iter()
+            .any(|pattern| !pattern.trim().is_empty());
+        if !has_recipients && !has_subject_regex {
+            return Err(ConfigError::Invalid(format!(
+                "{field} must define recipients or subject_regex"
+            )));
+        }
+        for (recipient_index, recipient) in condition.recipients.iter().enumerate() {
+            if recipient.trim().is_empty() {
+                return Err(ConfigError::Invalid(format!(
+                    "{field}.recipients[{recipient_index}] must not be empty"
+                )));
+            }
+            if !recipient.trim().contains('@') {
+                return Err(ConfigError::Invalid(format!(
+                    "{field}.recipients[{recipient_index}] must be an email address"
+                )));
+            }
+        }
+        for (pattern_index, pattern) in condition.subject_regex.iter().enumerate() {
+            if pattern.trim().is_empty() {
+                return Err(ConfigError::Invalid(format!(
+                    "{field}.subject_regex[{pattern_index}] must not be empty"
+                )));
+            }
+            Regex::new(pattern).map_err(|error| {
+                ConfigError::Invalid(format!(
+                    "{field}.subject_regex[{pattern_index}] is invalid: {error}"
+                ))
+            })?;
         }
     }
     Ok(())

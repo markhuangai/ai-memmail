@@ -1,6 +1,6 @@
 import { Plus, Trash2 } from "lucide-react";
 import { addMailbox, listToText, mailboxRouteLabel, removeMailbox, setListFromText, updateMailbox } from "../configModel";
-import type { AppConfig, MailboxConfig } from "../types";
+import type { AcceptedCondition, AppConfig, MailboxConfig } from "../types";
 
 export function Mailboxes({
   config,
@@ -21,6 +21,38 @@ export function Mailboxes({
       mcp_servers: enabled
         ? Array.from(new Set([...next.mcp_servers, serverName]))
         : next.mcp_servers.filter((candidate) => candidate !== serverName)
+    }));
+  }
+
+  function addAcceptedCondition(mailbox: MailboxConfig) {
+    patchMailbox(mailbox.id, (next) => ({
+      ...next,
+      accepted_conditions: [
+        ...(next.accepted_conditions ?? []),
+        { recipients: next.address ? [next.address] : [], subject_regex: [] }
+      ]
+    }));
+  }
+
+  function updateAcceptedCondition(
+    mailbox: MailboxConfig,
+    index: number,
+    updater: (condition: AcceptedCondition) => AcceptedCondition
+  ) {
+    patchMailbox(mailbox.id, (next) => ({
+      ...next,
+      accepted_conditions: (next.accepted_conditions ?? []).map((condition, conditionIndex) =>
+        conditionIndex === index ? updater(condition) : condition
+      )
+    }));
+  }
+
+  function removeAcceptedCondition(mailbox: MailboxConfig, index: number) {
+    patchMailbox(mailbox.id, (next) => ({
+      ...next,
+      accepted_conditions: (next.accepted_conditions ?? []).filter(
+        (_condition, conditionIndex) => conditionIndex !== index
+      )
     }));
   }
 
@@ -125,6 +157,54 @@ export function Mailboxes({
                   ))}
                 </div>
               )}
+            </fieldset>
+            <fieldset className="checkbox-panel accepted-conditions">
+              <legend>Accepted conditions</legend>
+              {(mailbox.accepted_conditions ?? []).length === 0 ? (
+                <p className="muted">All unseen messages are eligible.</p>
+              ) : (
+                <div className="condition-list">
+                  {(mailbox.accepted_conditions ?? []).map((condition, index) => (
+                    <div className="condition-row" key={index}>
+                      <label>
+                        Recipients
+                        <input
+                          value={listToText(condition.recipients)}
+                          onChange={(event) =>
+                            updateAcceptedCondition(mailbox, index, (next) => ({
+                              ...next,
+                              recipients: setListFromText(event.target.value)
+                            }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        Subject regex
+                        <input
+                          value={listToText(condition.subject_regex)}
+                          onChange={(event) =>
+                            updateAcceptedCondition(mailbox, index, (next) => ({
+                              ...next,
+                              subject_regex: setListFromText(event.target.value)
+                            }))
+                          }
+                        />
+                      </label>
+                      <button
+                        aria-label={`Remove accepted condition ${index + 1}`}
+                        type="button"
+                        onClick={() => removeAcceptedCondition(mailbox, index)}
+                      >
+                        <Trash2 aria-hidden="true" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button type="button" onClick={() => addAcceptedCondition(mailbox)}>
+                <Plus aria-hidden="true" />
+                Add condition
+              </button>
             </fieldset>
             <label>
               IMAP host

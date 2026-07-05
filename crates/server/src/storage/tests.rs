@@ -15,6 +15,7 @@ fn message(uid: u64) -> InboundMessage {
             in_reply_to: None,
             references: vec![],
             from_addr: "person@example.com".to_string(),
+            recipients: vec![],
             subject: "Question".to_string(),
         },
         plain_text: "Body".to_string(),
@@ -62,6 +63,7 @@ fn app_config_with_mailboxes(ids: Vec<&str>) -> AppConfig {
                 enabled: true,
                 poll_interval_seconds: 30,
                 safety_forward_to: vec!["human@example.com".to_string()],
+                accepted_conditions: vec![],
                 mcp_servers: vec![],
                 agent: AgentConfig {
                     system_prompt_path: "agent.md".into(),

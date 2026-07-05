@@ -59,6 +59,7 @@ export function addMailbox(config: AppConfig): AppConfig {
     enabled: false,
     poll_interval_seconds: 60,
     safety_forward_to: ["review@example.com"],
+    accepted_conditions: [],
     mcp_servers: [],
     agent: {
       system_prompt_path: "support-agent.md",

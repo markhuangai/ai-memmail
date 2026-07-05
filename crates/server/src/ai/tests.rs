@@ -171,6 +171,7 @@ fn inbound(subject: &str, plain_text: &str) -> InboundMessage {
             in_reply_to: None,
             references: vec![],
             from_addr: "person@example.com".to_string(),
+            recipients: vec![],
             subject: subject.to_string(),
         },
         plain_text: plain_text.to_string(),
@@ -222,6 +223,7 @@ fn mailbox_config() -> MailboxConfig {
         enabled: true,
         poll_interval_seconds: 30,
         safety_forward_to: vec!["safety@example.com".to_string()],
+        accepted_conditions: vec![],
         mcp_servers: vec![],
         agent: AgentConfig {
             system_prompt_path: "agent.md".into(),

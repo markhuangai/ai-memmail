@@ -1,8 +1,12 @@
 use async_trait::async_trait;
-use mailparse::MailHeaderMap;
+use mailparse::{MailAddr, MailHeaderMap};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{MailboxConfig, SmtpConfig};
+use crate::config::{AcceptedCondition, MailboxConfig, SmtpConfig};
+
+pub const ACCEPTED_CONDITION_RECIPIENT_HEADERS: &[&str] =
+    &["To", "Cc", "Delivered-To", "X-Original-To", "Envelope-To"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct DedupeKey {
@@ -20,6 +24,8 @@ pub struct MessageMetadata {
     pub in_reply_to: Option<String>,
     pub references: Vec<String>,
     pub from_addr: String,
+    #[serde(default)]
+    pub recipients: Vec<String>,
     pub subject: String,
 }
 
@@ -205,6 +211,7 @@ pub fn parse_inbound_message(
         .headers
         .get_first_value("Subject")
         .unwrap_or_default();
+    let recipients = recipient_addresses(&parsed.headers);
     let message_id = parsed
         .headers
         .get_first_value("Message-ID")
@@ -228,10 +235,43 @@ pub fn parse_inbound_message(
             in_reply_to,
             references,
             from_addr,
+            recipients,
             subject,
         },
         plain_text,
     })
+}
+
+pub fn message_matches_accepted_conditions(
+    message: &InboundMessage,
+    conditions: &[AcceptedCondition],
+) -> bool {
+    if conditions.is_empty() {
+        return true;
+    }
+    conditions
+        .iter()
+        .any(|condition| accepted_condition_matches(message, condition))
+}
+
+pub fn accepted_conditions_can_prefilter_by_recipient(conditions: &[AcceptedCondition]) -> bool {
+    !conditions.is_empty()
+        && conditions.iter().all(|condition| {
+            condition
+                .recipients
+                .iter()
+                .any(|value| !value.trim().is_empty())
+        })
+}
+
+pub fn accepted_condition_recipient_filter_values(conditions: &[AcceptedCondition]) -> Vec<String> {
+    let mut recipients = Vec::new();
+    for condition in conditions {
+        for recipient in &condition.recipients {
+            push_unique_normalized_address(&mut recipients, recipient);
+        }
+    }
+    recipients
 }
 
 pub fn validate_outbound_action(action: &OutboundAction) -> Result<(), Vec<ValidationError>> {
@@ -329,6 +369,95 @@ fn message_ids(value: &str) -> Vec<String> {
                 vec![trimmed.to_string()]
             }
         }
+    }
+}
+
+fn accepted_condition_matches(message: &InboundMessage, condition: &AcceptedCondition) -> bool {
+    condition_recipients_match(message, condition) && condition_subject_match(message, condition)
+}
+
+fn condition_recipients_match(message: &InboundMessage, condition: &AcceptedCondition) -> bool {
+    let accepted = condition
+        .recipients
+        .iter()
+        .filter_map(|recipient| normalize_email_address(recipient))
+        .collect::<Vec<_>>();
+    if accepted.is_empty() {
+        return true;
+    }
+    let message_recipients = message
+        .metadata
+        .recipients
+        .iter()
+        .filter_map(|recipient| normalize_email_address(recipient))
+        .collect::<Vec<_>>();
+    accepted.iter().any(|recipient| {
+        message_recipients
+            .iter()
+            .any(|candidate| candidate == recipient)
+    })
+}
+
+fn condition_subject_match(message: &InboundMessage, condition: &AcceptedCondition) -> bool {
+    if condition.subject_regex.is_empty() {
+        return true;
+    }
+    condition.subject_regex.iter().any(|pattern| {
+        Regex::new(pattern).is_ok_and(|regex| regex.is_match(&message.metadata.subject))
+    })
+}
+
+fn recipient_addresses(headers: &[mailparse::MailHeader<'_>]) -> Vec<String> {
+    let mut recipients = Vec::new();
+    for header_name in ACCEPTED_CONDITION_RECIPIENT_HEADERS {
+        for header in headers.get_all_headers(header_name) {
+            match mailparse::addrparse_header(header) {
+                Ok(addresses) => {
+                    for address in addresses.iter() {
+                        collect_mail_addr(address, &mut recipients);
+                    }
+                }
+                Err(_) => {
+                    for value in header.get_value().split([',', ';']) {
+                        push_unique_normalized_address(&mut recipients, value);
+                    }
+                }
+            }
+        }
+    }
+    recipients
+}
+
+fn collect_mail_addr(address: &MailAddr, recipients: &mut Vec<String>) {
+    match address {
+        MailAddr::Single(info) => push_unique_normalized_address(recipients, &info.addr),
+        MailAddr::Group(group) => {
+            for info in &group.addrs {
+                push_unique_normalized_address(recipients, &info.addr);
+            }
+        }
+    }
+}
+
+fn push_unique_normalized_address(recipients: &mut Vec<String>, value: &str) {
+    if let Some(address) = normalize_email_address(value) {
+        if !recipients.iter().any(|candidate| candidate == &address) {
+            recipients.push(address);
+        }
+    }
+}
+
+fn normalize_email_address(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let candidate = match (trimmed.rfind('<'), trimmed.rfind('>')) {
+        (Some(start), Some(end)) if start < end => &trimmed[start + 1..end],
+        _ => trimmed,
+    };
+    let candidate = candidate.trim().trim_matches('"').trim();
+    if candidate.contains('@') {
+        Some(candidate.to_ascii_lowercase())
+    } else {
+        None
     }
 }
 

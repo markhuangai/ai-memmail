@@ -340,6 +340,30 @@ p {
   flex-wrap: wrap;
 }
 
+.accepted-conditions {
+  grid-column: 1 / -1;
+}
+
+.condition-list {
+  display: grid;
+  gap: 10px;
+}
+
+.condition-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.condition-row button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  padding: 0;
+}
+
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
