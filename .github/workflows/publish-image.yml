@@ -1,21 +1,20 @@
-name: Publish Docker image
+name: Publish prerelease Docker image
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release Git tag to publish, without refs/tags/ (example: v0.1.0-rc.0)"
+        description: "Existing prerelease Git tag to publish, without refs/tags/ (example: v0.1.0-rc.0)"
         required: true
         type: string
   workflow_call:
     inputs:
       tag:
-        description: "Existing release Git tag to publish, without refs/tags/ (example: v0.1.0-rc.0)"
+        description: "Existing prerelease Git tag to publish, without refs/tags/ (example: v0.1.0-rc.0)"
         required: true
         type: string
   push:
     tags:
-      - "v*.*.*"
       - "v*.*.*-*"
 
 permissions:
@@ -27,12 +26,12 @@ env:
 
 jobs:
   publish:
-    name: Build and push image
+    name: Build and push prerelease image
     runs-on: rootless-docker
     timeout-minutes: 45
 
     steps:
-      - name: Validate release tag
+      - name: Validate prerelease tag
         id: version
         shell: bash
         env:
@@ -46,8 +45,8 @@ jobs:
             tag="${GITHUB_REF_NAME}"
           fi
 
-          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]]; then
-            echo "::error::publish-image only builds semantic release tags like v0.1.0 or v0.1.0-rc.0"
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-.+$ ]]; then
+            echo "::error::publish-image only builds prerelease tags like v0.1.0-rc.0"
             exit 1
           fi
 
