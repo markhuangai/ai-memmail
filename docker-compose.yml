@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16
+    image: postgres:18
     environment:
       POSTGRES_DB: ai_memmail
       POSTGRES_USER: ai_memmail
@@ -16,8 +16,7 @@ services:
       retries: 10
 
   app:
-    image: ai-memmail:local
-    build: .
+    image: ghcr.io/markhuangai/ai-memmail:latest
     environment:
       AI_MEMMAIL_CONFIG: /app/config/config.yaml
       AI_MEMMAIL_BIND: 0.0.0.0:8080

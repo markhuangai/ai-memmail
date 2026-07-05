@@ -1,9 +1,45 @@
-# ai-memmail
+<h1 align="center">ai-memmail</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/ai--memmail-IMAP_MCP_email_agent-0f766e?style=for-the-badge&logo=github&logoColor=white" alt="ai-memmail" />
+</p>
+
+<p align="center">
+  <strong>Email automation for AI agents that reads IMAP mail, recalls Dense-Mem context, and sends policy-checked SMTP replies.</strong>
+</p>
+
+<p align="center">
+  <a href="mailto:contact@markhuang.ai?subject=ai-memmail%20demo%20question"><img src="https://img.shields.io/badge/Try%20ai--memmail%20live-Email%20hosted%20demo-0f766e?style=for-the-badge" alt="Try ai-memmail live" /></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/markhuangai/ai-memmail"><img src="https://img.shields.io/github/stars/markhuangai/ai-memmail?style=flat-square&logo=github" alt="GitHub stars" /></a>
+  <a href="https://github.com/markhuangai/ai-memmail/issues"><img src="https://img.shields.io/github/issues/markhuangai/ai-memmail?style=flat-square&logo=github" alt="GitHub issues" /></a>
+  <a href="https://github.com/markhuangai/ai-memmail/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="License: MIT" /></a>
+  <img src="https://img.shields.io/badge/Rust-1.75-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.75" />
+  <a href="https://github.com/markhuangai/ai-memmail/pkgs/container/ai-memmail"><img src="https://img.shields.io/badge/Docker-GHCR-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker image on GHCR" /></a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/IMAP%2FSMTP-email-111827?style=flat-square" alt="IMAP and SMTP email" />
+  <img src="https://img.shields.io/badge/MCP-Dense--Mem-0f766e?style=flat-square" alt="Dense-Mem MCP" />
+  <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL 18" />
+  <img src="https://img.shields.io/badge/React-TypeScript-61DAFB?style=flat-square&logo=react&logoColor=111827" alt="React TypeScript" />
+  <img src="https://visitor-badge.laobi.icu/badge?page_id=markhuangai.ai-memmail&style=flat-square" alt="Visitors" />
+</p>
 
 ai-memmail is a Rust email agent that monitors IMAP mailboxes, uses configured
 Dense-Mem MCP servers to answer mail when policy allows it, and sends replies or
 forwards through SMTP. The control panel is a same-origin React TypeScript
 dashboard served by the Rust web service.
+
+## Live Hosted Demo
+
+A live hosted ai-memmail demo is available at `contact@markhuang.ai`. Send an
+email to that address with a question about Dense-Mem or this ai-memmail project
+to test the IMAP, MCP-backed answer, and SMTP reply flow.
+
+Do not send secrets, credentials, or sensitive personal data to the demo inbox.
 
 ## Current Status
 
@@ -36,10 +72,10 @@ cp config/config.example.yaml config/config.yaml
 export CONTROL_PANEL_KEY="replace-with-local-key"
 ```
 
-Run the full local stack from source:
+Run the full local stack with the published container image:
 
 ```bash
-docker compose up --build
+docker compose up
 ```
 
 The control panel is served at `http://127.0.0.1:18080` by default. PostgreSQL
@@ -48,7 +84,7 @@ Postgres install. To change either host port, edit the port forwarding in
 `docker-compose.yml` or set `AI_MEMMAIL_HTTP_PORT`, for example:
 
 ```bash
-AI_MEMMAIL_HTTP_PORT=18081 docker compose up --build
+AI_MEMMAIL_HTTP_PORT=18081 docker compose up
 ```
 
 For live development with real credentials, edit the ignored
@@ -345,13 +381,13 @@ only and use untracked credentials from `config/config.yaml`.
 
 ## Docker
 
-The local Compose stack builds from source and runs:
+The local Compose stack pulls `ghcr.io/markhuangai/ai-memmail:latest` and runs:
 
 - PostgreSQL
 - `app`
 
-The image is a multi-stage build: Node builds the React control panel, Rust
-builds the service binary, and the runtime image contains only the compiled
+The published image is a multi-stage build: Node builds the React control panel,
+Rust builds the service binary, and the runtime image contains only the compiled
 assets needed to run ai-memmail.
 
 ## Git Vibe
