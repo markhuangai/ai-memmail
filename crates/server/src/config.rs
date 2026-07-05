@@ -262,8 +262,14 @@ impl AppConfig {
         preserve_if_redacted(&mut self.database.password, &current.database.password);
         preserve_if_redacted(&mut self.ai.api_secret, &current.ai.api_secret);
 
+        let renamed_mcp_servers = renamed_mcp_server_matches(self, current);
         for (name, server) in &mut self.mcp_servers {
-            if let Some(current_server) = current.mcp_servers.get(name) {
+            let current_server = current.mcp_servers.get(name).or_else(|| {
+                renamed_mcp_servers
+                    .get(name)
+                    .and_then(|current_name| current.mcp_servers.get(current_name))
+            });
+            if let Some(current_server) = current_server {
                 for (key, value) in &mut server.env {
                     if let Some(current_value) = current_server.env.get(key) {
                         preserve_if_redacted(value, current_value);
@@ -283,6 +289,63 @@ impl AppConfig {
             }
         }
     }
+}
+
+fn renamed_mcp_server_matches(next: &AppConfig, current: &AppConfig) -> BTreeMap<String, String> {
+    let added_names = next
+        .mcp_servers
+        .keys()
+        .filter(|name| !current.mcp_servers.contains_key(*name))
+        .collect::<Vec<_>>();
+    let removed_names = current
+        .mcp_servers
+        .keys()
+        .filter(|name| !next.mcp_servers.contains_key(*name))
+        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+
+    for next_name in added_names {
+        let next_server = &next.mcp_servers[next_name];
+        for current_name in &removed_names {
+            let current_server = &current.mcp_servers[*current_name];
+            if mcp_server_matches_for_secret_preservation(next_server, current_server) {
+                candidates.push((next_name, *current_name));
+            }
+        }
+    }
+
+    let mut matches = BTreeMap::new();
+    for (next_name, current_name) in &candidates {
+        let next_match_count = candidates
+            .iter()
+            .filter(|(candidate_next, _)| candidate_next == next_name)
+            .count();
+        let current_match_count = candidates
+            .iter()
+            .filter(|(_, candidate_current)| candidate_current == current_name)
+            .count();
+        if next_match_count == 1 && current_match_count == 1 {
+            matches.insert((*next_name).clone(), (*current_name).clone());
+        }
+    }
+    matches
+}
+
+fn mcp_server_matches_for_secret_preservation(
+    next: &McpServerConfig,
+    current: &McpServerConfig,
+) -> bool {
+    let redacted_keys = next
+        .env
+        .iter()
+        .filter(|(key, value)| is_sensitive_env_name(key) && value.as_str() == REDACTED_SECRET)
+        .map(|(key, _)| key)
+        .collect::<Vec<_>>();
+
+    !redacted_keys.is_empty()
+        && redacted_keys
+            .iter()
+            .all(|key| current.env.contains_key(*key))
 }
 
 fn validate_required(value: &str, field: &str) -> Result<(), ConfigError> {

@@ -11,6 +11,7 @@ import {
   removeBannedSender,
   removeMailbox,
   removeMcpServer,
+  renameMcpServer,
   setLinesFromText,
   setListFromText,
   setMailboxScalar,
@@ -130,6 +131,31 @@ describe("configModel", () => {
       url: "http://dense-mem:8080/mcp"
     });
     expect(updateMcpServer(updated, "missing", (server) => server)).toBe(updated);
+
+    const renamed = renameMcpServer(
+      {
+        ...updated,
+        mailboxes: [
+          {
+            ...sampleConfig.mailboxes[0],
+            mcp_servers: ["dense_mem_primary", "dense_mem_2"]
+          }
+        ]
+      },
+      "dense_mem_2",
+      "project_memory"
+    );
+    expect(renamed.mcp_servers.dense_mem_2).toBeUndefined();
+    expect(renamed.mcp_servers.project_memory).toMatchObject({
+      transport: "streamable_http",
+      command: null
+    });
+    expect(renamed.mailboxes[0].mcp_servers).toEqual([
+      "dense_mem_primary",
+      "project_memory"
+    ]);
+    expect(renameMcpServer(renamed, "project_memory", "dense_mem_primary")).toBe(renamed);
+    expect(renameMcpServer(renamed, "project_memory", " ")).toBe(renamed);
 
     const removed = removeMcpServer(updated, "dense_mem_primary");
     expect(removed.mcp_servers.dense_mem_primary).toBeUndefined();

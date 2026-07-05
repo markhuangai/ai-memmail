@@ -1,5 +1,13 @@
+import { useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
-import { addMcpServer, listToText, removeMcpServer, setListFromText, updateMcpServer } from "../configModel";
+import {
+  addMcpServer,
+  listToText,
+  removeMcpServer,
+  renameMcpServer,
+  setListFromText,
+  updateMcpServer
+} from "../configModel";
 import type { AppConfig } from "../types";
 import { isSensitiveEnvName, nextEnvKey } from "../viewUtils";
 
@@ -11,9 +19,38 @@ export function McpServers({
   setConfig: (config: AppConfig) => void;
 }) {
   const servers = Object.entries(config.mcp_servers);
+  const serverNames = servers.map(([name]) => name);
+  const [draftNames, setDraftNames] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    setDraftNames((current) => {
+      const next = Object.fromEntries(
+        serverNames.map((name) => [name, current[name] ?? name])
+      );
+      return sameRecord(current, next) ? current : next;
+    });
+  }, [serverNames.join("\n")]);
 
   function patchServer(name: string, updater: (server: AppConfig["mcp_servers"][string]) => AppConfig["mcp_servers"][string]) {
     setConfig(updateMcpServer(config, name, updater));
+  }
+
+  function setDraftName(name: string, value: string) {
+    setDraftNames((current) => ({ ...current, [name]: value }));
+  }
+
+  function commitServerName(name: string) {
+    const nextName = (draftNames[name] ?? name).trim();
+    const nextConfig = renameMcpServer(config, name, nextName);
+    if (nextConfig === config) {
+      setDraftName(name, name);
+      return;
+    }
+    setDraftNames((current) => {
+      const { [name]: _renamed, ...remaining } = current;
+      return { ...remaining, [nextName]: nextName };
+    });
+    setConfig(nextConfig);
   }
 
   function addEnvVariable(name: string) {
@@ -87,7 +124,17 @@ export function McpServers({
           <div className="form-grid">
             <label>
               Server id
-              <input value={name} readOnly />
+              <input
+                value={draftNames[name] ?? name}
+                onBlur={() => commitServerName(name)}
+                onChange={(event) => setDraftName(name, event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    event.currentTarget.blur();
+                  }
+                }}
+              />
             </label>
             <label>
               Transport
@@ -185,5 +232,14 @@ export function McpServers({
         </section>
       ))}
     </div>
+  );
+}
+
+function sameRecord(first: Record<string, string>, second: Record<string, string>): boolean {
+  const firstEntries = Object.entries(first);
+  const secondEntries = Object.entries(second);
+  return (
+    firstEntries.length === secondEntries.length &&
+    firstEntries.every(([key, value]) => second[key] === value)
   );
 }

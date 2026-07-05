@@ -237,6 +237,12 @@ describe("App config", () => {
     fireEvent.click(await screen.findByRole("button", { name: /mcp servers/i }));
     fireEvent.click(screen.getByRole("button", { name: /add server/i }));
     expect(screen.getByText("dense_mem_2")).toBeInTheDocument();
+    const serverIdInputs = screen.getAllByLabelText(/server id/i);
+    fireEvent.change(serverIdInputs[1], {
+      target: { value: "project_memory" }
+    });
+    fireEvent.blur(serverIdInputs[1]);
+    expect(screen.getByText("project_memory")).toBeInTheDocument();
     fireEvent.change(screen.getAllByLabelText(/transport/i)[1], {
       target: { value: "streamable_http" }
     });
@@ -259,7 +265,8 @@ describe("App config", () => {
 
     await waitFor(() => expect(savedBodies).toHaveLength(1));
     const saved = JSON.parse(savedBodies[0]) as AppConfig;
-    expect(saved.mcp_servers.dense_mem_2).toMatchObject({
+    expect(saved.mcp_servers.dense_mem_2).toBeUndefined();
+    expect(saved.mcp_servers.project_memory).toMatchObject({
       transport: "streamable_http",
       command: null,
       url: "http://dense-mem:8080/mcp",
