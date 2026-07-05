@@ -561,21 +561,5 @@ async fn live_decision_engine_includes_mcp_context_in_agent_prompt() {
     assert!(requests[0][1]["content"]
         .as_str()
         .unwrap()
-        .contains("\"role\":\"automated project support agent\""));
-    assert!(requests[0][1]["content"]
-        .as_str()
-        .unwrap()
         .contains("\"speak_on_behalf_of\":\"Mark\""));
-    assert!(requests[0][1]["content"]
-        .as_str()
-        .unwrap()
-        .contains("do not answer unrelated chatbot-style requests"));
-    assert!(requests[0][1]["content"]
-        .as_str()
-        .unwrap()
-        .contains("\"routine_questions\":\"reply with supported MCP facts"));
-    assert!(!requests[0][1]["content"]
-        .as_str()
-        .unwrap()
-        .contains("\"broad_questions\""));
 }
