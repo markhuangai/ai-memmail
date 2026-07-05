@@ -251,6 +251,33 @@ fn preserves_redacted_mcp_secrets_when_server_is_renamed() {
 }
 
 #[test]
+fn preserves_redacted_mcp_secrets_when_renamed_server_is_edited() {
+    let current = valid_config();
+    let mut next = current.redacted();
+    let mut renamed = next.mcp_servers.remove("dense_mem").unwrap();
+    renamed.command = Some("node".to_string());
+    renamed.args = vec!["server.js".to_string()];
+    renamed.env.insert(
+        "DENSE_MEM_MCP_URL".to_string(),
+        "http://changed.test".to_string(),
+    );
+    next.mcp_servers
+        .insert("project_memory".to_string(), renamed);
+    next.mailboxes[0].mcp_servers = vec!["project_memory".to_string()];
+
+    next.preserve_redacted_secrets(&current);
+
+    assert_eq!(
+        next.mcp_servers["project_memory"].env["DENSE_MEM_API_KEY"],
+        "dm"
+    );
+    assert_eq!(
+        next.mcp_servers["project_memory"].env["DENSE_MEM_MCP_URL"],
+        "http://changed.test"
+    );
+}
+
+#[test]
 fn does_not_preserve_redacted_mcp_rename_when_match_is_ambiguous() {
     let mut current = valid_config();
     let mut second = current.mcp_servers["dense_mem"].clone();

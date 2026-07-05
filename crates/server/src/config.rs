@@ -335,24 +335,17 @@ fn mcp_server_matches_for_secret_preservation(
     next: &McpServerConfig,
     current: &McpServerConfig,
 ) -> bool {
-    next.transport == current.transport
-        && next.command == current.command
-        && next.args == current.args
-        && next.url == current.url
-        && env_matches_for_secret_preservation(&next.env, &current.env)
-}
+    let redacted_keys = next
+        .env
+        .iter()
+        .filter(|(key, value)| is_sensitive_env_name(key) && value.as_str() == REDACTED_SECRET)
+        .map(|(key, _)| key)
+        .collect::<Vec<_>>();
 
-fn env_matches_for_secret_preservation(
-    next: &BTreeMap<String, String>,
-    current: &BTreeMap<String, String>,
-) -> bool {
-    next.len() == current.len()
-        && next.iter().all(|(key, next_value)| {
-            current.get(key).is_some_and(|current_value| {
-                next_value == current_value
-                    || (is_sensitive_env_name(key) && next_value == REDACTED_SECRET)
-            })
-        })
+    !redacted_keys.is_empty()
+        && redacted_keys
+            .iter()
+            .all(|key| current.env.contains_key(*key))
 }
 
 fn validate_required(value: &str, field: &str) -> Result<(), ConfigError> {
