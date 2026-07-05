@@ -10,6 +10,14 @@ async fn process_mailbox(
     let started = Instant::now();
     match mail.fetch_unseen(mailbox, 10).await {
         Ok(messages) => {
+            let fetched_count = messages.len();
+            let messages = messages
+                .into_iter()
+                .filter(|message| {
+                    message_matches_accepted_conditions(message, &mailbox.accepted_conditions)
+                })
+                .collect::<Vec<_>>();
+            let filtered_count = fetched_count.saturating_sub(messages.len());
             logger
                 .log(mailbox_event(
                     LogLevel::Info,
@@ -18,7 +26,8 @@ async fn process_mailbox(
                     "imap_fetch",
                     format!("messages={}", messages.len()),
                     started.elapsed(),
-                    None,
+                    (filtered_count > 0)
+                        .then(|| format!("filtered_by_accepted_conditions={filtered_count}")),
                 ))
                 .await;
             for message in messages {

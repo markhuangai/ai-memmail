@@ -59,6 +59,7 @@ export function addMailbox(config: AppConfig): AppConfig {
     enabled: false,
     poll_interval_seconds: 60,
     safety_forward_to: ["review@example.com"],
+    accepted_conditions: [],
     mcp_servers: [],
     agent: {
       system_prompt_path: "support-agent.md",
@@ -115,6 +116,17 @@ export function setListFromText(value: string): string[] {
 
 export function listToText(values: string[]): string {
   return values.join(", ");
+}
+
+export function setLinesFromText(value: string): string[] {
+  return value
+    .split("\n")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+export function listToLines(values: string[]): string {
+  return values.join("\n");
 }
 
 export function textToEnv(value: string): Record<string, string> {

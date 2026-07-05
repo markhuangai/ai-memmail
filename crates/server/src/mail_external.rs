@@ -8,7 +8,9 @@ use native_tls::TlsConnector;
 
 use crate::config::{MailboxConfig, SmtpConfig};
 use crate::mail::{
-    parse_inbound_message, validate_outbound_action, InboundMessage, MailError, OutboundAction,
+    accepted_condition_recipient_filter_values, accepted_conditions_can_prefilter_by_recipient,
+    message_matches_accepted_conditions, parse_inbound_message, validate_outbound_action,
+    InboundMessage, MailError, OutboundAction, ACCEPTED_CONDITION_RECIPIENT_HEADERS,
 };
 
 pub(crate) fn fetch_unseen_blocking(
@@ -33,16 +35,14 @@ fn fetch_unseen_with_session<T: Read + Write>(
         .select(&mailbox.imap.folder)
         .map_err(|error| MailError::Imap(error.to_string()))?;
     let uid_validity = selected.uid_validity.unwrap_or_default() as u64;
-    let mut uids = session
-        .uid_search("UNSEEN")
-        .map_err(|error| MailError::Imap(error.to_string()))?
-        .into_iter()
-        .collect::<Vec<_>>();
+    let mut uids = search_unseen_uids(&mut session, mailbox)?;
     uids.sort_unstable();
-    uids.truncate(limit);
 
     let mut messages = Vec::new();
     for uid in uids {
+        if messages.len() >= limit {
+            break;
+        }
         let fetches = session
             .uid_fetch(uid.to_string(), "(UID BODY.PEEK[])")
             .map_err(|error| MailError::Imap(error.to_string()))?;
@@ -51,16 +51,72 @@ fn fetch_unseen_with_session<T: Read + Write>(
                 .body()
                 .ok_or_else(|| MailError::Imap(format!("message uid {uid} had no body")))?;
             let fetched_uid = fetch.uid.unwrap_or(uid) as u64;
-            messages.push(parse_inbound_message(
-                &mailbox.id,
-                uid_validity,
-                fetched_uid,
-                raw,
-            )?);
+            let message = parse_inbound_message(&mailbox.id, uid_validity, fetched_uid, raw)?;
+            if message_matches_accepted_conditions(&message, &mailbox.accepted_conditions) {
+                messages.push(message);
+                if messages.len() >= limit {
+                    break;
+                }
+            }
         }
     }
     let _ = session.logout();
     Ok(messages)
+}
+
+fn search_unseen_uids<T: Read + Write>(
+    session: &mut imap::Session<T>,
+    mailbox: &MailboxConfig,
+) -> Result<Vec<u32>, MailError> {
+    if let Some(queries) = recipient_prefilter_queries(mailbox) {
+        let mut uids = Vec::new();
+        for query in queries {
+            for uid in uid_search(session, &query)? {
+                if !uids.contains(&uid) {
+                    uids.push(uid);
+                }
+            }
+        }
+        return Ok(uids);
+    }
+    uid_search(session, "UNSEEN")
+}
+
+fn recipient_prefilter_queries(mailbox: &MailboxConfig) -> Option<Vec<String>> {
+    if !accepted_conditions_can_prefilter_by_recipient(&mailbox.accepted_conditions) {
+        return None;
+    }
+    let recipients = accepted_condition_recipient_filter_values(&mailbox.accepted_conditions);
+    if recipients.is_empty() {
+        return None;
+    }
+    Some(
+        recipients
+            .into_iter()
+            .flat_map(|recipient| {
+                let recipient = imap_search_string(&recipient);
+                ACCEPTED_CONDITION_RECIPIENT_HEADERS
+                    .iter()
+                    .map(move |header| format!("UNSEEN HEADER {header} {recipient}"))
+            })
+            .collect(),
+    )
+}
+
+fn uid_search<T: Read + Write>(
+    session: &mut imap::Session<T>,
+    query: &str,
+) -> Result<Vec<u32>, MailError> {
+    Ok(session
+        .uid_search(query)
+        .map_err(|error| MailError::Imap(error.to_string()))?
+        .into_iter()
+        .collect::<Vec<_>>())
+}
+
+fn imap_search_string(value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
 }
 
 pub(crate) fn mark_seen_blocking(mailbox: &MailboxConfig, uid: u64) -> Result<(), MailError> {
@@ -177,9 +233,43 @@ pub(crate) fn parse_mailbox(value: &str) -> Result<Mailbox, MailError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::{AcceptedCondition, AgentConfig, ImapConfig, MailboxConfig, SmtpConfig};
     use crate::mail::{OutboundAction, OutboundActionKind};
 
     use super::*;
+
+    #[test]
+    fn recipient_prefilter_queries_use_common_delivery_headers() {
+        let mut mailbox = mailbox_config();
+        mailbox.accepted_conditions = vec![AcceptedCondition {
+            recipients: vec!["Support@example.com".to_string()],
+            subject_regex: vec!["(?i)billing".to_string()],
+        }];
+
+        let queries = recipient_prefilter_queries(&mailbox).unwrap();
+
+        assert_eq!(
+            queries,
+            vec![
+                "UNSEEN HEADER To \"support@example.com\"".to_string(),
+                "UNSEEN HEADER Cc \"support@example.com\"".to_string(),
+                "UNSEEN HEADER Delivered-To \"support@example.com\"".to_string(),
+                "UNSEEN HEADER X-Original-To \"support@example.com\"".to_string(),
+                "UNSEEN HEADER Envelope-To \"support@example.com\"".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn subject_only_conditions_do_not_build_recipient_prefilter_queries() {
+        let mut mailbox = mailbox_config();
+        mailbox.accepted_conditions = vec![AcceptedCondition {
+            recipients: vec![],
+            subject_regex: vec!["urgent".to_string()],
+        }];
+
+        assert_eq!(recipient_prefilter_queries(&mailbox), None);
+    }
 
     #[test]
     fn build_message_sets_reply_thread_headers() {
@@ -211,5 +301,37 @@ mod tests {
         assert!(rendered.contains("Message-ID: <reply@example.com>\r\n"));
         assert!(rendered.contains("In-Reply-To: <inbound@example.com>\r\n"));
         assert!(rendered.contains("References: <root@example.com> <inbound@example.com>\r\n"));
+    }
+
+    fn mailbox_config() -> MailboxConfig {
+        MailboxConfig {
+            id: "support".to_string(),
+            address: "support@example.com".to_string(),
+            enabled: true,
+            poll_interval_seconds: 30,
+            safety_forward_to: vec!["safety@example.com".to_string()],
+            accepted_conditions: vec![],
+            mcp_servers: vec![],
+            agent: AgentConfig {
+                system_prompt_path: "agent.md".into(),
+                default_forward_to: vec!["human@example.com".to_string()],
+            },
+            imap: ImapConfig {
+                host: "imap.example.com".to_string(),
+                port: 993,
+                tls: true,
+                username: "support@example.com".to_string(),
+                password: "secret".to_string(),
+                folder: "INBOX".to_string(),
+            },
+            smtp: SmtpConfig {
+                host: "smtp.example.com".to_string(),
+                port: 587,
+                starttls: true,
+                username: "support@example.com".to_string(),
+                password: "secret".to_string(),
+                from: "support@example.com".to_string(),
+            },
+        }
     }
 }

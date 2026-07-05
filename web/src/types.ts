@@ -62,10 +62,16 @@ export interface MailboxConfig {
   enabled: boolean;
   poll_interval_seconds: number;
   safety_forward_to: string[];
+  accepted_conditions: AcceptedCondition[];
   mcp_servers: string[];
   agent: AgentConfig;
   imap: ImapConfig;
   smtp: SmtpConfig;
+}
+
+export interface AcceptedCondition {
+  recipients: string[];
+  subject_regex: string[];
 }
 
 export interface AgentConfig {

@@ -50,6 +50,7 @@ export const sampleConfig: AppConfig = {
       enabled: true,
       poll_interval_seconds: 60,
       safety_forward_to: ["human@example.com"],
+      accepted_conditions: [],
       mcp_servers: ["dense_mem_primary"],
       agent: {
         system_prompt_path: "support-agent.md",

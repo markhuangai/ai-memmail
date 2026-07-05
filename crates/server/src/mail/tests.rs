@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use crate::config::{AgentConfig, ImapConfig, MailboxConfig, SmtpConfig};
+use crate::config::{AcceptedCondition, AgentConfig, ImapConfig, MailboxConfig, SmtpConfig};
 
 use super::*;
 
@@ -36,6 +36,7 @@ impl BlockingMailClient for FakeBlockingMailClient {
                 in_reply_to: None,
                 references: vec![],
                 from_addr: "sender@example.com".to_string(),
+                recipients: vec![],
                 subject: "Question".to_string(),
             },
             plain_text: "Body".to_string(),
@@ -119,6 +120,7 @@ fn metadata_builds_stable_dedupe_key() {
         in_reply_to: None,
         references: vec![],
         from_addr: "a@example.com".to_string(),
+        recipients: vec![],
         subject: "Hello".to_string(),
     };
     assert_eq!(
@@ -141,6 +143,7 @@ fn thread_id_falls_back_through_reply_headers_and_uid() {
         in_reply_to: None,
         references: vec![],
         from_addr: "a@example.com".to_string(),
+        recipients: vec![],
         subject: "Hello".to_string(),
     };
     assert_eq!(metadata.thread_id(), "support:7:42");
@@ -228,7 +231,7 @@ fn validates_complete_reply_forward_and_noop_actions() {
 
 #[test]
 fn parses_simple_inbound_message() {
-    let raw = b"From: Sender <sender@example.com>\r\nSubject: Hello\r\nMessage-ID: <m1@example.com>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nBody text";
+    let raw = b"From: Sender <sender@example.com>\r\nTo: Support <support@example.com>\r\nSubject: Hello\r\nMessage-ID: <m1@example.com>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nBody text";
     let message = parse_inbound_message("support", 9, 10, raw).unwrap();
     assert_eq!(message.metadata.mailbox_id, "support");
     assert_eq!(message.metadata.uid_validity, 9);
@@ -237,8 +240,110 @@ fn parses_simple_inbound_message() {
         message.metadata.message_id,
         Some("<m1@example.com>".to_string())
     );
+    assert_eq!(
+        message.metadata.recipients,
+        vec!["support@example.com".to_string()]
+    );
     assert_eq!(message.metadata.subject, "Hello");
     assert_eq!(message.plain_text, "Body text");
+}
+
+#[test]
+fn parses_common_recipient_and_delivery_headers() {
+    let raw = b"From: Sender <sender@example.com>\r\nTo: Support <support@example.com>\r\nCc: Ops: Ops One <ops1@example.com>, ops2@example.com;\r\nDelivered-To: routed@example.com\r\nX-Original-To: Original <original@example.com>\r\nEnvelope-To: envelope@example.com\r\nSubject: Hello\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nBody text";
+    let message = parse_inbound_message("support", 9, 10, raw).unwrap();
+
+    assert_eq!(
+        message.metadata.recipients,
+        vec![
+            "support@example.com".to_string(),
+            "ops1@example.com".to_string(),
+            "ops2@example.com".to_string(),
+            "routed@example.com".to_string(),
+            "original@example.com".to_string(),
+            "envelope@example.com".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn accepted_conditions_match_group_semantics() {
+    let message = filter_message(
+        "Billing escalation",
+        vec![
+            "Support@example.com".to_string(),
+            "team@example.com".to_string(),
+        ],
+    );
+
+    assert!(message_matches_accepted_conditions(&message, &[]));
+    assert!(message_matches_accepted_conditions(
+        &message,
+        &[AcceptedCondition {
+            recipients: vec!["support@example.com".to_string()],
+            subject_regex: vec!["(?i)billing".to_string()],
+        }]
+    ));
+    assert!(!message_matches_accepted_conditions(
+        &message,
+        &[AcceptedCondition {
+            recipients: vec!["support@example.com".to_string()],
+            subject_regex: vec!["sales".to_string()],
+        }]
+    ));
+    assert!(message_matches_accepted_conditions(
+        &message,
+        &[
+            AcceptedCondition {
+                recipients: vec!["other@example.com".to_string()],
+                subject_regex: vec!["sales".to_string()],
+            },
+            AcceptedCondition {
+                recipients: vec![],
+                subject_regex: vec!["escalation".to_string()],
+            },
+        ]
+    ));
+}
+
+#[test]
+fn accepted_condition_recipient_prefilter_requires_recipients_in_every_group() {
+    let recipient_group = AcceptedCondition {
+        recipients: vec!["Support@example.com".to_string()],
+        subject_regex: vec!["(?i)billing".to_string()],
+    };
+    let subject_only_group = AcceptedCondition {
+        recipients: vec![],
+        subject_regex: vec!["urgent".to_string()],
+    };
+
+    assert!(!accepted_conditions_can_prefilter_by_recipient(&[]));
+    assert!(accepted_conditions_can_prefilter_by_recipient(&[
+        recipient_group.clone()
+    ]));
+    assert!(!accepted_conditions_can_prefilter_by_recipient(&[
+        recipient_group,
+        subject_only_group,
+    ]));
+    assert_eq!(
+        accepted_condition_recipient_filter_values(&[
+            AcceptedCondition {
+                recipients: vec!["Support@example.com".to_string()],
+                subject_regex: vec![],
+            },
+            AcceptedCondition {
+                recipients: vec![
+                    "support@example.com".to_string(),
+                    "ops@example.com".to_string()
+                ],
+                subject_regex: vec![],
+            },
+        ]),
+        vec![
+            "support@example.com".to_string(),
+            "ops@example.com".to_string()
+        ]
+    );
 }
 
 #[test]
@@ -289,6 +394,7 @@ fn reply_references_append_inbound_message_id_once() {
         in_reply_to: Some("<m1@example.com>".to_string()),
         references: vec!["<root@example.com>".to_string()],
         from_addr: "a@example.com".to_string(),
+        recipients: vec![],
         subject: "Hello".to_string(),
     };
     assert_eq!(
@@ -355,6 +461,7 @@ fn forward_body_includes_metadata_and_text() {
             in_reply_to: None,
             references: vec![],
             from_addr: "person@example.com".to_string(),
+            recipients: vec![],
             subject: "Question".to_string(),
         },
         plain_text: "Original text".to_string(),
@@ -391,6 +498,23 @@ fn parse_mailbox_reports_invalid_addresses() {
     assert!(crate::mail_external::parse_mailbox("not an address").is_err());
 }
 
+fn filter_message(subject: &str, recipients: Vec<String>) -> InboundMessage {
+    InboundMessage {
+        metadata: MessageMetadata {
+            mailbox_id: "support".to_string(),
+            uid_validity: 1,
+            uid: 2,
+            message_id: Some("<m1@example.com>".to_string()),
+            in_reply_to: None,
+            references: vec![],
+            from_addr: "person@example.com".to_string(),
+            recipients,
+            subject: subject.to_string(),
+        },
+        plain_text: "Original text".to_string(),
+    }
+}
+
 fn mailbox_config() -> MailboxConfig {
     MailboxConfig {
         id: "support".to_string(),
@@ -398,6 +522,7 @@ fn mailbox_config() -> MailboxConfig {
         enabled: true,
         poll_interval_seconds: 30,
         safety_forward_to: vec!["safety@example.com".to_string()],
+        accepted_conditions: vec![],
         mcp_servers: vec![],
         agent: AgentConfig {
             system_prompt_path: "agent.md".into(),

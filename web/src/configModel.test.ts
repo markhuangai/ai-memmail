@@ -5,11 +5,13 @@ import {
   addMcpServer,
   displaySecret,
   envToText,
+  listToLines,
   listToText,
   mailboxRouteLabel,
   removeBannedSender,
   removeMailbox,
   removeMcpServer,
+  setLinesFromText,
   setListFromText,
   setMailboxScalar,
   summarizeConfig,
@@ -67,6 +69,7 @@ describe("configModel", () => {
       enabled: false,
       poll_interval_seconds: 60,
       safety_forward_to: ["review@example.com"],
+      accepted_conditions: [],
       agent: { system_prompt_path: "support-agent.md" }
     });
     expect(removeMailbox(withMailbox, "mailbox_1").mailboxes).toHaveLength(0);
@@ -91,6 +94,16 @@ describe("configModel", () => {
       "b@example.com"
     ]);
     expect(listToText(["a", "b"])).toBe("a, b");
+  });
+
+  it("converts newline separated list fields", () => {
+    expect(setLinesFromText("^Ticket #[0-9]{1,3}$\n(?i)urgent\n")).toEqual([
+      "^Ticket #[0-9]{1,3}$",
+      "(?i)urgent"
+    ]);
+    expect(listToLines(["^Ticket #[0-9]{1,3}$", "(?i)urgent"])).toBe(
+      "^Ticket #[0-9]{1,3}$\n(?i)urgent"
+    );
   });
 
   it("converts MCP env text fields", () => {

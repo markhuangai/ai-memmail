@@ -541,6 +541,7 @@ fn message(uid: u64) -> InboundMessage {
             in_reply_to: None,
             references: vec![],
             from_addr: "person@example.com".to_string(),
+            recipients: vec![],
             subject: "Question".to_string(),
         },
         plain_text: "Body".to_string(),

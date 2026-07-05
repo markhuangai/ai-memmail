@@ -7,8 +7,8 @@ use crate::classification::{
     ResolvedEmailClassification,
 };
 use crate::config::{
-    AgentConfig, AiConfig, AiProtocol, BannedSenderConfig, BannedSenderKind, DatabaseConfig,
-    ImapConfig, LoggingConfig, PromptConfig, ReviewConfig, SmtpConfig,
+    AcceptedCondition, AgentConfig, AiConfig, AiProtocol, BannedSenderConfig, BannedSenderKind,
+    DatabaseConfig, ImapConfig, LoggingConfig, PromptConfig, ReviewConfig, SmtpConfig,
 };
 use crate::mail::{DedupeKey, MailError, MessageMetadata};
 use crate::safety::{SafetyCategory, SafetyScanResult};
@@ -54,6 +54,7 @@ fn config() -> AppConfig {
             enabled: true,
             poll_interval_seconds: 30,
             safety_forward_to: vec!["human@example.com".to_string()],
+            accepted_conditions: vec![],
             mcp_servers: vec![],
             agent: AgentConfig {
                 system_prompt_path: "agent.md".into(),
@@ -94,6 +95,7 @@ fn inbound(uid: u64, from_addr: &str, subject: &str, plain_text: &str) -> Inboun
             in_reply_to: None,
             references: vec![],
             from_addr: from_addr.to_string(),
+            recipients: vec![],
             subject: subject.to_string(),
         },
         plain_text: plain_text.to_string(),

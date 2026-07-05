@@ -1,4 +1,60 @@
 #[tokio::test]
+async fn accepted_conditions_filter_messages_before_processing() {
+    let mut config = config();
+    config.mailboxes[0].accepted_conditions = vec![AcceptedCondition {
+        recipients: vec!["support@example.com".to_string()],
+        subject_regex: vec!["(?i)billing".to_string()],
+    }];
+    let mut matching = inbound(
+        80,
+        "person@example.com",
+        "Billing question",
+        "Can you help with billing?",
+    );
+    matching.metadata.recipients = vec!["support@example.com".to_string()];
+    let mut wrong_recipient = inbound(
+        81,
+        "person@example.com",
+        "Billing question",
+        "Can you help with billing?",
+    );
+    wrong_recipient.metadata.recipients = vec!["other@example.com".to_string()];
+    let mut wrong_subject = inbound(
+        82,
+        "person@example.com",
+        "Sales question",
+        "Can you help with sales?",
+    );
+    wrong_subject.metadata.recipients = vec!["support@example.com".to_string()];
+    let logger = crate::logging::MemoryLogger::default();
+    let mail = FakeMail::new(vec![wrong_recipient, matching, wrong_subject]);
+    let decisions = fake_decisions(safe_scan(), reply_action());
+
+    run_once_with(&config, &logger, "run-test", &mail, &decisions).await;
+
+    assert_eq!(mail.sent().len(), 1);
+    assert_eq!(
+        mail.seen().iter().map(|key| key.uid).collect::<Vec<_>>(),
+        vec![80]
+    );
+    assert_eq!(
+        decisions.call_counts(),
+        DecisionCallCounts {
+            safety_scan: 1,
+            classify_email: 1,
+            agent_decision: 1,
+            rule_decision: 0,
+            outbound_review: 0,
+        }
+    );
+    assert!(logger.events().iter().any(|event| {
+        event.action == "imap_fetch"
+            && event.status == "messages=1"
+            && event.detail.as_deref() == Some("filtered_by_accepted_conditions=2")
+    }));
+}
+
+#[tokio::test]
 async fn already_finished_claim_marks_seen_without_sending() {
     let logger = crate::logging::MemoryLogger::default();
     let mail = FakeMail::new(vec![inbound(54, "person@example.com", "Question", "Body")]);
