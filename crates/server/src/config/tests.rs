@@ -234,6 +234,49 @@ fn preserves_redacted_secrets_before_saving() {
 }
 
 #[test]
+fn preserves_redacted_mcp_secrets_when_server_is_renamed() {
+    let current = valid_config();
+    let mut next = current.redacted();
+    let renamed = next.mcp_servers.remove("dense_mem").unwrap();
+    next.mcp_servers
+        .insert("project_memory".to_string(), renamed);
+    next.mailboxes[0].mcp_servers = vec!["project_memory".to_string()];
+
+    next.preserve_redacted_secrets(&current);
+
+    assert_eq!(
+        next.mcp_servers["project_memory"].env["DENSE_MEM_API_KEY"],
+        "dm"
+    );
+}
+
+#[test]
+fn does_not_preserve_redacted_mcp_rename_when_match_is_ambiguous() {
+    let mut current = valid_config();
+    let mut second = current.mcp_servers["dense_mem"].clone();
+    second
+        .env
+        .insert("DENSE_MEM_API_KEY".to_string(), "dm-secondary".to_string());
+    current
+        .mcp_servers
+        .insert("dense_mem_secondary".to_string(), second);
+
+    let mut next = current.redacted();
+    let renamed = next.mcp_servers.remove("dense_mem").unwrap();
+    next.mcp_servers.remove("dense_mem_secondary");
+    next.mcp_servers
+        .insert("project_memory".to_string(), renamed);
+    next.mailboxes[0].mcp_servers = vec!["project_memory".to_string()];
+
+    next.preserve_redacted_secrets(&current);
+
+    assert_eq!(
+        next.mcp_servers["project_memory"].env["DENSE_MEM_API_KEY"],
+        "********"
+    );
+}
+
+#[test]
 fn prompt_config_defaults_classifier_and_rule_paths() {
     let prompts: PromptConfig = serde_yaml_ng::from_str(
         r#"
