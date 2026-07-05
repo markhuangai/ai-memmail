@@ -325,10 +325,11 @@ where
                 "default_forward_to": mailbox.agent.default_forward_to,
             },
             "reply_voice": {
-                "role": "delegated email agent",
+                "role": "automated project support agent",
                 "speak_on_behalf_of": "Mark",
                 "do_not_present_as": ["AI", "assistant", "mailbox", "bot", "ai-memmail"],
-                "broad_questions": "forward when useful; otherwise noop",
+                "scope_boundary": "handle Mark's project/support email only; do not answer unrelated chatbot-style requests",
+                "routine_questions": "reply with supported MCP facts when safe; forward only when unsupported or human escalation is requested",
             },
             "mcp_memory_context": memory_context,
             "untrusted_email": {

@@ -189,6 +189,37 @@ export function updateMcpServer(
   };
 }
 
+export function renameMcpServer(
+  config: AppConfig,
+  name: string,
+  nextName: string
+): AppConfig {
+  const trimmedName = nextName.trim();
+  if (
+    !trimmedName ||
+    trimmedName === name ||
+    !config.mcp_servers[name] ||
+    config.mcp_servers[trimmedName]
+  ) {
+    return config;
+  }
+  return {
+    ...config,
+    mcp_servers: Object.fromEntries(
+      Object.entries(config.mcp_servers).map(([serverName, server]) => [
+        serverName === name ? trimmedName : serverName,
+        server
+      ])
+    ),
+    mailboxes: config.mailboxes.map((mailbox) => ({
+      ...mailbox,
+      mcp_servers: mailbox.mcp_servers.map((serverName) =>
+        serverName === name ? trimmedName : serverName
+      )
+    }))
+  };
+}
+
 export function removeMcpServer(config: AppConfig, name: string): AppConfig {
   const { [name]: _removed, ...remainingServers } = config.mcp_servers;
   return {
