@@ -118,6 +118,17 @@ export function listToText(values: string[]): string {
   return values.join(", ");
 }
 
+export function setLinesFromText(value: string): string[] {
+  return value
+    .split("\n")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+export function listToLines(values: string[]): string {
+  return values.join("\n");
+}
+
 export function textToEnv(value: string): Record<string, string> {
   return value
     .split("\n")

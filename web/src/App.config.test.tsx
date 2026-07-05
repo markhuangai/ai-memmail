@@ -118,7 +118,7 @@ describe("App config", () => {
       target: { value: "ops@example.com, support@example.com" }
     });
     fireEvent.change(screen.getByLabelText(/subject regex/i), {
-      target: { value: "(?i)urgent, billing" }
+      target: { value: "(?i)urgent\n^Ticket #[0-9]{1,3}$" }
     });
     fireEvent.click(screen.getByRole("button", { name: /add condition/i }));
     fireEvent.click(
@@ -135,7 +135,7 @@ describe("App config", () => {
       accepted_conditions: [
         {
           recipients: ["ops@example.com", "support@example.com"],
-          subject_regex: ["(?i)urgent", "billing"]
+          subject_regex: ["(?i)urgent", "^Ticket #[0-9]{1,3}$"]
         }
       ],
       mcp_servers: ["dense_mem_primary"],

@@ -1,5 +1,14 @@
 import { Plus, Trash2 } from "lucide-react";
-import { addMailbox, listToText, mailboxRouteLabel, removeMailbox, setListFromText, updateMailbox } from "../configModel";
+import {
+  addMailbox,
+  listToLines,
+  listToText,
+  mailboxRouteLabel,
+  removeMailbox,
+  setLinesFromText,
+  setListFromText,
+  updateMailbox
+} from "../configModel";
 import type { AcceptedCondition, AppConfig, MailboxConfig } from "../types";
 
 export function Mailboxes({
@@ -180,12 +189,12 @@ export function Mailboxes({
                       </label>
                       <label>
                         Subject regex
-                        <input
-                          value={listToText(condition.subject_regex)}
+                        <textarea
+                          value={listToLines(condition.subject_regex)}
                           onChange={(event) =>
                             updateAcceptedCondition(mailbox, index, (next) => ({
                               ...next,
-                              subject_regex: setListFromText(event.target.value)
+                              subject_regex: setLinesFromText(event.target.value)
                             }))
                           }
                         />

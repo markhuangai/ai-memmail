@@ -5,11 +5,13 @@ import {
   addMcpServer,
   displaySecret,
   envToText,
+  listToLines,
   listToText,
   mailboxRouteLabel,
   removeBannedSender,
   removeMailbox,
   removeMcpServer,
+  setLinesFromText,
   setListFromText,
   setMailboxScalar,
   summarizeConfig,
@@ -92,6 +94,16 @@ describe("configModel", () => {
       "b@example.com"
     ]);
     expect(listToText(["a", "b"])).toBe("a, b");
+  });
+
+  it("converts newline separated list fields", () => {
+    expect(setLinesFromText("^Ticket #[0-9]{1,3}$\n(?i)urgent\n")).toEqual([
+      "^Ticket #[0-9]{1,3}$",
+      "(?i)urgent"
+    ]);
+    expect(listToLines(["^Ticket #[0-9]{1,3}$", "(?i)urgent"])).toBe(
+      "^Ticket #[0-9]{1,3}$\n(?i)urgent"
+    );
   });
 
   it("converts MCP env text fields", () => {
