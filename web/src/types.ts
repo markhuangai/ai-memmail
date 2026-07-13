@@ -86,6 +86,8 @@ export interface ImapConfig {
   username: string;
   password: string;
   folder: string;
+  sent_folder: string | null;
+  sent_backfill_days: number;
 }
 
 export interface SmtpConfig {

@@ -6,10 +6,10 @@ use crate::config::{
     ReviewConfig, SmtpConfig,
 };
 use crate::logging::LogLevel;
-use crate::mail::MessageMetadata;
+use crate::mail::{MessageMetadata, SentMessage};
 use crate::storage::{
     DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL, EMAIL_CLASSIFICATION_RULES_SQL,
-    HISTORY_BODY_THREADING_SQL, INIT_SQL,
+    HISTORY_BODY_THREADING_SQL, INIT_SQL, SENT_THREAD_CONTEXT_SQL,
 };
 
 #[tokio::test]
@@ -30,7 +30,7 @@ async fn pg_store_migrates_idempotently_and_tracks_checksum() {
         )
         .await
         .unwrap();
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), 5);
     assert_eq!(rows[0].get::<_, i32>(0), 1);
     assert_eq!(rows[0].get::<_, String>(1), "001_init");
     assert_eq!(rows[0].get::<_, String>(2), migration_checksum(INIT_SQL));
@@ -57,6 +57,12 @@ async fn pg_store_migrates_idempotently_and_tracks_checksum() {
     assert_eq!(
         rows[3].get::<_, String>(2),
         migration_checksum(DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL)
+    );
+    assert_eq!(rows[4].get::<_, i32>(0), 5);
+    assert_eq!(rows[4].get::<_, String>(1), "005_sent_thread_context");
+    assert_eq!(
+        rows[4].get::<_, String>(2),
+        migration_checksum(SENT_THREAD_CONTEXT_SQL)
     );
 
     pg.cleanup().await;
@@ -527,6 +533,115 @@ async fn pg_store_concurrent_default_policy_seeding_creates_one_rule() {
         .unwrap()
         .get::<_, i64>(0);
     assert_eq!(rule_count, 1);
+
+    pg.cleanup().await;
+}
+
+#[tokio::test]
+async fn pg_store_links_manual_sent_message_to_inbound_reply_context() {
+    let Some(pg) = TestPgStore::create().await else {
+        return;
+    };
+    pg.store.migrate().await.unwrap();
+    let config = app_config_with_mailboxes(vec!["support"]);
+    let manual_sent = InboundMessage {
+        metadata: MessageMetadata {
+            mailbox_id: "support".to_string(),
+            uid_validity: 9,
+            uid: 12,
+            message_id: Some("<manual-root@example.com>".to_string()),
+            in_reply_to: None,
+            references: vec![],
+            from_addr: "support@example.com".to_string(),
+            recipients: vec!["person@example.com".to_string()],
+            subject: "Manual question".to_string(),
+        },
+        plain_text: "Original message sent outside ai-memmail.".to_string(),
+    };
+    pg.store
+        .record_sent_batch(
+            "support",
+            1_700_000_000,
+            &SentFetchBatch {
+                folder_name: "Sent".to_string(),
+                uid_validity: 9,
+                messages: vec![SentMessage {
+                    message: manual_sent,
+                    internal_date: Some(1_700_000_100),
+                }],
+                complete: true,
+            },
+        )
+        .await
+        .unwrap();
+    let mut failed_inbound = message(79);
+    failed_inbound.metadata.in_reply_to = Some("<manual-root@example.com>".to_string());
+    failed_inbound.metadata.references = vec!["<manual-root@example.com>".to_string()];
+    pg.store
+        .claim_message(&uuid::Uuid::new_v4().to_string(), &failed_inbound)
+        .await
+        .unwrap();
+    let failed_key = failed_inbound.metadata.dedupe_key();
+    pg.store
+        .record_outbound_action(
+            &failed_key,
+            &OutboundAction {
+                kind: OutboundActionKind::Reply,
+                recipients: vec!["person@example.com".to_string()],
+                subject: "Re: Manual question".to_string(),
+                body: "This SMTP attempt failed.".to_string(),
+                reason: "test failed send".to_string(),
+                message_id: Some("<failed-send@example.com>".to_string()),
+                in_reply_to: failed_inbound.metadata.message_id.clone(),
+                references: failed_inbound.metadata.references.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    pg.store
+        .update_message_status(
+            &failed_key,
+            PROCESSING_STATUS_SEND_FAILED,
+            Some(&OutboundActionKind::Reply),
+        )
+        .await
+        .unwrap();
+    let mut reply = message(80);
+    reply.metadata.message_id = Some("<reply@example.com>".to_string());
+    reply.metadata.in_reply_to = Some("<manual-root@example.com>".to_string());
+    reply.metadata.references = vec!["<manual-root@example.com>".to_string()];
+    reply.metadata.subject = "Re: Manual question".to_string();
+    reply.plain_text = "New answer.\n\nOn Monday, Mark wrote:\n> Original message".to_string();
+
+    assert_eq!(
+        pg.store
+            .claim_message(&uuid::Uuid::new_v4().to_string(), &reply)
+            .await
+            .unwrap(),
+        ProcessingClaim::Claimed
+    );
+    let context = pg.store
+        .load_thread_context(&config.mailboxes[0], &reply)
+        .await
+        .unwrap();
+    let state = pg.store.sent_sync_state("support").await.unwrap().unwrap();
+
+    assert_eq!(context.thread_id, "<manual-root@example.com>");
+    assert_eq!(context.messages.len(), 2);
+    assert_eq!(context.messages[0].direction, MessageDirection::Outbound);
+    assert_eq!(context.messages[0].message_id.as_deref(), Some("<manual-root@example.com>"));
+    assert_eq!(
+        context.messages[0].authored_text,
+        "Original message sent outside ai-memmail."
+    );
+    assert!(context
+        .messages
+        .iter()
+        .all(|message| message.message_id.as_deref() != Some("<failed-send@example.com>")));
+    assert_eq!(state.cursor.folder_name, "Sent");
+    assert_eq!(state.cursor.uid_validity, 9);
+    assert_eq!(state.cursor.last_uid, 12);
+    assert!(state.initial_backfill_complete);
 
     pg.cleanup().await;
 }

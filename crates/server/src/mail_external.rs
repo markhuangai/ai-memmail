@@ -1,6 +1,8 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 
+use chrono::{DateTime, Utc};
+use imap::types::NameAttribute;
 use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
@@ -10,7 +12,8 @@ use crate::config::{MailboxConfig, SmtpConfig};
 use crate::mail::{
     accepted_condition_recipient_filter_values, accepted_conditions_can_prefilter_by_recipient,
     message_matches_accepted_conditions, parse_inbound_message, validate_outbound_action,
-    InboundMessage, MailError, OutboundAction, ACCEPTED_CONDITION_RECIPIENT_HEADERS,
+    InboundMessage, MailError, OutboundAction, SentFetchBatch, SentMessage, SentSyncCursor,
+    ACCEPTED_CONDITION_RECIPIENT_HEADERS,
 };
 
 pub(crate) fn fetch_unseen_blocking(
@@ -24,6 +27,123 @@ pub(crate) fn fetch_unseen_blocking(
         let session = login_imap_plain(mailbox)?;
         fetch_unseen_with_session(session, mailbox, limit)
     }
+}
+
+pub(crate) fn fetch_sent_blocking(
+    mailbox: &MailboxConfig,
+    cursor: Option<&SentSyncCursor>,
+    backfill_cutoff: i64,
+    limit: usize,
+) -> Result<SentFetchBatch, MailError> {
+    if mailbox.imap.tls {
+        let session = login_imap_tls(mailbox)?;
+        fetch_sent_with_session(session, mailbox, cursor, backfill_cutoff, limit)
+    } else {
+        let session = login_imap_plain(mailbox)?;
+        fetch_sent_with_session(session, mailbox, cursor, backfill_cutoff, limit)
+    }
+}
+
+fn fetch_sent_with_session<T: Read + Write>(
+    mut session: imap::Session<T>,
+    mailbox: &MailboxConfig,
+    cursor: Option<&SentSyncCursor>,
+    backfill_cutoff: i64,
+    limit: usize,
+) -> Result<SentFetchBatch, MailError> {
+    let folder_name = sent_folder_name(&mut session, mailbox)?;
+    let selected = session
+        .examine(&folder_name)
+        .map_err(|error| MailError::Imap(error.to_string()))?;
+    let uid_validity = selected
+        .uid_validity
+        .ok_or_else(|| MailError::Imap("Sent mailbox did not report UIDVALIDITY".to_string()))?
+        as u64;
+    let last_uid = cursor
+        .filter(|cursor| cursor.folder_name == folder_name && cursor.uid_validity == uid_validity)
+        .map(|cursor| cursor.last_uid)
+        .unwrap_or_default();
+    let cutoff = cursor
+        .filter(|cursor| cursor.folder_name == folder_name && cursor.uid_validity == uid_validity)
+        .map(|cursor| cursor.backfill_cutoff)
+        .unwrap_or(backfill_cutoff);
+    let mut uids = sent_uids(&mut session, last_uid, cutoff)?;
+    uids.sort_unstable();
+    let complete = uids.len() <= limit;
+    uids.truncate(limit);
+    let mut messages = Vec::with_capacity(uids.len());
+    for uid in uids {
+        let fetches = session
+            .uid_fetch(uid.to_string(), "(UID INTERNALDATE BODY.PEEK[])")
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+        for fetch in fetches.iter() {
+            let raw = fetch
+                .body()
+                .ok_or_else(|| MailError::Imap(format!("sent message uid {uid} had no body")))?;
+            let fetched_uid = fetch.uid.unwrap_or(uid) as u64;
+            messages.push(SentMessage {
+                message: parse_inbound_message(&mailbox.id, uid_validity, fetched_uid, raw)?,
+                internal_date: fetch.internal_date().map(|date| date.timestamp()),
+            });
+        }
+    }
+    let _ = session.logout();
+    Ok(SentFetchBatch {
+        folder_name,
+        uid_validity,
+        messages,
+        complete,
+    })
+}
+
+fn sent_folder_name<T: Read + Write>(
+    session: &mut imap::Session<T>,
+    mailbox: &MailboxConfig,
+) -> Result<String, MailError> {
+    if let Some(folder) = mailbox.imap.sent_folder.as_deref() {
+        return Ok(folder.trim().to_string());
+    }
+    let names = session
+        .list(None, Some("*"))
+        .map_err(|error| MailError::Imap(error.to_string()))?;
+    let matches = names
+        .iter()
+        .filter(|name| {
+            name.attributes().iter().any(|attribute| {
+                matches!(attribute, NameAttribute::Custom(value) if value.eq_ignore_ascii_case("\\Sent"))
+            })
+        })
+        .map(|name| name.name().to_string())
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [folder] => Ok(folder.clone()),
+        [] => Err(MailError::Imap(
+            "IMAP server did not advertise a \\Sent mailbox; configure imap.sent_folder"
+                .to_string(),
+        )),
+        _ => Err(MailError::Imap(
+            "IMAP server advertised multiple \\Sent mailboxes; configure imap.sent_folder"
+                .to_string(),
+        )),
+    }
+}
+
+fn sent_uids<T: Read + Write>(
+    session: &mut imap::Session<T>,
+    last_uid: u64,
+    cutoff: i64,
+) -> Result<Vec<u32>, MailError> {
+    let cutoff = DateTime::<Utc>::from_timestamp(cutoff, 0)
+        .ok_or_else(|| MailError::Imap("Sent backfill cutoff is invalid".to_string()))?;
+    let since = cutoff.format("%d-%b-%Y");
+    let query = if last_uid == 0 {
+        format!("SINCE {since}")
+    } else if last_uid >= u32::MAX as u64 {
+        return Ok(Vec::new());
+    } else {
+        format!("UID {}:* SINCE {since}", last_uid + 1)
+    };
+    uid_search(session, &query)
 }
 
 fn fetch_unseen_with_session<T: Read + Write>(
@@ -323,6 +443,8 @@ mod tests {
                 username: "support@example.com".to_string(),
                 password: "secret".to_string(),
                 folder: "INBOX".to_string(),
+                sent_folder: None,
+                sent_backfill_days: 0,
             },
             smtp: SmtpConfig {
                 host: "smtp.example.com".to_string(),

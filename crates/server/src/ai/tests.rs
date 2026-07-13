@@ -236,6 +236,8 @@ fn mailbox_config() -> MailboxConfig {
             username: "support@example.com".to_string(),
             password: "secret".to_string(),
             folder: "INBOX".to_string(),
+            sent_folder: None,
+            sent_backfill_days: 0,
         },
         smtp: SmtpConfig {
             host: "smtp.example.com".to_string(),

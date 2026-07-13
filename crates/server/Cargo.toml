@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 async-trait = "0.1"
 axum = { version = "=0.7.9", features = ["json"] }
+chrono = "=0.4.45"
 imap = "=2.4.1"
 indexmap = "=2.7.1"
 lettre = { version = "=0.11.10", default-features = false, features = ["builder", "hostname", "native-tls", "pool", "smtp-transport"] }

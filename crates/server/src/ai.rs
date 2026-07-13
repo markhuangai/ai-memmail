@@ -6,8 +6,8 @@ use crate::classification::{EmailClassification, EmailRule, EmailTaxonomy};
 use crate::config::McpServerConfig;
 use crate::config::{AppConfig, MailboxConfig};
 use crate::mail::{
-    reply_recipient, validate_outbound_action, InboundMessage, OutboundAction, OutboundActionKind,
-    ValidationError,
+    extract_authored_text, reply_recipient, validate_outbound_action, InboundMessage,
+    OutboundAction, OutboundActionKind, ThreadContext, ValidationError,
 };
 use crate::prompts;
 use crate::safety::build_safety_scan_payload;
@@ -15,6 +15,7 @@ use crate::safety::{SafetyCategory, SafetyScanResult};
 
 const MCP_QUERY_MAX_CHARS: usize = 512;
 const TRUNCATION_MARKER: &str = "\n[truncated]";
+pub const MAX_SERIALIZED_PROMPT_CHARS: usize = 1_000_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentDecision {
@@ -45,6 +46,8 @@ pub enum AiError {
     Provider(String),
     #[error("MCP error: {0}")]
     Mcp(String),
+    #[error("AI context limit exceeded: {0}")]
+    ContextLengthExceeded(String),
     #[error("invalid decision: {0}")]
     InvalidDecision(String),
     #[error("invalid safety scan: {0}")]
@@ -75,6 +78,7 @@ pub trait DecisionEngine: Send + Sync {
         config: &AppConfig,
         mailbox: &MailboxConfig,
         message: &InboundMessage,
+        thread_context: &ThreadContext,
         taxonomy: &EmailTaxonomy,
     ) -> Result<EmailClassification, AiError>;
 
@@ -83,6 +87,7 @@ pub trait DecisionEngine: Send + Sync {
         config: &AppConfig,
         mailbox: &MailboxConfig,
         message: &InboundMessage,
+        thread_context: &ThreadContext,
     ) -> Result<AgentDecision, AiError>;
 
     async fn rule_decision(
@@ -90,6 +95,7 @@ pub trait DecisionEngine: Send + Sync {
         config: &AppConfig,
         mailbox: &MailboxConfig,
         message: &InboundMessage,
+        thread_context: &ThreadContext,
         classification: &EmailClassification,
         rule: &EmailRule,
     ) -> Result<AgentDecision, AiError>;
@@ -99,6 +105,7 @@ pub trait DecisionEngine: Send + Sync {
         config: &AppConfig,
         mailbox: &MailboxConfig,
         message: &InboundMessage,
+        thread_context: &ThreadContext,
         decision: &AgentDecision,
     ) -> Result<OutboundReviewDecision, AiError>;
 }
@@ -287,13 +294,7 @@ where
         let payload = build_safety_scan_payload(&message.metadata, &message.plain_text);
         let raw = self
             .chat_provider
-            .chat(
-                config,
-                vec![
-                    chat_message("system", prompt),
-                    chat_message("user", payload),
-                ],
-            )
+            .chat(config, bounded_chat_messages(prompt, payload)?)
             .await?;
         parse_safety_scan(&raw)
     }
@@ -303,6 +304,7 @@ where
         config: &AppConfig,
         mailbox: &MailboxConfig,
         message: &InboundMessage,
+        thread_context: &ThreadContext,
     ) -> Result<AgentDecision, AiError> {
         if human_review_requested(message) {
             return Ok(forward_decision(
@@ -331,22 +333,17 @@ where
                 "broad_questions": "forward when useful; otherwise noop",
             },
             "mcp_memory_context": memory_context,
+            "thread_context": thread_context,
             "untrusted_email": {
                 "from_addr": message.metadata.from_addr,
                 "subject": message.metadata.subject,
-                "plain_text": message.plain_text,
+                "plain_text": current_authored_text(message, thread_context),
             }
         })
         .to_string();
         let raw = self
             .chat_provider
-            .chat(
-                config,
-                vec![
-                    chat_message("system", prompt),
-                    chat_message("user", payload),
-                ],
-            )
+            .chat(config, bounded_chat_messages(prompt, payload)?)
             .await?;
         parse_agent_decision(&raw).map_err(AiError::InvalidDecision)
     }
@@ -356,19 +353,14 @@ where
         config: &AppConfig,
         mailbox: &MailboxConfig,
         message: &InboundMessage,
+        thread_context: &ThreadContext,
         taxonomy: &EmailTaxonomy,
     ) -> Result<EmailClassification, AiError> {
         let prompt = prompts::read_prompt(&config.prompts.root, &config.prompts.email_classifier)?;
-        let payload = build_classifier_payload(mailbox, message, taxonomy);
+        let payload = build_classifier_payload(mailbox, message, thread_context, taxonomy);
         let raw = self
             .chat_provider
-            .chat(
-                config,
-                vec![
-                    chat_message("system", prompt),
-                    chat_message("user", payload),
-                ],
-            )
+            .chat(config, bounded_chat_messages(prompt, payload)?)
             .await?;
         parse_email_classification(&raw)
     }
@@ -378,6 +370,7 @@ where
         config: &AppConfig,
         mailbox: &MailboxConfig,
         message: &InboundMessage,
+        thread_context: &ThreadContext,
         classification: &EmailClassification,
         rule: &EmailRule,
     ) -> Result<AgentDecision, AiError> {
@@ -386,17 +379,17 @@ where
             .mcp_context_provider
             .recall_mailbox_context(config, mailbox, message)
             .await?;
-        let payload =
-            build_rule_action_payload(mailbox, message, classification, rule, memory_context);
+        let payload = build_rule_action_payload(
+            mailbox,
+            message,
+            thread_context,
+            classification,
+            rule,
+            memory_context,
+        );
         let raw = self
             .chat_provider
-            .chat(
-                config,
-                vec![
-                    chat_message("system", prompt),
-                    chat_message("user", payload),
-                ],
-            )
+            .chat(config, bounded_chat_messages(prompt, payload)?)
             .await?;
         let draft = parse_rule_action_draft(&raw)?;
         rule_draft_to_decision(mailbox, message, rule, draft).map_err(AiError::InvalidDecision)
@@ -407,19 +400,14 @@ where
         config: &AppConfig,
         mailbox: &MailboxConfig,
         message: &InboundMessage,
+        thread_context: &ThreadContext,
         decision: &AgentDecision,
     ) -> Result<OutboundReviewDecision, AiError> {
         let prompt = prompts::read_prompt(&config.prompts.root, &config.ai.review.prompt_path)?;
-        let payload = build_outbound_review_payload(mailbox, message, decision);
+        let payload = build_outbound_review_payload(mailbox, message, thread_context, decision);
         let raw = self
             .chat_provider
-            .chat(
-                config,
-                vec![
-                    chat_message("system", prompt),
-                    chat_message("user", payload),
-                ],
-            )
+            .chat(config, bounded_chat_messages(prompt, payload)?)
             .await?;
         parse_outbound_review(&raw)
     }

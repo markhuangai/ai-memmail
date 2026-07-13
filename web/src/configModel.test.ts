@@ -71,7 +71,8 @@ describe("configModel", () => {
       poll_interval_seconds: 60,
       safety_forward_to: ["review@example.com"],
       accepted_conditions: [],
-      agent: { system_prompt_path: "support-agent.md" }
+      agent: { system_prompt_path: "support-agent.md" },
+      imap: { sent_folder: null, sent_backfill_days: 30 }
     });
     expect(removeMailbox(withMailbox, "mailbox_1").mailboxes).toHaveLength(0);
 

@@ -147,6 +147,10 @@ pub struct ImapConfig {
     pub username: String,
     pub password: String,
     pub folder: String,
+    #[serde(default)]
+    pub sent_folder: Option<String>,
+    #[serde(default = "default_sent_backfill_days")]
+    pub sent_backfill_days: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -454,6 +458,16 @@ fn validate_enabled_mailbox_connection(mailbox: &MailboxConfig) -> Result<(), Co
     validate_required(&mailbox.imap.username, &format!("{prefix} imap.username"))?;
     validate_required(&mailbox.imap.password, &format!("{prefix} imap.password"))?;
     validate_required(&mailbox.imap.folder, &format!("{prefix} imap.folder"))?;
+    if mailbox
+        .imap
+        .sent_folder
+        .as_ref()
+        .is_some_and(|folder| folder.trim().is_empty())
+    {
+        return Err(ConfigError::Invalid(format!(
+            "{prefix} imap.sent_folder must not be empty when provided"
+        )));
+    }
     validate_required(&mailbox.smtp.host, &format!("{prefix} smtp.host"))?;
     validate_port(mailbox.smtp.port, &format!("{prefix} smtp.port"))?;
     validate_required(&mailbox.smtp.username, &format!("{prefix} smtp.username"))?;
@@ -494,6 +508,10 @@ fn default_email_classifier_prompt() -> PathBuf {
 
 fn default_rule_action_prompt() -> PathBuf {
     "rule-action.md".into()
+}
+
+fn default_sent_backfill_days() -> u16 {
+    30
 }
 
 fn is_prompt_escape_component(component: Component<'_>) -> bool {

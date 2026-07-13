@@ -57,7 +57,42 @@ pub(crate) fn mcp_http_call(
 }
 
 fn provider_error(error: ureq::Error) -> AiError {
-    AiError::Provider(http_error_message(error))
+    match error {
+        ureq::Error::Status(code, response) => {
+            let text = response
+                .into_string()
+                .unwrap_or_else(|read_error| read_error.to_string());
+            if is_context_length_error(code, &text) {
+                AiError::ContextLengthExceeded(
+                    "provider rejected the request because its context limit was exceeded"
+                        .to_string(),
+                )
+            } else {
+                AiError::Provider(format!("HTTP {code}: {}", truncate_chars(&text, 500)))
+            }
+        }
+        ureq::Error::Transport(error) => AiError::Provider(error.to_string()),
+    }
+}
+
+pub(crate) fn is_context_length_error(code: u16, body: &str) -> bool {
+    if !matches!(code, 400 | 413 | 422) {
+        return false;
+    }
+    if code == 413 {
+        return true;
+    }
+    let body = body.to_ascii_lowercase();
+    [
+        "context_length_exceeded",
+        "maximum context length",
+        "context window",
+        "too many tokens",
+        "prompt is too long",
+        "input is too long",
+    ]
+    .iter()
+    .any(|needle| body.contains(needle))
 }
 
 fn http_error_message(error: ureq::Error) -> String {
@@ -69,5 +104,24 @@ fn http_error_message(error: ureq::Error) -> String {
             format!("HTTP {code}: {}", truncate_chars(&text, 500))
         }
         ureq::Error::Transport(error) => error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_context_length_error;
+
+    #[test]
+    fn recognizes_provider_context_limit_errors_only_for_relevant_statuses() {
+        assert!(is_context_length_error(
+            400,
+            r#"{"error":{"code":"context_length_exceeded"}}"#
+        ));
+        assert!(is_context_length_error(413, "payload rejected"));
+        assert!(!is_context_length_error(
+            500,
+            "Maximum context length exceeded"
+        ));
+        assert!(!is_context_length_error(400, "invalid model"));
     }
 }

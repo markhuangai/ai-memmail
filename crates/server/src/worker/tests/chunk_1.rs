@@ -10,7 +10,10 @@ use crate::config::{
     AcceptedCondition, AgentConfig, AiConfig, AiProtocol, BannedSenderConfig, BannedSenderKind,
     DatabaseConfig, ImapConfig, LoggingConfig, PromptConfig, ReviewConfig, SmtpConfig,
 };
-use crate::mail::{DedupeKey, MailError, MessageMetadata};
+use crate::mail::{
+    DedupeKey, MailError, MessageDirection, MessageMetadata, SentFetchBatch, SentSyncCursor,
+    ThreadMessage,
+};
 use crate::safety::{SafetyCategory, SafetyScanResult};
 
 use super::*;
@@ -67,6 +70,8 @@ fn config() -> AppConfig {
                 username: "support@example.com".to_string(),
                 password: "secret".to_string(),
                 folder: "INBOX".to_string(),
+                sent_folder: None,
+                sent_backfill_days: 0,
             },
             smtp: SmtpConfig {
                 host: "smtp.example.com".to_string(),
@@ -106,6 +111,8 @@ struct FakeMail {
     messages: Mutex<Vec<InboundMessage>>,
     sent: Mutex<Vec<OutboundAction>>,
     seen: Mutex<Vec<DedupeKey>>,
+    sent_batch: Mutex<Option<SentFetchBatch>>,
+    sent_fetches: Mutex<Vec<(Option<SentSyncCursor>, i64, usize)>>,
     fail_fetch: bool,
     fail_send: bool,
     fail_mark_seen: bool,
@@ -117,6 +124,8 @@ impl FakeMail {
             messages: Mutex::new(messages),
             sent: Mutex::new(Vec::new()),
             seen: Mutex::new(Vec::new()),
+            sent_batch: Mutex::new(None),
+            sent_fetches: Mutex::new(Vec::new()),
             fail_fetch: false,
             fail_send: false,
             fail_mark_seen: false,
@@ -138,12 +147,21 @@ impl FakeMail {
         self
     }
 
+    fn with_sent_batch(self, batch: SentFetchBatch) -> Self {
+        *self.sent_batch.lock().expect("sent batch lock") = Some(batch);
+        self
+    }
+
     fn sent(&self) -> Vec<OutboundAction> {
         self.sent.lock().expect("sent lock").clone()
     }
 
     fn seen(&self) -> Vec<DedupeKey> {
         self.seen.lock().expect("seen lock").clone()
+    }
+
+    fn sent_fetches(&self) -> Vec<(Option<SentSyncCursor>, i64, usize)> {
+        self.sent_fetches.lock().expect("sent fetches lock").clone()
     }
 }
 
@@ -181,6 +199,25 @@ impl MailTransport for FakeMail {
         });
         Ok(())
     }
+
+    async fn fetch_sent(
+        &self,
+        _mailbox: &MailboxConfig,
+        cursor: Option<&SentSyncCursor>,
+        backfill_cutoff: i64,
+        limit: usize,
+    ) -> Result<SentFetchBatch, MailError> {
+        self.sent_fetches.lock().expect("sent fetches lock").push((
+            cursor.cloned(),
+            backfill_cutoff,
+            limit,
+        ));
+        self.sent_batch
+            .lock()
+            .expect("sent batch lock")
+            .clone()
+            .ok_or_else(|| MailError::Imap("sent fetch failed".to_string()))
+    }
 }
 
 struct FakeDecisionEngine {
@@ -197,6 +234,7 @@ struct FakeDecisionEngine {
     hang_agent: bool,
     missing_classifier_prompt: bool,
     missing_rule_prompt: bool,
+    context_limit_at: Option<&'static str>,
     calls: Arc<Mutex<DecisionCallCounts>>,
     reviewed_actions: Arc<Mutex<Vec<OutboundAction>>>,
 }
@@ -226,6 +264,12 @@ impl FakeDecisionEngine {
         self.hang_agent = true;
         self
     }
+
+
+    fn with_context_limit_at(mut self, action: &'static str) -> Self {
+        self.context_limit_at = Some(action);
+        self
+    }
 }
 
 #[async_trait::async_trait]
@@ -245,6 +289,9 @@ impl DecisionEngine for FakeDecisionEngine {
         _message: &InboundMessage,
     ) -> Result<SafetyScanResult, AiError> {
         self.calls.lock().expect("decision calls lock").safety_scan += 1;
+        if self.context_limit_at == Some("safety_scan") {
+            return Err(AiError::ContextLengthExceeded("provider limit".to_string()));
+        }
         if self.fail_safety {
             return Err(AiError::Provider("safety failed".to_string()));
         }
@@ -256,12 +303,16 @@ impl DecisionEngine for FakeDecisionEngine {
         _config: &AppConfig,
         _mailbox: &MailboxConfig,
         _message: &InboundMessage,
+        _thread_context: &ThreadContext,
         _taxonomy: &EmailTaxonomy,
     ) -> Result<EmailClassification, AiError> {
         self.calls
             .lock()
             .expect("decision calls lock")
             .classify_email += 1;
+        if self.context_limit_at == Some("email_classification") {
+            return Err(AiError::ContextLengthExceeded("provider limit".to_string()));
+        }
         if self.fail_classification {
             return Err(AiError::Provider("classification failed".to_string()));
         }
@@ -273,11 +324,15 @@ impl DecisionEngine for FakeDecisionEngine {
         _config: &AppConfig,
         _mailbox: &MailboxConfig,
         _message: &InboundMessage,
+        _thread_context: &ThreadContext,
     ) -> Result<AgentDecision, AiError> {
         self.calls
             .lock()
             .expect("decision calls lock")
             .agent_decision += 1;
+        if self.context_limit_at == Some("agent_decision") {
+            return Err(AiError::ContextLengthExceeded("provider limit".to_string()));
+        }
         if self.fail_agent {
             return Err(AiError::Provider("agent failed".to_string()));
         }
@@ -292,6 +347,7 @@ impl DecisionEngine for FakeDecisionEngine {
         _config: &AppConfig,
         _mailbox: &MailboxConfig,
         _message: &InboundMessage,
+        _thread_context: &ThreadContext,
         _classification: &EmailClassification,
         _rule: &EmailRule,
     ) -> Result<AgentDecision, AiError> {
@@ -299,6 +355,9 @@ impl DecisionEngine for FakeDecisionEngine {
             .lock()
             .expect("decision calls lock")
             .rule_decision += 1;
+        if self.context_limit_at == Some("rule_decision") {
+            return Err(AiError::ContextLengthExceeded("provider limit".to_string()));
+        }
         if self.fail_rule {
             return Err(AiError::Provider("rule failed".to_string()));
         }
@@ -310,12 +369,16 @@ impl DecisionEngine for FakeDecisionEngine {
         _config: &AppConfig,
         _mailbox: &MailboxConfig,
         _message: &InboundMessage,
+        _thread_context: &ThreadContext,
         decision: &AgentDecision,
     ) -> Result<OutboundReviewDecision, AiError> {
         self.calls
             .lock()
             .expect("decision calls lock")
             .outbound_review += 1;
+        if self.context_limit_at == Some("outbound_review") {
+            return Err(AiError::ContextLengthExceeded("provider limit".to_string()));
+        }
         self.reviewed_actions
             .lock()
             .expect("reviewed actions lock")
@@ -345,6 +408,7 @@ struct FakeProcessingStore {
     touches: Mutex<usize>,
     statuses: Mutex<Vec<String>>,
     matched_rule: Option<EmailRule>,
+    thread_context: Option<ThreadContext>,
 }
 
 impl FakeProcessingStore {
@@ -360,6 +424,7 @@ impl FakeProcessingStore {
             touches: Mutex::new(0),
             statuses: Mutex::new(Vec::new()),
             matched_rule: None,
+            thread_context: None,
         }
     }
 
@@ -390,6 +455,11 @@ impl FakeProcessingStore {
 
     fn with_matched_rule(mut self, rule: EmailRule) -> Self {
         self.matched_rule = Some(rule);
+        self
+    }
+
+    fn with_thread_context(mut self, context: ThreadContext) -> Self {
+        self.thread_context = Some(context);
         self
     }
 
@@ -523,6 +593,17 @@ impl ProcessingStore for FakeProcessingStore {
         }
         Ok(())
     }
+
+    async fn load_thread_context(
+        &self,
+        _mailbox: &MailboxConfig,
+        message: &InboundMessage,
+    ) -> Result<ThreadContext, crate::storage::StorageError> {
+        Ok(self
+            .thread_context
+            .clone()
+            .unwrap_or_else(|| ThreadContext::empty(message.metadata.thread_id())))
+    }
 }
 
 fn fake_decisions(scan: SafetyScanResult, action: OutboundAction) -> FakeDecisionEngine {
@@ -549,6 +630,7 @@ fn fake_decisions(scan: SafetyScanResult, action: OutboundAction) -> FakeDecisio
         hang_agent: false,
         missing_classifier_prompt: false,
         missing_rule_prompt: false,
+        context_limit_at: None,
         calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
         reviewed_actions: Arc::new(Mutex::new(Vec::new())),
     }
@@ -578,6 +660,7 @@ fn rejecting_review_decisions() -> FakeDecisionEngine {
         hang_agent: false,
         missing_classifier_prompt: false,
         missing_rule_prompt: false,
+        context_limit_at: None,
         calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
         reviewed_actions: Arc::new(Mutex::new(Vec::new())),
     }
@@ -607,6 +690,7 @@ fn failing_review_decisions() -> FakeDecisionEngine {
         hang_agent: false,
         missing_classifier_prompt: false,
         missing_rule_prompt: false,
+        context_limit_at: None,
         calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
         reviewed_actions: Arc::new(Mutex::new(Vec::new())),
     }

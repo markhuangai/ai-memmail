@@ -105,6 +105,20 @@ async fn process_message(
         return;
     }
 
+    if message.plain_text.chars().count() > crate::ai::MAX_SERIALIZED_PROMPT_CHARS {
+        forward_context_limit_message(
+            mailbox,
+            logger,
+            run_id,
+            mail,
+            processing,
+            &message,
+            "current message exceeded the configured context limit",
+        )
+        .await;
+        return;
+    }
+
     let scan = match run_ai_step(
         processing,
         &message,
@@ -114,6 +128,19 @@ async fn process_message(
     .await
     {
         Ok(scan) => scan,
+        Err(error) if ai_error_is_context_limit(&error) => {
+            forward_context_limit_message(
+                mailbox,
+                logger,
+                run_id,
+                mail,
+                processing,
+                &message,
+                "AI input exceeded the configured context limit",
+            )
+            .await;
+            return;
+        }
         Err(error) => {
             logger
                 .log(message_event(
@@ -178,15 +205,38 @@ async fn process_message(
         return;
     }
 
+    let thread_context = match load_thread_context_or_retry(
+        mailbox, logger, run_id, processing, &message,
+    )
+    .await
+    {
+        Some(context) => context,
+        None => return,
+    };
+    if thread_context.has_truncated_body() {
+        forward_context_limit_message(
+            mailbox,
+            logger,
+            run_id,
+            mail,
+            processing,
+            &message,
+            "stored thread history was truncated",
+        )
+        .await;
+        return;
+    }
     let needs_human_review = human_review_requested(&message);
     let classification_context = match classify_message_for_rules(
         config,
         mailbox,
         logger,
         run_id,
+        mail,
         decisions,
         processing,
         &message,
+        &thread_context,
         needs_human_review,
     )
     .await
@@ -214,7 +264,14 @@ async fn process_message(
                 processing,
                 &message,
                 "rule_decision",
-                decisions.rule_decision(config, mailbox, &message, &context.raw, rule),
+                decisions.rule_decision(
+                    config,
+                    mailbox,
+                    &message,
+                    &thread_context,
+                    &context.raw,
+                    rule,
+                ),
             )
             .await
             {
@@ -257,7 +314,9 @@ async fn process_message(
                         run_id,
                         decisions,
                         processing,
+                        mail,
                         &message,
+                        &thread_context,
                         decision_started,
                     )
                     .await
@@ -265,6 +324,19 @@ async fn process_message(
                         Some(decision) => decision,
                         None => return,
                     }
+                }
+                Err(error) if ai_error_is_context_limit(&error) => {
+                    forward_context_limit_message(
+                        mailbox,
+                        logger,
+                        run_id,
+                        mail,
+                        processing,
+                        &message,
+                        "AI input exceeded the configured context limit",
+                    )
+                    .await;
+                    return;
                 }
                 Err(error) => {
                     logger
@@ -298,7 +370,9 @@ async fn process_message(
                 run_id,
                 decisions,
                 processing,
+                mail,
                 &message,
+                &thread_context,
                 decision_started,
             )
             .await
@@ -315,7 +389,9 @@ async fn process_message(
             run_id,
             decisions,
             processing,
+            mail,
             &message,
+            &thread_context,
             decision_started,
         )
         .await
@@ -357,6 +433,7 @@ async fn process_message(
                 decisions,
                 processing,
                 &message,
+                &thread_context,
                 &outbound_decision,
             )
             .await
@@ -380,253 +457,6 @@ async fn process_message(
                 mailbox, logger, run_id, mail, processing, &message, action, status,
             )
             .await;
-        }
-    }
-}
-
-async fn classify_message_for_rules(
-    config: &AppConfig,
-    mailbox: &MailboxConfig,
-    logger: &dyn ActionLogger,
-    run_id: &str,
-    decisions: &dyn DecisionEngine,
-    processing: &dyn ProcessingStore,
-    message: &InboundMessage,
-    needs_human_review: bool,
-) -> Option<Option<ClassificationContext>> {
-    let started = Instant::now();
-    match decisions.classifier_prompt_missing(config) {
-        Ok(true) => {
-            log_optional_prompt_skip(
-                logger,
-                run_id,
-                message,
-                "email_classification",
-                started.elapsed(),
-                format!(
-                    "optional prompt missing: {}",
-                    config.prompts.email_classifier.display()
-                ),
-            )
-            .await;
-            return Some(None);
-        }
-        Ok(false) => {}
-        Err(error) => {
-            log_retryable_message_error(
-                logger,
-                processing,
-                run_id,
-                message,
-                "email_classification",
-                started,
-                error.to_string(),
-            )
-            .await;
-            return None;
-        }
-    }
-
-    let taxonomy = match processing.active_email_taxonomy().await {
-        Ok(taxonomy) => taxonomy,
-        Err(error) => {
-            log_retryable_message_error(
-                logger,
-                processing,
-                run_id,
-                message,
-                "email_taxonomy",
-                started,
-                error.to_string(),
-            )
-            .await;
-            return None;
-        }
-    };
-    let raw = match run_ai_step(
-        processing,
-        message,
-        "email_classification",
-        decisions.classify_email(config, mailbox, message, &taxonomy),
-    )
-    .await
-    {
-        Ok(classification) => classification,
-        Err(error) if ai_error_is_missing_prompt(&error) => {
-            log_optional_prompt_skip(
-                logger,
-                run_id,
-                message,
-                "email_classification",
-                started.elapsed(),
-                error.to_string(),
-            )
-            .await;
-            return Some(None);
-        }
-        Err(error) => {
-            log_retryable_message_error(
-                logger,
-                processing,
-                run_id,
-                message,
-                "email_classification",
-                started,
-                error.to_string(),
-            )
-            .await;
-            return None;
-        }
-    };
-    let resolved = match processing.resolve_email_classification(&raw).await {
-        Ok(classification) => classification,
-        Err(error) => {
-            log_retryable_message_error(
-                logger,
-                processing,
-                run_id,
-                message,
-                "email_classification_resolve",
-                started,
-                error.to_string(),
-            )
-            .await;
-            return None;
-        }
-    };
-    log_email_classification(logger, run_id, message, &resolved, started.elapsed()).await;
-
-    let mut matched_rule = if needs_human_review {
-        None
-    } else {
-        match processing
-            .find_matching_email_rule(&mailbox.id, &resolved)
-            .await
-        {
-            Ok(rule) => rule,
-            Err(error) => {
-                log_retryable_message_error(
-                    logger,
-                    processing,
-                    run_id,
-                    message,
-                    "rule_match",
-                    started,
-                    error.to_string(),
-                )
-                .await;
-                return None;
-            }
-        }
-    };
-    let mut decision_source = if needs_human_review {
-        "human_review"
-    } else if matched_rule.is_some() {
-        "rule"
-    } else {
-        "agent"
-    };
-    if needs_human_review {
-        logger
-            .log(message_event(
-                LogLevel::Info,
-                run_id,
-                message,
-                "rule_match",
-                "skipped",
-                started.elapsed(),
-                Some("sender requested human review".to_string()),
-            ))
-            .await;
-    } else {
-        log_rule_match(logger, run_id, message, matched_rule.as_ref(), started.elapsed()).await;
-        if matched_rule.is_some() {
-            match decisions.rule_prompt_missing(config) {
-                Ok(true) => {
-                    log_optional_prompt_skip(
-                        logger,
-                        run_id,
-                        message,
-                        "rule_decision",
-                        started.elapsed(),
-                        format!(
-                            "optional prompt missing: {}",
-                            config.prompts.rule_action.display()
-                        ),
-                    )
-                    .await;
-                    matched_rule = None;
-                    decision_source = "agent";
-                }
-                Ok(false) => {}
-                Err(error) => {
-                    log_retryable_message_error(
-                        logger,
-                        processing,
-                        run_id,
-                        message,
-                        "rule_decision",
-                        started,
-                        error.to_string(),
-                    )
-                    .await;
-                    return None;
-                }
-            }
-        }
-    }
-    record_email_classification_for_history(
-        processing,
-        logger,
-        run_id,
-        message,
-        &resolved,
-        decision_source,
-        matched_rule.as_ref(),
-    )
-    .await;
-
-    Some(Some(ClassificationContext {
-        raw,
-        resolved,
-        matched_rule,
-    }))
-}
-
-async fn agent_decision_or_retry(
-    config: &AppConfig,
-    mailbox: &MailboxConfig,
-    logger: &dyn ActionLogger,
-    run_id: &str,
-    decisions: &dyn DecisionEngine,
-    processing: &dyn ProcessingStore,
-    message: &InboundMessage,
-    started: Instant,
-) -> Option<AgentDecision> {
-    match run_ai_step(
-        processing,
-        message,
-        "agent_decision",
-        decisions.agent_decision(config, mailbox, message),
-    )
-    .await
-    {
-        Ok(decision) => {
-            log_agent_decision(logger, run_id, message, &decision, started.elapsed()).await;
-            Some(decision)
-        }
-        Err(error) => {
-            log_retryable_message_error(
-                logger,
-                processing,
-                run_id,
-                message,
-                "agent_decision",
-                started,
-                error.to_string(),
-            )
-            .await;
-            None
         }
     }
 }
@@ -685,4 +515,8 @@ async fn log_retryable_message_error(
 
 fn ai_error_is_missing_prompt(error: &AiError) -> bool {
     matches!(error, AiError::Prompt(prompt) if prompt.is_not_found())
+}
+
+fn ai_error_is_context_limit(error: &AiError) -> bool {
+    matches!(error, AiError::ContextLengthExceeded(_))
 }

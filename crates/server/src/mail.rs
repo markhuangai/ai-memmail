@@ -5,6 +5,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{AcceptedCondition, MailboxConfig, SmtpConfig};
 
+mod threading;
+
+pub use threading::{
+    extract_authored_text, MessageDirection, QuoteExtraction, ThreadContext, ThreadMessage,
+};
+
 pub const ACCEPTED_CONDITION_RECIPIENT_HEADERS: &[&str] =
     &["To", "Cc", "Delivered-To", "X-Original-To", "Envelope-To"];
 
@@ -58,6 +64,28 @@ pub struct InboundMessage {
     pub plain_text: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentSyncCursor {
+    pub folder_name: String,
+    pub uid_validity: u64,
+    pub last_uid: u64,
+    pub backfill_cutoff: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentMessage {
+    pub message: InboundMessage,
+    pub internal_date: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentFetchBatch {
+    pub folder_name: String,
+    pub uid_validity: u64,
+    pub messages: Vec<SentMessage>,
+    pub complete: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ValidationError {
     pub field: String,
@@ -89,6 +117,18 @@ pub trait MailTransport: Send + Sync {
     async fn send(&self, smtp: &SmtpConfig, action: &OutboundAction) -> Result<(), MailError>;
 
     async fn mark_seen(&self, mailbox: &MailboxConfig, uid: u64) -> Result<(), MailError>;
+
+    async fn fetch_sent(
+        &self,
+        _mailbox: &MailboxConfig,
+        _cursor: Option<&SentSyncCursor>,
+        _backfill_cutoff: i64,
+        _limit: usize,
+    ) -> Result<SentFetchBatch, MailError> {
+        Err(MailError::Imap(
+            "Sent synchronization is unavailable".to_string(),
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -104,6 +144,18 @@ pub trait BlockingMailClient: Send + Sync + Clone + 'static {
     fn send(&self, smtp: &SmtpConfig, action: &OutboundAction) -> Result<(), MailError>;
 
     fn mark_seen(&self, mailbox: &MailboxConfig, uid: u64) -> Result<(), MailError>;
+
+    fn fetch_sent(
+        &self,
+        _mailbox: &MailboxConfig,
+        _cursor: Option<&SentSyncCursor>,
+        _backfill_cutoff: i64,
+        _limit: usize,
+    ) -> Result<SentFetchBatch, MailError> {
+        Err(MailError::Imap(
+            "Sent synchronization is unavailable".to_string(),
+        ))
+    }
 }
 
 impl BlockingMailClient for SystemMailClient {
@@ -121,6 +173,16 @@ impl BlockingMailClient for SystemMailClient {
 
     fn mark_seen(&self, mailbox: &MailboxConfig, uid: u64) -> Result<(), MailError> {
         crate::mail_external::mark_seen_blocking(mailbox, uid)
+    }
+
+    fn fetch_sent(
+        &self,
+        mailbox: &MailboxConfig,
+        cursor: Option<&SentSyncCursor>,
+        backfill_cutoff: i64,
+        limit: usize,
+    ) -> Result<SentFetchBatch, MailError> {
+        crate::mail_external::fetch_sent_blocking(mailbox, cursor, backfill_cutoff, limit)
     }
 }
 
@@ -175,6 +237,23 @@ where
         tokio::task::spawn_blocking(move || client.mark_seen(&mailbox, uid))
             .await
             .map_err(|error| MailError::Task(error.to_string()))?
+    }
+
+    async fn fetch_sent(
+        &self,
+        mailbox: &MailboxConfig,
+        cursor: Option<&SentSyncCursor>,
+        backfill_cutoff: i64,
+        limit: usize,
+    ) -> Result<SentFetchBatch, MailError> {
+        let client = self.client.clone();
+        let mailbox = mailbox.clone();
+        let cursor = cursor.cloned();
+        tokio::task::spawn_blocking(move || {
+            client.fetch_sent(&mailbox, cursor.as_ref(), backfill_cutoff, limit)
+        })
+        .await
+        .map_err(|error| MailError::Task(error.to_string()))?
     }
 }
 

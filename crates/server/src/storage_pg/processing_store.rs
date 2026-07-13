@@ -14,8 +14,9 @@ impl ProcessingStore for PgStore {
             .query_opt(
                 "INSERT INTO processing_runs
                 (run_id, mailbox_id, uid_validity, uid, thread_id, message_id, in_reply_to,
-                    message_references, from_addr, subject, inbound_body, inbound_body_truncated, status)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                    message_references, from_addr, inbound_recipients, subject, inbound_body,
+                    inbound_body_truncated, status)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 ON CONFLICT (mailbox_id, uid_validity, uid) DO NOTHING
                 RETURNING status",
                 &[
@@ -28,6 +29,7 @@ impl ProcessingStore for PgStore {
                     &message.metadata.in_reply_to,
                     &message.metadata.references,
                     &message.metadata.from_addr,
+                    &message.metadata.recipients,
                     &message.metadata.subject,
                     &inbound_body,
                     &inbound_body_truncated,
@@ -63,10 +65,11 @@ impl ProcessingStore for PgStore {
                     "UPDATE processing_runs
                     SET run_id = $1, status = $2, thread_id = $3, message_id = $4,
                         in_reply_to = $5, message_references = $6, from_addr = $7,
-                        subject = $8, inbound_body = $9, inbound_body_truncated = $10,
+                        inbound_recipients = $8, subject = $9, inbound_body = $10,
+                        inbound_body_truncated = $11,
                         updated_at = now()
-                    WHERE mailbox_id = $11 AND uid_validity = $12 AND uid = $13
-                        AND (status IN ($14, $15) OR (status = $2 AND updated_at < now() - make_interval(mins => $16::int)))
+                    WHERE mailbox_id = $12 AND uid_validity = $13 AND uid = $14
+                        AND (status IN ($15, $16) OR (status = $2 AND updated_at < now() - make_interval(mins => $17::int)))
                     RETURNING status",
                     &[
                         &run_id,
@@ -76,6 +79,7 @@ impl ProcessingStore for PgStore {
                         &message.metadata.in_reply_to,
                         &message.metadata.references,
                         &message.metadata.from_addr,
+                        &message.metadata.recipients,
                         &message.metadata.subject,
                         &inbound_body,
                         &inbound_body_truncated,
@@ -498,6 +502,31 @@ impl ProcessingStore for PgStore {
             )
             .await?;
         Ok(())
+    }
+
+    async fn sent_sync_state(
+        &self,
+        mailbox_id: &str,
+    ) -> Result<Option<SentSyncState>, StorageError> {
+        self.sent_sync_state_impl(mailbox_id).await
+    }
+
+    async fn record_sent_batch(
+        &self,
+        mailbox_id: &str,
+        backfill_cutoff: i64,
+        batch: &SentFetchBatch,
+    ) -> Result<(), StorageError> {
+        self.record_sent_batch_impl(mailbox_id, backfill_cutoff, batch)
+            .await
+    }
+
+    async fn load_thread_context(
+        &self,
+        mailbox: &MailboxConfig,
+        message: &InboundMessage,
+    ) -> Result<ThreadContext, StorageError> {
+        self.load_thread_context_impl(mailbox, message).await
     }
 
 }

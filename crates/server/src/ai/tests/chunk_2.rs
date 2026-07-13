@@ -10,12 +10,32 @@ async fn live_decision_engine_classifies_with_configured_taxonomy() {
     ]);
     let engine =
         LiveDecisionEngine::new(chat.clone(), FakeMcpContextProvider::new("unused context"));
+    let message = inbound(
+        "Re: Paid PR",
+        "No thanks.\n\nOn Monday, Vendor wrote:\n> We can get you coverage.",
+    );
+    let thread_context = ThreadContext {
+        thread_id: "<root@example.com>".to_string(),
+        messages: vec![crate::mail::ThreadMessage {
+            direction: crate::mail::MessageDirection::Outbound,
+            message_id: Some("<root@example.com>".to_string()),
+            in_reply_to: None,
+            references: vec![],
+            from_addr: "support@example.com".to_string(),
+            recipients: vec!["vendor@example.com".to_string()],
+            subject: "Paid PR".to_string(),
+            authored_text: "Are you offering paid coverage?".to_string(),
+            body_truncated: false,
+            timestamp: 1,
+        }],
+    };
 
     let classification = engine
         .classify_email(
             &config,
             &mailbox,
-            &inbound("Paid PR", "We can get you coverage."),
+            &message,
+            &thread_context,
             &EmailTaxonomy {
                 categories: vec![crate::classification::EmailCategory {
                     id: 1,
@@ -44,8 +64,11 @@ async fn live_decision_engine_classifies_with_configured_taxonomy() {
     let requests = chat.requests();
     assert_eq!(requests.len(), 1);
     let payload = requests[0][1]["content"].as_str().unwrap();
+    let payload_json: Value = serde_json::from_str(payload).unwrap();
     assert!(payload.contains("marketing_vendor"));
     assert!(payload.contains("untrusted_email"));
+    assert!(payload.contains("Are you offering paid coverage?"));
+    assert_eq!(payload_json["untrusted_email"]["plain_text"], "No thanks.");
 }
 
 #[tokio::test]
@@ -69,6 +92,7 @@ async fn live_decision_engine_uses_rule_prompt_and_mcp_context() {
             &config,
             &mailbox,
             &inbound("Paid PR", "We can get you coverage."),
+            &ThreadContext::empty("thread".to_string()),
             &EmailClassification {
                 category: "marketing_vendor".to_string(),
                 topics: vec!["general".to_string()],
@@ -120,6 +144,7 @@ async fn live_decision_engine_uses_review_prompt_for_outbound_review() {
             &config,
             &mailbox,
             &inbound("Question", "What coverage?"),
+            &ThreadContext::empty("thread".to_string()),
             &decision,
         )
         .await

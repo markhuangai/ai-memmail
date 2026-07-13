@@ -71,7 +71,9 @@ export function addMailbox(config: AppConfig): AppConfig {
       tls: true,
       username: address,
       password: "",
-      folder: "INBOX"
+      folder: "INBOX",
+      sent_folder: null,
+      sent_backfill_days: 30
     },
     smtp: {
       host: "smtp.example.com",

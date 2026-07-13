@@ -58,6 +58,8 @@ mailboxes:
       username: support@example.com
       password: "replace-local-secret"
       folder: INBOX
+      sent_folder: null
+      sent_backfill_days: 30
     smtp:
       host: smtp.example.com
       port: 587

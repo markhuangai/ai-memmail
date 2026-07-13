@@ -45,6 +45,11 @@ fn migration_runner_defines_version_tracking() {
     assert_eq!(MIGRATIONS[3].version, 4);
     assert_eq!(MIGRATIONS[3].name, "004_default_email_rule_seed_uniqueness");
     assert_eq!(MIGRATIONS[3].sql, DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL);
+    assert_eq!(MIGRATIONS[4].version, 5);
+    assert_eq!(MIGRATIONS[4].name, "005_sent_thread_context");
+    assert_eq!(MIGRATIONS[4].sql, SENT_THREAD_CONTEXT_SQL);
+    assert!(SENT_THREAD_CONTEXT_SQL.contains("CREATE TABLE IF NOT EXISTS sent_messages"));
+    assert!(SENT_THREAD_CONTEXT_SQL.contains("CREATE TABLE IF NOT EXISTS mailbox_sync_state"));
 }
 
 #[test]
