@@ -61,6 +61,8 @@ fn valid_config() -> AppConfig {
                 username: "support@example.com".to_string(),
                 password: "imap-secret".to_string(),
                 folder: "INBOX".to_string(),
+                sent_folder: None,
+                sent_backfill_days: 0,
             },
             smtp: SmtpConfig {
                 host: "smtp.example.com".to_string(),
@@ -350,6 +352,8 @@ smtp:
     .unwrap();
 
     assert!(mailbox.accepted_conditions.is_empty());
+    assert_eq!(mailbox.imap.sent_folder, None);
+    assert_eq!(mailbox.imap.sent_backfill_days, 30);
 }
 
 #[test]
@@ -513,6 +517,13 @@ fn rejects_incomplete_enabled_mailbox_connection_settings() {
     let mut config = valid_config();
     config.mailboxes[0].imap.folder.clear();
     assert_invalid_config(config, "mailbox support imap.folder is required");
+
+    let mut config = valid_config();
+    config.mailboxes[0].imap.sent_folder = Some("  ".to_string());
+    assert_invalid_config(
+        config,
+        "mailbox support imap.sent_folder must not be empty when provided",
+    );
 
     let mut config = valid_config();
     config.mailboxes[0].smtp.host.clear();

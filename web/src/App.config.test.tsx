@@ -90,6 +90,12 @@ describe("App config", () => {
     fireEvent.change(screen.getByLabelText(/imap folder/i), {
       target: { value: "Support" }
     });
+    fireEvent.change(screen.getByLabelText(/imap sent folder override/i), {
+      target: { value: "Sent Items" }
+    });
+    fireEvent.change(screen.getByLabelText(/sent backfill days/i), {
+      target: { value: "45" }
+    });
     fireEvent.click(screen.getByLabelText(/imap tls/i));
     fireEvent.change(screen.getByLabelText(/smtp host/i), {
       target: { value: "smtp.changed.test" }
@@ -145,6 +151,8 @@ describe("App config", () => {
         username: "imap-user",
         password: "imap-password",
         folder: "Support",
+        sent_folder: "Sent Items",
+        sent_backfill_days: 45,
         tls: false
       },
       smtp: {

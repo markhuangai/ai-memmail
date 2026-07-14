@@ -60,8 +60,8 @@ The repository now contains the v1 application foundation:
 
 PostgreSQL persistence tracks processing run state, processed-message history,
 structured decisions, classification results, rule matches, outbound actions,
-and action logs. The worker still relies on IMAP `UNSEEN` plus `Seen` marking
-for source-mail delivery state.
+manual Sent messages, mailbox sync cursors, and action logs. The worker still
+relies on IMAP `UNSEEN` plus `Seen` marking for source-mail delivery state.
 
 ## Local Setup
 
@@ -119,6 +119,7 @@ commit local credentials.
 ## v1 Architecture
 
 ```text
+IMAP Sent mailbox -> canonical outbound thread history
 IMAP inbox
   -> worker fetches message metadata and body
   -> metadata is stored in PostgreSQL
@@ -161,6 +162,29 @@ outbound mail. OAuth2 is intentionally out of scope for v1.
 After successful processing, ai-memmail marks the source message as `Seen`.
 Deduplication uses mailbox id plus IMAP `UIDVALIDITY` and UID so repeated polls
 do not send duplicate replies.
+
+### Thread context and size limits
+
+Before processing unseen inbox mail, the worker synchronizes the mailbox's
+manual Sent messages into PostgreSQL. It auto-discovers exactly one IMAP folder
+advertised with the `\Sent` special-use attribute; set `imap.sent_folder` when
+the server does not advertise one or advertises more than one. The first sync
+backfills `imap.sent_backfill_days` (30 by default), then resumes by folder,
+`UIDVALIDITY`, and UID. Inbox processing fails closed while this sync fails or
+the initial backfill is incomplete so a reply is not generated without known
+outbound history. Set the backfill to `0` only to disable Sent synchronization.
+
+`Message-ID`, `In-Reply-To`, and `References` link manual Sent messages,
+processed inbound messages, and application replies into one mailbox-scoped
+canonical thread. The full ordered thread is included as untrusted AI input.
+When canonical history is available, common client quote blocks are removed
+from the current authored reply so the same prior text is not duplicated.
+
+Stored bodies remain capped at 64 KiB. AI requests have a hard limit of
+1,000,000 serialized characters. A required prior body that was truncated, a
+locally oversized request, or a provider context-limit response immediately
+forwards the current message to the configured human reviewer. The worker does
+not summarize, drop required history, or retry with a smaller AI prompt.
 
 ## Untrusted Email Policy
 
@@ -283,6 +307,8 @@ mailboxes:
       username: support@example.com
       password: "replace-local-secret"
       folder: INBOX
+      sent_folder: null
+      sent_backfill_days: 30
     smtp:
       host: smtp.example.com
       port: 587

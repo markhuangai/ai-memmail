@@ -12,7 +12,10 @@ use crate::classification::{
 };
 use crate::config::AppConfig;
 use crate::logging::LogLevel;
-use crate::mail::{DedupeKey, InboundMessage, OutboundAction, OutboundActionKind};
+use crate::mail::{
+    DedupeKey, InboundMessage, OutboundAction, OutboundActionKind, SentFetchBatch, SentSyncCursor,
+    ThreadContext,
+};
 use crate::safety::SafetyCategory;
 pub use crate::storage_pg::PgStore;
 
@@ -51,6 +54,7 @@ pub const EMAIL_CLASSIFICATION_RULES_SQL: &str =
     include_str!("../migrations/003_email_classification_rules.sql");
 pub const DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL: &str =
     include_str!("../migrations/004_default_email_rule_seed_uniqueness.sql");
+pub const SENT_THREAD_CONTEXT_SQL: &str = include_str!("../migrations/005_sent_thread_context.sql");
 pub(crate) const MIGRATION_LOCK_ID: i64 = 4_971_774_501_001;
 pub(crate) const SCHEMA_MIGRATIONS_SQL: &str = "
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -81,6 +85,11 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "004_default_email_rule_seed_uniqueness",
         sql: DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL,
     },
+    Migration {
+        version: 5,
+        name: "005_sent_thread_context",
+        sql: SENT_THREAD_CONTEXT_SQL,
+    },
 ];
 pub const PROCESSING_STATUS_PROCESSING: &str = "processing";
 pub const PROCESSING_STATUS_RETRYABLE_FAILED: &str = "retryable_failed";
@@ -93,6 +102,12 @@ pub enum ProcessingClaim {
     Claimed,
     InProgress { status: String },
     AlreadyFinished { status: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentSyncState {
+    pub cursor: SentSyncCursor,
+    pub initial_backfill_complete: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,6 +240,30 @@ pub trait ProcessingStore: Send + Sync {
     ) -> Result<(), StorageError> {
         let _ = (key, classification, decision_source, matched_rule);
         Ok(())
+    }
+
+    async fn sent_sync_state(
+        &self,
+        _mailbox_id: &str,
+    ) -> Result<Option<SentSyncState>, StorageError> {
+        Ok(None)
+    }
+
+    async fn record_sent_batch(
+        &self,
+        _mailbox_id: &str,
+        _backfill_cutoff: i64,
+        _batch: &SentFetchBatch,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn load_thread_context(
+        &self,
+        _mailbox: &crate::config::MailboxConfig,
+        message: &InboundMessage,
+    ) -> Result<ThreadContext, StorageError> {
+        Ok(ThreadContext::empty(message.metadata.thread_id()))
     }
 }
 

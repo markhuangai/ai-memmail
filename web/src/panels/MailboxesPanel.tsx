@@ -278,6 +278,40 @@ export function Mailboxes({
                 }
               />
             </label>
+            <label>
+              IMAP Sent folder override
+              <input
+                placeholder="Auto-discover \\Sent"
+                value={mailbox.imap.sent_folder ?? ""}
+                onChange={(event) =>
+                  patchMailbox(mailbox.id, (next) => ({
+                    ...next,
+                    imap: {
+                      ...next.imap,
+                      sent_folder: event.target.value.trim() || null
+                    }
+                  }))
+                }
+              />
+            </label>
+            <label>
+              Sent backfill days
+              <input
+                type="number"
+                min="0"
+                max="65535"
+                value={mailbox.imap.sent_backfill_days}
+                onChange={(event) =>
+                  patchMailbox(mailbox.id, (next) => ({
+                    ...next,
+                    imap: {
+                      ...next.imap,
+                      sent_backfill_days: Number(event.target.value)
+                    }
+                  }))
+                }
+              />
+            </label>
             <label className="switch">
               <input
                 type="checkbox"

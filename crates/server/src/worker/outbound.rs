@@ -61,6 +61,7 @@ async fn reviewed_outbound_action(
     decisions: &dyn DecisionEngine,
     processing: &dyn ProcessingStore,
     message: &InboundMessage,
+    thread_context: &ThreadContext,
     decision: &AgentDecision,
 ) -> Option<OutboundAction> {
     if !config.ai.review.enabled {
@@ -72,7 +73,7 @@ async fn reviewed_outbound_action(
         processing,
         message,
         "outbound_review",
-        decisions.outbound_review(config, mailbox, message, decision),
+        decisions.outbound_review(config, mailbox, message, thread_context, decision),
     )
     .await
     {
@@ -125,6 +126,38 @@ async fn reviewed_outbound_action(
                 message,
                 &decision.action,
                 &review,
+            ))
+        }
+        Err(error) if ai_error_is_context_limit(&error) => {
+            logger
+                .log(message_event(
+                    LogLevel::Warn,
+                    run_id,
+                    message,
+                    "outbound_review",
+                    "context_limit_forward",
+                    started.elapsed(),
+                    Some(error.to_string()),
+                ))
+                .await;
+            record_outbound_review_for_history(
+                processing,
+                logger,
+                run_id,
+                message,
+                "context_limit_forward",
+                "AI input exceeded the configured context limit",
+            )
+            .await;
+            let decision = forward_decision(
+                mailbox,
+                message,
+                "AI input exceeded the configured context limit",
+            );
+            Some(action_with_runtime_fields(
+                mailbox,
+                message,
+                &decision.action,
             ))
         }
         Err(error) => {

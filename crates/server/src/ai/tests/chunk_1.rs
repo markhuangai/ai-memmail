@@ -335,6 +335,14 @@ fn human_review_detection_matches_explicit_requests() {
 }
 
 #[test]
+fn serialized_prompt_limit_counts_json_escaping() {
+    let escaped = "\n".repeat(MAX_SERIALIZED_PROMPT_CHARS / 2);
+    let error = bounded_chat_messages(escaped, String::new()).unwrap_err();
+
+    assert!(matches!(error, AiError::ContextLengthExceeded(_)));
+}
+
+#[test]
 fn forward_decision_uses_default_forward_recipients() {
     let mailbox = mailbox_config();
     let decision = forward_decision(&mailbox, &inbound("Review", "Please escalate"), "asked");
@@ -542,7 +550,12 @@ async fn live_decision_engine_includes_mcp_context_in_agent_prompt() {
     let engine = LiveDecisionEngine::new(chat.clone(), mcp.clone());
 
     let decision = engine
-        .agent_decision(&config, &mailbox, &inbound("Question", "What coverage?"))
+        .agent_decision(
+            &config,
+            &mailbox,
+            &inbound("Question", "What coverage?"),
+            &ThreadContext::empty("thread".to_string()),
+        )
         .await
         .unwrap();
 

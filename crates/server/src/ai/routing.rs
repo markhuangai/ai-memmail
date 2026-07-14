@@ -175,6 +175,23 @@ fn chat_message(role: &str, content: String) -> Value {
     serde_json::json!({ "role": role, "content": content })
 }
 
+fn bounded_chat_messages(system: String, user: String) -> Result<Vec<Value>, AiError> {
+    let messages = vec![
+        chat_message("system", system),
+        chat_message("user", user),
+    ];
+    let serialized_chars = serde_json::to_string(&messages)
+        .map_err(|error| AiError::Provider(error.to_string()))?
+        .chars()
+        .count();
+    if serialized_chars > MAX_SERIALIZED_PROMPT_CHARS {
+        return Err(AiError::ContextLengthExceeded(format!(
+            "serialized prompt has {serialized_chars} characters; limit is {MAX_SERIALIZED_PROMPT_CHARS}"
+        )));
+    }
+    Ok(messages)
+}
+
 pub(crate) fn chat_completions_url(api_url: &str) -> String {
     let trimmed = api_url.trim_end_matches('/');
     if trimmed.ends_with("/chat/completions") {

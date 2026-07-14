@@ -22,6 +22,7 @@ fn failing_safety_decisions() -> FakeDecisionEngine {
         hang_agent: false,
         missing_classifier_prompt: false,
         missing_rule_prompt: false,
+        context_limit_at: None,
         calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
         reviewed_actions: Arc::new(Mutex::new(Vec::new())),
     }
@@ -50,6 +51,7 @@ fn failing_agent_decisions() -> FakeDecisionEngine {
         hang_agent: false,
         missing_classifier_prompt: false,
         missing_rule_prompt: false,
+        context_limit_at: None,
         calls: Arc::new(Mutex::new(DecisionCallCounts::default())),
         reviewed_actions: Arc::new(Mutex::new(Vec::new())),
     }

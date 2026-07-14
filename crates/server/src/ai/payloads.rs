@@ -69,6 +69,7 @@ pub fn parse_outbound_review(raw: &str) -> Result<OutboundReviewDecision, AiErro
 pub fn build_outbound_review_payload(
     mailbox: &MailboxConfig,
     message: &InboundMessage,
+    thread_context: &ThreadContext,
     decision: &AgentDecision,
 ) -> String {
     serde_json::json!({
@@ -82,8 +83,9 @@ pub fn build_outbound_review_payload(
         "untrusted_email": {
             "from_addr": message.metadata.from_addr,
             "subject": message.metadata.subject,
-            "plain_text": message.plain_text,
+            "plain_text": current_authored_text(message, thread_context),
         },
+        "thread_context": thread_context,
         "proposed_action": {
             "kind": decision.action.kind,
             "recipients": decision.action.recipients,
@@ -99,6 +101,7 @@ pub fn build_outbound_review_payload(
 pub fn build_classifier_payload(
     mailbox: &MailboxConfig,
     message: &InboundMessage,
+    thread_context: &ThreadContext,
     taxonomy: &EmailTaxonomy,
 ) -> String {
     serde_json::json!({
@@ -119,10 +122,11 @@ pub fn build_classifier_payload(
                 "description": topic.description,
             })
         }).collect::<Vec<_>>(),
+        "thread_context": thread_context,
         "untrusted_email": {
             "from_addr": message.metadata.from_addr,
             "subject": message.metadata.subject,
-            "plain_text": message.plain_text,
+            "plain_text": current_authored_text(message, thread_context),
         }
     })
     .to_string()
@@ -131,6 +135,7 @@ pub fn build_classifier_payload(
 pub fn build_rule_action_payload(
     mailbox: &MailboxConfig,
     message: &InboundMessage,
+    thread_context: &ThreadContext,
     classification: &EmailClassification,
     rule: &EmailRule,
     memory_context: String,
@@ -153,13 +158,18 @@ pub fn build_rule_action_payload(
             "reply_goal": rule.reply_goal,
         },
         "mcp_memory_context": memory_context,
+        "thread_context": thread_context,
         "untrusted_email": {
             "from_addr": message.metadata.from_addr,
             "subject": message.metadata.subject,
-            "plain_text": message.plain_text,
+            "plain_text": current_authored_text(message, thread_context),
         }
     })
     .to_string()
+}
+
+fn current_authored_text(message: &InboundMessage, thread_context: &ThreadContext) -> String {
+    extract_authored_text(&message.plain_text, !thread_context.messages.is_empty()).authored_text
 }
 
 pub fn rule_draft_to_decision(

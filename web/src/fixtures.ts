@@ -62,7 +62,9 @@ export const sampleConfig: AppConfig = {
         tls: true,
         username: "support@example.com",
         password: "********",
-        folder: "INBOX"
+        folder: "INBOX",
+        sent_folder: null,
+        sent_backfill_days: 30
       },
       smtp: {
         host: "smtp.example.com",

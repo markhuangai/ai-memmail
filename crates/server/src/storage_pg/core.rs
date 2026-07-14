@@ -266,14 +266,30 @@ impl PgStore {
             .query_opt(
                 "SELECT thread_id
                 FROM processing_runs
-                WHERE message_id = ANY($1) OR outbound_message_id = ANY($1)
+                WHERE mailbox_id = $1
+                    AND (message_id = ANY($2) OR outbound_message_id = ANY($2))
                 ORDER BY updated_at ASC
                 LIMIT 1",
-                &[&related_ids],
+                &[&message.metadata.mailbox_id, &related_ids],
             )
             .await?;
-        Ok(row
-            .and_then(|row| row.get::<_, Option<String>>(0))
+        let thread_id = row.and_then(|row| row.get::<_, Option<String>>(0));
+        let thread_id = if thread_id.is_some() {
+            thread_id
+        } else {
+            self.client
+                .query_opt(
+                    "SELECT thread_id
+                    FROM sent_messages
+                    WHERE mailbox_id = $1 AND message_id = ANY($2)
+                    ORDER BY internal_date_epoch ASC NULLS LAST, uid ASC
+                    LIMIT 1",
+                    &[&message.metadata.mailbox_id, &related_ids],
+                )
+                .await?
+                .and_then(|row| row.get::<_, Option<String>>(0))
+        };
+        Ok(thread_id
             .filter(|thread_id| !thread_id.trim().is_empty())
             .unwrap_or_else(|| message.metadata.thread_id()))
     }

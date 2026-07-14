@@ -76,6 +76,8 @@ fn app_config_with_mailboxes(ids: Vec<&str>) -> AppConfig {
                     username: format!("{id}@example.com"),
                     password: "secret".to_string(),
                     folder: "INBOX".to_string(),
+                    sent_folder: None,
+                    sent_backfill_days: 0,
                 },
                 smtp: SmtpConfig {
                     host: "smtp.example.com".to_string(),

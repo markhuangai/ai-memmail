@@ -60,6 +60,7 @@ async fn processing_store_trait_defaults_are_noops() {
         safety_notes: "safe".to_string(),
     };
 
+    store.touch_processing(&key).await.unwrap();
     store.record_agent_decision(&key, &decision).await.unwrap();
     store
         .record_outbound_action(&key, &decision.action)
@@ -90,6 +91,20 @@ async fn processing_store_trait_defaults_are_noops() {
         .await
         .unwrap();
     assert_eq!(resolved.category, "question");
+
+    let fallback = store
+        .resolve_email_classification(&EmailClassification {
+            category: "not-in-the-taxonomy".to_string(),
+            topics: vec![],
+            reason: "exercise fallback policy".to_string(),
+            confidence: 101,
+        })
+        .await
+        .unwrap();
+    assert_eq!(fallback.category, "other");
+    assert_eq!(fallback.topics, vec!["general"]);
+    assert_eq!(fallback.confidence, 100);
+
     assert_eq!(
         store
             .find_matching_email_rule("support", &resolved)
@@ -101,4 +116,26 @@ async fn processing_store_trait_defaults_are_noops() {
         .record_email_classification(&key, &resolved, "agent", None)
         .await
         .unwrap();
+
+    assert_eq!(store.sent_sync_state("support").await.unwrap(), None);
+    store
+        .record_sent_batch(
+            "support",
+            1_700_000_000,
+            &crate::mail::SentFetchBatch {
+                folder_name: "Sent".to_string(),
+                uid_validity: 2,
+                messages: vec![],
+                complete: true,
+            },
+        )
+        .await
+        .unwrap();
+    let config = app_config_with_mailboxes(vec!["support"]);
+    let context = store
+        .load_thread_context(&config.mailboxes[0], &message)
+        .await
+        .unwrap();
+    assert_eq!(context.thread_id, message.metadata.thread_id());
+    assert!(context.messages.is_empty());
 }

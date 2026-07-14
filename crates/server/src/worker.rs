@@ -15,6 +15,7 @@ use crate::logging::{
 use crate::mail::{
     automated_reply_body, forward_body, message_matches_accepted_conditions, reply_references,
     InboundMessage, LiveMailTransport, MailTransport, OutboundAction, OutboundActionKind,
+    ThreadContext,
 };
 use crate::safety::{
     decide, sender_is_banned, suspicious_forward_intro, suspicious_forward_subject, SafetyDecision,
@@ -149,7 +150,9 @@ pub async fn run_once_with_store(
     }
 
     for mailbox in config.mailboxes.iter().filter(|mailbox| mailbox.enabled) {
-        process_mailbox(config, mailbox, logger, run_id, mail, decisions, processing).await;
+        if sync_sent_mailbox(mailbox, logger, run_id, mail, processing).await {
+            process_mailbox(config, mailbox, logger, run_id, mail, decisions, processing).await;
+        }
     }
 }
 
@@ -199,6 +202,12 @@ pub fn should_forward_for_human_review(decision: &SafetyDecision) -> bool {
 }
 
 include!("worker/step_timeout.rs");
+
+include!("worker/sent_sync.rs");
+
+include!("worker/thread_context.rs");
+
+include!("worker/classification.rs");
 
 include!("worker/process.rs");
 
