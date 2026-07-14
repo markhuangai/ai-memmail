@@ -89,18 +89,24 @@ impl PgStore {
                     last_uid = CASE
                         WHEN mailbox_sync_state.folder_name = EXCLUDED.folder_name
                             AND mailbox_sync_state.uid_validity = EXCLUDED.uid_validity
+                            AND EXCLUDED.backfill_cutoff_epoch
+                                >= mailbox_sync_state.backfill_cutoff_epoch
                         THEN GREATEST(mailbox_sync_state.last_uid, EXCLUDED.last_uid)
                         ELSE EXCLUDED.last_uid
                     END,
                     backfill_cutoff_epoch = CASE
                         WHEN mailbox_sync_state.folder_name = EXCLUDED.folder_name
                             AND mailbox_sync_state.uid_validity = EXCLUDED.uid_validity
+                            AND EXCLUDED.backfill_cutoff_epoch
+                                >= mailbox_sync_state.backfill_cutoff_epoch
                         THEN mailbox_sync_state.backfill_cutoff_epoch
                         ELSE EXCLUDED.backfill_cutoff_epoch
                     END,
                     initial_backfill_complete = CASE
                         WHEN mailbox_sync_state.folder_name = EXCLUDED.folder_name
                             AND mailbox_sync_state.uid_validity = EXCLUDED.uid_validity
+                            AND EXCLUDED.backfill_cutoff_epoch
+                                >= mailbox_sync_state.backfill_cutoff_epoch
                         THEN mailbox_sync_state.initial_backfill_complete
                             OR EXCLUDED.initial_backfill_complete
                         ELSE EXCLUDED.initial_backfill_complete
@@ -137,7 +143,8 @@ impl PgStore {
                 (EXTRACT(EPOCH FROM updated_at))::BIGINT
             FROM processing_runs
             WHERE mailbox_id = $1 AND thread_id = $2
-                AND NOT (uid_validity = $3 AND uid = $4)",
+                AND NOT (uid_validity = $3 AND uid = $4)
+                AND safety_category = 'safe'",
                 &[
                     &mailbox.id,
                     &thread_id,

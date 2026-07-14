@@ -583,6 +583,10 @@ async fn pg_store_links_manual_sent_message_to_inbound_reply_context() {
         .unwrap();
     let failed_key = failed_inbound.metadata.dedupe_key();
     pg.store
+        .record_safety_result(&failed_key, &SafetyCategory::Safe, "routine")
+        .await
+        .unwrap();
+    pg.store
         .record_outbound_action(
             &failed_key,
             &OutboundAction {

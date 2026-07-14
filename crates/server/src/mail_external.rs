@@ -59,14 +59,7 @@ fn fetch_sent_with_session<T: Read + Write>(
         .uid_validity
         .ok_or_else(|| MailError::Imap("Sent mailbox did not report UIDVALIDITY".to_string()))?
         as u64;
-    let last_uid = cursor
-        .filter(|cursor| cursor.folder_name == folder_name && cursor.uid_validity == uid_validity)
-        .map(|cursor| cursor.last_uid)
-        .unwrap_or_default();
-    let cutoff = cursor
-        .filter(|cursor| cursor.folder_name == folder_name && cursor.uid_validity == uid_validity)
-        .map(|cursor| cursor.backfill_cutoff)
-        .unwrap_or(backfill_cutoff);
+    let (last_uid, cutoff) = sent_sync_range(cursor, &folder_name, uid_validity, backfill_cutoff);
     let mut uids = sent_uids(&mut session, last_uid, cutoff)?;
     uids.sort_unstable();
     let complete = uids.len() <= limit;
@@ -133,17 +126,40 @@ fn sent_uids<T: Read + Write>(
     last_uid: u64,
     cutoff: i64,
 ) -> Result<Vec<u32>, MailError> {
+    let Some(query) = sent_uid_query(last_uid, cutoff)? else {
+        return Ok(Vec::new());
+    };
+    uid_search(session, &query)
+}
+
+fn sent_sync_range(
+    cursor: Option<&SentSyncCursor>,
+    folder_name: &str,
+    uid_validity: u64,
+    requested_cutoff: i64,
+) -> (u64, i64) {
+    match cursor
+        .filter(|cursor| cursor.folder_name == folder_name && cursor.uid_validity == uid_validity)
+    {
+        Some(cursor) if requested_cutoff >= cursor.backfill_cutoff => {
+            (cursor.last_uid, cursor.backfill_cutoff)
+        }
+        _ => (0, requested_cutoff),
+    }
+}
+
+fn sent_uid_query(last_uid: u64, cutoff: i64) -> Result<Option<String>, MailError> {
     let cutoff = DateTime::<Utc>::from_timestamp(cutoff, 0)
         .ok_or_else(|| MailError::Imap("Sent backfill cutoff is invalid".to_string()))?;
     let since = cutoff.format("%d-%b-%Y");
     let query = if last_uid == 0 {
         format!("SINCE {since}")
     } else if last_uid >= u32::MAX as u64 {
-        return Ok(Vec::new());
+        return Ok(None);
     } else {
-        format!("UID {}:* SINCE {since}", last_uid + 1)
+        format!("UID {}:{} SINCE {since}", last_uid + 1, u32::MAX)
     };
-    uid_search(session, &query)
+    Ok(Some(query))
 }
 
 fn fetch_unseen_with_session<T: Read + Write>(
@@ -389,6 +405,31 @@ mod tests {
         }];
 
         assert_eq!(recipient_prefilter_queries(&mailbox), None);
+    }
+
+    #[test]
+    fn sent_uid_query_uses_non_reversing_upper_bound() {
+        assert_eq!(
+            sent_uid_query(42, 0).unwrap().as_deref(),
+            Some("UID 43:4294967295 SINCE 01-Jan-1970")
+        );
+        assert_eq!(sent_uid_query(u32::MAX as u64, 0).unwrap(), None);
+    }
+
+    #[test]
+    fn sent_sync_range_restarts_when_backfill_expands() {
+        let cursor = SentSyncCursor {
+            folder_name: "Sent".to_string(),
+            uid_validity: 7,
+            last_uid: 900,
+            backfill_cutoff: 2_000,
+        };
+
+        assert_eq!(
+            sent_sync_range(Some(&cursor), "Sent", 7, 2_100),
+            (900, 2_000)
+        );
+        assert_eq!(sent_sync_range(Some(&cursor), "Sent", 7, 1_000), (0, 1_000));
     }
 
     #[test]
