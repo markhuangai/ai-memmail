@@ -27,6 +27,18 @@ fn thread_handoff_body_formats_chain_and_rejects_truncated_messages() {
         body_truncated: false,
         timestamp: 2,
     });
+    context.messages.push(ThreadMessage {
+        direction: MessageDirection::Inbound,
+        message_id: None,
+        in_reply_to: None,
+        references: vec![],
+        from_addr: "person@example.com".to_string(),
+        recipients: vec![],
+        subject: "Re: Question".to_string(),
+        authored_text: "Following up without headers.".to_string(),
+        body_truncated: false,
+        timestamp: 3,
+    });
 
     let body = thread_handoff_body(&context).unwrap();
     assert!(body.contains("---------- Conversation handoff ---------"));
@@ -35,6 +47,10 @@ fn thread_handoff_body_formats_chain_and_rejects_truncated_messages() {
     assert!(body.contains("Can we talk?"));
     assert!(body.contains("[2] Outbound"));
     assert!(body.contains("Yes."));
+    assert!(body.contains("[3] Inbound"));
+    assert!(body.contains("To: (none)"));
+    assert!(body.contains("Message-ID: (none)"));
+    assert!(body.contains("References: (none)"));
 
     context.messages[1].body_truncated = true;
     let error = thread_handoff_body(&context).unwrap_err();
