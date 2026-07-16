@@ -623,6 +623,19 @@ fn parse_mailbox_reports_invalid_addresses() {
     assert!(crate::mail_external::parse_mailbox("not an address").is_err());
 }
 
+#[test]
+fn outbound_message_id_uses_sender_domain_or_fallback() {
+    let mut mailbox = mailbox_config();
+    let message_id = outbound_message_id(&mailbox);
+    assert!(message_id.starts_with('<'));
+    assert!(message_id.ends_with("@example.com>"));
+
+    mailbox.smtp.from = "support".to_string();
+    let fallback_message_id = outbound_message_id(&mailbox);
+    assert!(fallback_message_id.starts_with('<'));
+    assert!(fallback_message_id.ends_with("@ai-memmail.local>"));
+}
+
 fn filter_message(subject: &str, recipients: Vec<String>) -> InboundMessage {
     InboundMessage {
         metadata: MessageMetadata {
