@@ -132,6 +132,7 @@ async fn live_decision_engine_uses_review_prompt_for_outbound_review() {
             subject: "Re: Question".to_string(),
             body: "Answer".to_string(),
             reason: "draft".to_string(),
+            reply_to: None,
             message_id: None,
             in_reply_to: None,
             references: vec![],

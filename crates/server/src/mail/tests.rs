@@ -170,6 +170,7 @@ async fn live_transport_delegates_to_blocking_client() {
         subject: "Re: Question".to_string(),
         body: "Answer".to_string(),
         reason: "test".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
@@ -269,6 +270,7 @@ fn validates_reply_requires_recipient_subject_and_body() {
         subject: "".to_string(),
         body: "".to_string(),
         reason: "test".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
@@ -285,6 +287,7 @@ fn validates_noop_has_no_recipients() {
         subject: "".to_string(),
         body: "".to_string(),
         reason: "nothing to do".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
@@ -301,6 +304,7 @@ fn validates_complete_reply_forward_and_noop_actions() {
         subject: "Re: Hello".to_string(),
         body: "Thanks".to_string(),
         reason: "known answer".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
@@ -313,6 +317,7 @@ fn validates_complete_reply_forward_and_noop_actions() {
         subject: "Review".to_string(),
         body: "Please review".to_string(),
         reason: "needs human review".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
@@ -325,6 +330,7 @@ fn validates_complete_reply_forward_and_noop_actions() {
         subject: "".to_string(),
         body: "".to_string(),
         reason: "nothing safe to do".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
@@ -591,6 +597,47 @@ fn forward_body_includes_metadata_and_text() {
 }
 
 #[test]
+fn thread_handoff_body_formats_chain_and_rejects_truncated_messages() {
+    let mut context = ThreadContext::empty("<root@example.com>".to_string());
+    context.messages.push(ThreadMessage {
+        direction: MessageDirection::Inbound,
+        message_id: Some("<root@example.com>".to_string()),
+        in_reply_to: None,
+        references: vec![],
+        from_addr: "person@example.com".to_string(),
+        recipients: vec!["support@example.com".to_string()],
+        subject: "Question".to_string(),
+        authored_text: "Can we talk?".to_string(),
+        body_truncated: false,
+        timestamp: 1,
+    });
+    context.messages.push(ThreadMessage {
+        direction: MessageDirection::Outbound,
+        message_id: Some("<reply@example.com>".to_string()),
+        in_reply_to: Some("<root@example.com>".to_string()),
+        references: vec!["<root@example.com>".to_string()],
+        from_addr: "support@example.com".to_string(),
+        recipients: vec!["person@example.com".to_string()],
+        subject: "Re: Question".to_string(),
+        authored_text: "Yes.".to_string(),
+        body_truncated: false,
+        timestamp: 2,
+    });
+
+    let body = thread_handoff_body(&context).unwrap();
+    assert!(body.contains("---------- Conversation handoff ---------"));
+    assert!(body.contains("[1] Inbound"));
+    assert!(body.contains("From: person@example.com"));
+    assert!(body.contains("Can we talk?"));
+    assert!(body.contains("[2] Outbound"));
+    assert!(body.contains("Yes."));
+
+    context.messages[1].body_truncated = true;
+    let error = thread_handoff_body(&context).unwrap_err();
+    assert!(error.to_string().contains("truncated"));
+}
+
+#[test]
 fn send_blocking_rejects_invalid_action_before_smtp() {
     let smtp = mailbox_config().smtp;
     let action = OutboundAction {
@@ -599,6 +646,7 @@ fn send_blocking_rejects_invalid_action_before_smtp() {
         subject: "".to_string(),
         body: "".to_string(),
         reason: "invalid".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],

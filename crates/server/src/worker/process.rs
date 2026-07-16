@@ -226,6 +226,39 @@ async fn process_message(
         .await;
         return;
     }
+    match processing
+        .active_thread_handoff(&mailbox.id, &thread_context.thread_id)
+        .await
+    {
+        Ok(Some(handoff)) => {
+            route_active_thread_handoff(
+                mailbox,
+                logger,
+                run_id,
+                mail,
+                processing,
+                &message,
+                &thread_context,
+                &handoff,
+            )
+            .await;
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            log_retryable_message_error(
+                logger,
+                processing,
+                run_id,
+                &message,
+                "thread_handoff_lookup",
+                started,
+                error.to_string(),
+            )
+            .await;
+            return;
+        }
+    }
     let needs_human_review = human_review_requested(&message);
     let classification_context = match classify_message_for_rules(
         config,

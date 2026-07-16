@@ -409,6 +409,8 @@ struct FakeProcessingStore {
     statuses: Mutex<Vec<String>>,
     matched_rule: Option<EmailRule>,
     thread_context: Option<ThreadContext>,
+    handoff: Option<crate::storage::ThreadHandoff>,
+    handoff_deliveries: Mutex<Vec<NewThreadHandoffDelivery>>,
 }
 
 impl FakeProcessingStore {
@@ -425,6 +427,8 @@ impl FakeProcessingStore {
             statuses: Mutex::new(Vec::new()),
             matched_rule: None,
             thread_context: None,
+            handoff: None,
+            handoff_deliveries: Mutex::new(Vec::new()),
         }
     }
 
@@ -463,6 +467,11 @@ impl FakeProcessingStore {
         self
     }
 
+    fn with_handoff(mut self, handoff: crate::storage::ThreadHandoff) -> Self {
+        self.handoff = Some(handoff);
+        self
+    }
+
     fn run_ids(&self) -> Vec<String> {
         self.run_ids.lock().expect("run ids lock").clone()
     }
@@ -473,6 +482,13 @@ impl FakeProcessingStore {
 
     fn statuses(&self) -> Vec<String> {
         self.statuses.lock().expect("statuses lock").clone()
+    }
+
+    fn handoff_deliveries(&self) -> Vec<NewThreadHandoffDelivery> {
+        self.handoff_deliveries
+            .lock()
+            .expect("handoff deliveries lock")
+            .clone()
     }
 }
 
@@ -603,6 +619,49 @@ impl ProcessingStore for FakeProcessingStore {
             .thread_context
             .clone()
             .unwrap_or_else(|| ThreadContext::empty(message.metadata.thread_id())))
+    }
+
+    async fn active_thread_handoff(
+        &self,
+        mailbox_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<crate::storage::ThreadHandoff>, crate::storage::StorageError> {
+        Ok(self
+            .handoff
+            .clone()
+            .filter(|handoff| handoff.mailbox_id == mailbox_id && handoff.thread_id == thread_id))
+    }
+
+    async fn begin_thread_handoff_delivery(
+        &self,
+        delivery: &NewThreadHandoffDelivery,
+    ) -> Result<crate::storage::ThreadHandoffDelivery, crate::storage::StorageError> {
+        self.handoff_deliveries
+            .lock()
+            .map_err(|_| crate::storage::StorageError::LockPoisoned)?
+            .push(delivery.clone());
+        Ok(crate::storage::ThreadHandoffDelivery {
+            request_id: delivery.request_id,
+            mailbox_id: delivery.mailbox_id.clone(),
+            thread_id: delivery.thread_id.clone(),
+            source_run_id: delivery.source_run_id,
+            destination: delivery.destination.clone(),
+            remote_target: delivery.remote_target.clone(),
+            outbound_message_id: delivery.outbound_message_id.clone(),
+            status: "sending".to_string(),
+            error: None,
+        })
+    }
+
+    async fn finish_thread_handoff_delivery(
+        &self,
+        _mailbox_id: &str,
+        _thread_id: &str,
+        _request_id: uuid::Uuid,
+        _status: &str,
+        _error: Option<&str>,
+    ) -> Result<(), crate::storage::StorageError> {
+        Ok(())
     }
 }
 

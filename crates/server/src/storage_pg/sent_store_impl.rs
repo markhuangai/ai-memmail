@@ -132,6 +132,41 @@ impl PgStore {
     ) -> Result<ThreadContext, StorageError> {
         let thread_id = self.thread_id_for_message(message).await?;
         let key = message.metadata.dedupe_key();
+        let messages = self
+            .load_thread_messages_impl(
+                mailbox,
+                &thread_id,
+                Some((key.uid_validity as i64, key.uid as i64)),
+            )
+            .await?;
+        Ok(ThreadContext {
+            thread_id,
+            messages,
+        })
+    }
+
+    pub async fn load_thread_context_by_id(
+        &self,
+        mailbox: &MailboxConfig,
+        thread_id: &str,
+    ) -> Result<ThreadContext, StorageError> {
+        let messages = self
+            .load_thread_messages_impl(mailbox, thread_id, None)
+            .await?;
+        Ok(ThreadContext {
+            thread_id: thread_id.to_string(),
+            messages,
+        })
+    }
+
+    async fn load_thread_messages_impl(
+        &self,
+        mailbox: &MailboxConfig,
+        thread_id: &str,
+        exclude_key: Option<(i64, i64)>,
+    ) -> Result<Vec<ThreadMessage>, StorageError> {
+        let exclude_uid_validity = exclude_key.map(|(uid_validity, _)| uid_validity);
+        let exclude_uid = exclude_key.map(|(_, uid)| uid);
         let rows = self
             .client
             .query(
@@ -143,13 +178,13 @@ impl PgStore {
                 (EXTRACT(EPOCH FROM updated_at))::BIGINT
             FROM processing_runs
             WHERE mailbox_id = $1 AND thread_id = $2
-                AND NOT (uid_validity = $3 AND uid = $4)
+                AND ($3::BIGINT IS NULL OR NOT (uid_validity = $3 AND uid = $4))
                 AND safety_category = 'safe'",
                 &[
                     &mailbox.id,
                     &thread_id,
-                    &(key.uid_validity as i64),
-                    &(key.uid as i64),
+                    &exclude_uid_validity,
+                    &exclude_uid,
                 ],
             )
             .await?;
@@ -213,7 +248,14 @@ impl PgStore {
                 subject, body, body_truncated,
                 COALESCE(internal_date_epoch, (EXTRACT(EPOCH FROM created_at))::BIGINT)
             FROM sent_messages
-            WHERE mailbox_id = $1 AND thread_id = $2",
+            WHERE mailbox_id = $1 AND thread_id = $2
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM thread_handoff_deliveries thd
+                    WHERE thd.mailbox_id = sent_messages.mailbox_id
+                        AND thd.outbound_message_id = sent_messages.message_id
+                        AND thd.status IN ('sending', 'sent', 'uncertain')
+                )",
                 &[&mailbox.id, &thread_id],
             )
             .await?;
@@ -243,9 +285,6 @@ impl PgStore {
             message.authored_text =
                 extract_authored_text(&message.authored_text, index > 0).authored_text;
         }
-        Ok(ThreadContext {
-            thread_id,
-            messages,
-        })
+        Ok(messages)
     }
 }

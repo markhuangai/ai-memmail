@@ -51,6 +51,7 @@ async fn processing_store_trait_defaults_are_noops() {
         subject: String::new(),
         body: String::new(),
         reason: "nothing to do".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],

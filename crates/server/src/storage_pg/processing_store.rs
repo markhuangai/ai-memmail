@@ -529,4 +529,30 @@ impl ProcessingStore for PgStore {
         self.load_thread_context_impl(mailbox, message).await
     }
 
+    async fn active_thread_handoff(
+        &self,
+        mailbox_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<ThreadHandoff>, StorageError> {
+        self.active_thread_handoff_impl(mailbox_id, thread_id).await
+    }
+
+    async fn begin_thread_handoff_delivery(
+        &self,
+        delivery: &NewThreadHandoffDelivery,
+    ) -> Result<ThreadHandoffDelivery, StorageError> {
+        self.begin_thread_handoff_delivery_impl(delivery).await
+    }
+
+    async fn finish_thread_handoff_delivery(
+        &self,
+        mailbox_id: &str,
+        thread_id: &str,
+        request_id: uuid::Uuid,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<(), StorageError> {
+        self.finish_thread_handoff_delivery_impl(mailbox_id, thread_id, request_id, status, error)
+            .await
+    }
 }

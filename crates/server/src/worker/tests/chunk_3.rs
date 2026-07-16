@@ -601,3 +601,55 @@ async fn claim_failure_logs_and_defers_message_without_side_effects() {
         .iter()
         .any(|event| event.action == "processing_claim" && event.status == "failed"));
 }
+
+#[tokio::test]
+async fn active_thread_handoff_forwards_chain_without_classification_or_agent_decision() {
+    let logger = crate::logging::MemoryLogger::default();
+    let message = inbound(54, "Person <person@example.com>", "Project follow up", "Needs help");
+    let thread_id = message.metadata.thread_id();
+    let mail = FakeMail::new(vec![message.clone()]);
+    let decisions = fake_decisions(safe_scan(), reply_action());
+    let processing =
+        FakeProcessingStore::new(vec![FakeClaimOutcome::Claimed]).with_handoff(
+            crate::storage::ThreadHandoff {
+                mailbox_id: "support".to_string(),
+                thread_id: thread_id.clone(),
+                destination: "mark.personal@example.com".to_string(),
+                remote_target: "person@example.com".to_string(),
+                state: "active".to_string(),
+                last_error: None,
+                updated_at: "memory".to_string(),
+            },
+        );
+
+    run_once_with_store(
+        &config(),
+        &logger,
+        "run-test",
+        &mail,
+        &decisions,
+        &processing,
+    )
+    .await;
+
+    let sent = mail.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].recipients, vec!["mark.personal@example.com"]);
+    assert_eq!(sent[0].reply_to.as_deref(), Some("person@example.com"));
+    assert_eq!(sent[0].in_reply_to.as_deref(), Some("<54@example.com>"));
+    assert!(sent[0].body.contains("---------- Conversation handoff ---------"));
+    assert!(sent[0].body.contains("Needs help"));
+    assert_eq!(processing.statuses(), vec![PROCESSING_STATUS_HANDED_OFF]);
+    assert_eq!(mail.seen()[0].uid, 54);
+    assert_eq!(
+        decisions.call_counts(),
+        DecisionCallCounts {
+            safety_scan: 1,
+            ..DecisionCallCounts::default()
+        }
+    );
+    assert_eq!(processing.handoff_deliveries().len(), 1);
+    assert!(!processing.handoff_deliveries()[0]
+        .outbound_message_id
+        .is_empty());
+}

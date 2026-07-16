@@ -350,6 +350,9 @@ pub(crate) fn build_message(
     if let Some(in_reply_to) = &action.in_reply_to {
         builder = builder.in_reply_to(in_reply_to.clone());
     }
+    if let Some(reply_to) = &action.reply_to {
+        builder = builder.reply_to(parse_mailbox(reply_to)?);
+    }
     if !action.references.is_empty() {
         builder = builder.references(action.references.join(" "));
     }
@@ -448,6 +451,7 @@ mod tests {
             subject: "Re: Question".to_string(),
             body: "Answer".to_string(),
             reason: "known answer".to_string(),
+            reply_to: Some("remote@example.com".to_string()),
             message_id: Some("<reply@example.com>".to_string()),
             in_reply_to: Some("<inbound@example.com>".to_string()),
             references: vec![
@@ -460,6 +464,7 @@ mod tests {
         let rendered = String::from_utf8(message.formatted()).unwrap();
 
         assert!(rendered.contains("Message-ID: <reply@example.com>\r\n"));
+        assert!(rendered.contains("Reply-To: remote@example.com\r\n"));
         assert!(rendered.contains("In-Reply-To: <inbound@example.com>\r\n"));
         assert!(rendered.contains("References: <root@example.com> <inbound@example.com>\r\n"));
     }

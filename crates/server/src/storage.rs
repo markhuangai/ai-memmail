@@ -45,6 +45,10 @@ pub enum StorageError {
     ClassificationNotFound(String),
     #[error("invalid classification policy: {0}")]
     InvalidClassification(String),
+    #[error("handoff source message not found: {0}")]
+    HandoffSourceNotFound(String),
+    #[error("invalid handoff: {0}")]
+    InvalidHandoff(String),
 }
 
 pub const INIT_SQL: &str = include_str!("../migrations/001_init.sql");
@@ -55,6 +59,7 @@ pub const EMAIL_CLASSIFICATION_RULES_SQL: &str =
 pub const DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL: &str =
     include_str!("../migrations/004_default_email_rule_seed_uniqueness.sql");
 pub const SENT_THREAD_CONTEXT_SQL: &str = include_str!("../migrations/005_sent_thread_context.sql");
+pub const THREAD_HANDOFFS_SQL: &str = include_str!("../migrations/006_thread_handoffs.sql");
 pub(crate) const MIGRATION_LOCK_ID: i64 = 4_971_774_501_001;
 pub(crate) const SCHEMA_MIGRATIONS_SQL: &str = "
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -90,10 +95,16 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "005_sent_thread_context",
         sql: SENT_THREAD_CONTEXT_SQL,
     },
+    Migration {
+        version: 6,
+        name: "006_thread_handoffs",
+        sql: THREAD_HANDOFFS_SQL,
+    },
 ];
 pub const PROCESSING_STATUS_PROCESSING: &str = "processing";
 pub const PROCESSING_STATUS_RETRYABLE_FAILED: &str = "retryable_failed";
 pub const PROCESSING_STATUS_SEND_FAILED: &str = "send_failed";
+pub const PROCESSING_STATUS_HANDED_OFF: &str = "handed_off";
 pub const PROCESSING_STALE_AFTER_MINUTES: i32 = 3;
 pub const INBOUND_BODY_STORAGE_MAX_CHARS: usize = 64 * 1024;
 
@@ -108,6 +119,63 @@ pub enum ProcessingClaim {
 pub struct SentSyncState {
     pub cursor: SentSyncCursor,
     pub initial_backfill_complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ThreadHandoffSummary {
+    pub state: String,
+    pub destination: String,
+    pub remote_target: String,
+    pub last_error: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadHandoff {
+    pub mailbox_id: String,
+    pub thread_id: String,
+    pub destination: String,
+    pub remote_target: String,
+    pub state: String,
+    pub last_error: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewThreadHandoffDelivery {
+    pub request_id: uuid::Uuid,
+    pub mailbox_id: String,
+    pub thread_id: String,
+    pub source_run_id: Option<uuid::Uuid>,
+    pub destination: String,
+    pub remote_target: String,
+    pub outbound_message_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadHandoffDelivery {
+    pub request_id: uuid::Uuid,
+    pub mailbox_id: String,
+    pub thread_id: String,
+    pub source_run_id: Option<uuid::Uuid>,
+    pub destination: String,
+    pub remote_target: String,
+    pub outbound_message_id: String,
+    pub status: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadHandoffSource {
+    pub run_id: uuid::Uuid,
+    pub mailbox_id: String,
+    pub thread_id: String,
+    pub uid_validity: u64,
+    pub uid: u64,
+    pub subject: String,
+    pub status: String,
+    pub safety_category: Option<String>,
+    pub inbound_body_truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,6 +333,42 @@ pub trait ProcessingStore: Send + Sync {
     ) -> Result<ThreadContext, StorageError> {
         Ok(ThreadContext::empty(message.metadata.thread_id()))
     }
+
+    async fn active_thread_handoff(
+        &self,
+        _mailbox_id: &str,
+        _thread_id: &str,
+    ) -> Result<Option<ThreadHandoff>, StorageError> {
+        Ok(None)
+    }
+
+    async fn begin_thread_handoff_delivery(
+        &self,
+        delivery: &NewThreadHandoffDelivery,
+    ) -> Result<ThreadHandoffDelivery, StorageError> {
+        Ok(ThreadHandoffDelivery {
+            request_id: delivery.request_id,
+            mailbox_id: delivery.mailbox_id.clone(),
+            thread_id: delivery.thread_id.clone(),
+            source_run_id: delivery.source_run_id,
+            destination: delivery.destination.clone(),
+            remote_target: delivery.remote_target.clone(),
+            outbound_message_id: delivery.outbound_message_id.clone(),
+            status: "sending".to_string(),
+            error: None,
+        })
+    }
+
+    async fn finish_thread_handoff_delivery(
+        &self,
+        _mailbox_id: &str,
+        _thread_id: &str,
+        _request_id: uuid::Uuid,
+        _status: &str,
+        _error: Option<&str>,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -276,6 +380,8 @@ pub struct MemoryProcessingStore {
     outbound_actions: Arc<Mutex<HashMap<DedupeKey, StoredOutboundAction>>>,
     outbound_reviews: Arc<Mutex<HashMap<DedupeKey, StoredOutboundReview>>>,
     classification: Arc<Mutex<MemoryClassificationState>>,
+    handoffs: Arc<Mutex<HashMap<(String, String), ThreadHandoff>>>,
+    handoff_deliveries: Arc<Mutex<HashMap<(String, String, uuid::Uuid), ThreadHandoffDelivery>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -433,6 +539,7 @@ pub struct ProcessedEmail {
     pub created_at: String,
     pub updated_at: String,
     pub logs: Vec<ProcessedEmailLog>,
+    pub handoff: Option<ThreadHandoffSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

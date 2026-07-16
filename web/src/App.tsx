@@ -18,7 +18,7 @@ import {
   Trash2
 } from "lucide-react";
 import { summarizeConfig } from "./configModel";
-import { loadConfig, loadEmailClassification, loadMessages, loadStatus, login, logout, saveConfig } from "./api";
+import { createHandoff, loadConfig, loadEmailClassification, loadMessages, loadStatus, login, logout, saveConfig } from "./api";
 import { HistoryPanel } from "./panels/HistoryPanel";
 import { Mailboxes } from "./panels/MailboxesPanel";
 import { McpServers } from "./panels/McpServersPanel";
@@ -132,6 +132,17 @@ export function App({
     }
   }
 
+  async function onCreateHandoff(message: ProcessedEmail, destination: string) {
+    setError("");
+    try {
+      await createHandoff(message.run_id, destination);
+      setMessages(await loadMessages(messageLimit));
+    } catch (cause) {
+      setError(errorMessage(cause));
+      throw cause;
+    }
+  }
+
   const summary = useMemo(
     () => (config ? summarizeConfig(config) : null),
     [config]
@@ -220,6 +231,7 @@ export function App({
                 canLoadMore={messages.length >= messageLimit && messageLimit < MAX_HISTORY_LIMIT}
                 messageLimit={messageLimit}
                 messages={messages}
+                onCreateHandoff={onCreateHandoff}
                 onLoadMore={loadMoreHistory}
               />
             ) : null}

@@ -9,7 +9,7 @@ use crate::logging::LogLevel;
 use crate::mail::{MessageMetadata, SentMessage};
 use crate::storage::{
     DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL, EMAIL_CLASSIFICATION_RULES_SQL,
-    HISTORY_BODY_THREADING_SQL, INIT_SQL, SENT_THREAD_CONTEXT_SQL,
+    HISTORY_BODY_THREADING_SQL, INIT_SQL, SENT_THREAD_CONTEXT_SQL, THREAD_HANDOFFS_SQL,
 };
 
 #[tokio::test]
@@ -30,7 +30,7 @@ async fn pg_store_migrates_idempotently_and_tracks_checksum() {
         )
         .await
         .unwrap();
-    assert_eq!(rows.len(), 5);
+    assert_eq!(rows.len(), 6);
     assert_eq!(rows[0].get::<_, i32>(0), 1);
     assert_eq!(rows[0].get::<_, String>(1), "001_init");
     assert_eq!(rows[0].get::<_, String>(2), migration_checksum(INIT_SQL));
@@ -63,6 +63,12 @@ async fn pg_store_migrates_idempotently_and_tracks_checksum() {
     assert_eq!(
         rows[4].get::<_, String>(2),
         migration_checksum(SENT_THREAD_CONTEXT_SQL)
+    );
+    assert_eq!(rows[5].get::<_, i32>(0), 6);
+    assert_eq!(rows[5].get::<_, String>(1), "006_thread_handoffs");
+    assert_eq!(
+        rows[5].get::<_, String>(2),
+        migration_checksum(THREAD_HANDOFFS_SQL)
     );
 
     pg.cleanup().await;
@@ -139,6 +145,7 @@ async fn pg_store_records_processed_email_history_and_logs() {
         subject: "Re: Question".to_string(),
         body: "Answer".to_string(),
         reason: "known answer".to_string(),
+        reply_to: None,
         message_id: Some("<reply-71@example.com>".to_string()),
         in_reply_to: Some("<71@example.com>".to_string()),
         references: vec!["<71@example.com>".to_string()],
@@ -335,6 +342,7 @@ async fn pg_store_redacts_forward_body_and_records_sender_review() {
         subject: "Fwd: Question".to_string(),
         body: "contains the inbound body".to_string(),
         reason: "needs human review".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
@@ -382,6 +390,96 @@ async fn pg_store_redacts_forward_body_and_records_sender_review() {
 }
 
 #[tokio::test]
+async fn pg_store_records_thread_handoff_summary_without_rewriting_history_action() {
+    let Some(pg) = TestPgStore::create().await else {
+        return;
+    };
+    pg.store.migrate().await.unwrap();
+
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let message = message(82);
+    let key = message.metadata.dedupe_key();
+    let action = OutboundAction {
+        kind: OutboundActionKind::Reply,
+        recipients: vec!["person@example.com".to_string()],
+        subject: "Re: Question".to_string(),
+        body: "Answer".to_string(),
+        reason: "known answer".to_string(),
+        reply_to: None,
+        message_id: Some("<reply-82@example.com>".to_string()),
+        in_reply_to: Some("<82@example.com>".to_string()),
+        references: vec!["<82@example.com>".to_string()],
+    };
+    pg.store.claim_message(&run_id, &message).await.unwrap();
+    pg.store
+        .record_safety_result(&key, &SafetyCategory::Safe, "routine")
+        .await
+        .unwrap();
+    pg.store
+        .record_outbound_action(&key, &action)
+        .await
+        .unwrap();
+    pg.store
+        .update_message_status(&key, "replied", Some(&OutboundActionKind::Reply))
+        .await
+        .unwrap();
+    let source = pg.store.thread_handoff_source(&run_id).await.unwrap();
+    assert_eq!(source.thread_id, message.metadata.message_id.clone().unwrap());
+    pg.store
+        .validate_thread_handoff_ready(&source.mailbox_id, &source.thread_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        pg.store
+            .latest_thread_remote_target(&source.mailbox_id, &source.thread_id)
+            .await
+            .unwrap(),
+        "person@example.com"
+    );
+
+    let request_id = uuid::Uuid::new_v4();
+    let delivery = NewThreadHandoffDelivery {
+        request_id,
+        mailbox_id: source.mailbox_id.clone(),
+        thread_id: source.thread_id.clone(),
+        source_run_id: Some(source.run_id),
+        destination: "mark.personal@example.com".to_string(),
+        remote_target: "person@example.com".to_string(),
+        outbound_message_id: "<handoff-82@example.com>".to_string(),
+    };
+    pg.store
+        .begin_thread_handoff_delivery(&delivery)
+        .await
+        .unwrap();
+    pg.store
+        .finish_thread_handoff_delivery(
+            &source.mailbox_id,
+            &source.thread_id,
+            request_id,
+            "sent",
+            None,
+        )
+        .await
+        .unwrap();
+
+    let email = pg
+        .store
+        .list_processed_emails(1)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(email.outbound_action.as_deref(), Some("reply"));
+    assert_eq!(email.status, "replied");
+    let handoff = email.handoff.expect("thread handoff summary");
+    assert_eq!(handoff.state, "active");
+    assert_eq!(handoff.destination, "mark.personal@example.com");
+    assert_eq!(handoff.remote_target, "person@example.com");
+
+    pg.cleanup().await;
+}
+
+#[tokio::test]
 async fn pg_store_links_reply_to_generated_outbound_message_id() {
     let Some(pg) = TestPgStore::create().await else {
         return;
@@ -397,6 +495,7 @@ async fn pg_store_links_reply_to_generated_outbound_message_id() {
         subject: "Re: Question".to_string(),
         body: "Answer".to_string(),
         reason: "known answer".to_string(),
+        reply_to: None,
         message_id: Some("<auto-reply@example.com>".to_string()),
         in_reply_to: original.metadata.message_id.clone(),
         references: vec![original.metadata.message_id.clone().unwrap()],
@@ -595,6 +694,7 @@ async fn pg_store_links_manual_sent_message_to_inbound_reply_context() {
                 subject: "Re: Manual question".to_string(),
                 body: "This SMTP attempt failed.".to_string(),
                 reason: "test failed send".to_string(),
+                reply_to: None,
                 message_id: Some("<failed-send@example.com>".to_string()),
                 in_reply_to: failed_inbound.metadata.message_id.clone(),
                 references: failed_inbound.metadata.references.clone(),

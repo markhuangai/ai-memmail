@@ -63,10 +63,25 @@ test("control panel login and mailbox edit", async ({ page }) => {
         page.getByRole("button").filter({ hasText: subject }).first()
       ).toBeVisible();
     }
+    await page
+      .getByRole("button")
+      .filter({ hasText: `live-e2e known mcp ${runId}` })
+      .first()
+      .click();
+    if (process.env.AI_MEMMAIL_LIVE_HANDOFF_TO) {
+      const handoffTo =
+        process.env.AI_MEMMAIL_LIVE_HANDOFF_TO.match(/<([^>]+)>/)?.[1] ??
+        process.env.AI_MEMMAIL_LIVE_HANDOFF_TO.trim();
+      await expect(page.getByText("Handed off").first()).toBeVisible();
+      await expect(
+        page.getByText(new RegExp(`${escapeRegExp(handoffTo)} to `))
+      ).toBeVisible();
+    }
     return;
   }
 
   await expect(page.getByRole("heading", { name: "Pricing question" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /hand off thread/i })).toBeVisible();
 });
 
 function escapeRegExp(value: string): string {
