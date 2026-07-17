@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use mailparse::{MailAddr, MailHeaderMap};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::config::{AcceptedCondition, MailboxConfig, SmtpConfig};
 
@@ -50,6 +51,8 @@ pub struct OutboundAction {
     pub subject: String,
     pub body: String,
     pub reason: String,
+    #[serde(default)]
+    pub reply_to: Option<String>,
     #[serde(default)]
     pub message_id: Option<String>,
     #[serde(default)]
@@ -404,6 +407,58 @@ pub fn forward_body(intro: &str, message: &InboundMessage) -> String {
     )
 }
 
+pub fn thread_handoff_body(thread_context: &ThreadContext) -> Result<String, MailError> {
+    const HANDOFF_BODY_MAX_BYTES: usize = 5 * 1024 * 1024;
+
+    if thread_context.messages.is_empty() {
+        return Err(MailError::Build(
+            "thread handoff requires at least one stored message".to_string(),
+        ));
+    }
+
+    let mut body = String::from(
+        "ai-memmail is handing this conversation to a personal inbox.\n\
+        Replying to this email should address the latest remote sender.\n\n\
+        ---------- Conversation handoff ---------",
+    );
+    for (index, message) in thread_context.messages.iter().enumerate() {
+        if message.body_truncated {
+            return Err(MailError::Build(
+                "thread handoff cannot use truncated stored message bodies".to_string(),
+            ));
+        }
+        let direction = match message.direction {
+            MessageDirection::Inbound => "Inbound",
+            MessageDirection::Outbound => "Outbound",
+        };
+        body.push_str(&format!(
+            "\n\n[{}] {direction}\nFrom: {}\nTo: {}\nSubject: {}\nMessage-ID: {}\nIn-Reply-To: {}\nReferences: {}\n\n{}",
+            index + 1,
+            message.from_addr,
+            if message.recipients.is_empty() {
+                "(none)".to_string()
+            } else {
+                message.recipients.join(", ")
+            },
+            message.subject,
+            message.message_id.as_deref().unwrap_or("(none)"),
+            message.in_reply_to.as_deref().unwrap_or("(none)"),
+            if message.references.is_empty() {
+                "(none)".to_string()
+            } else {
+                message.references.join(" ")
+            },
+            message.authored_text
+        ));
+        if body.len() > HANDOFF_BODY_MAX_BYTES {
+            return Err(MailError::Build(
+                "thread handoff transcript exceeds 5 MiB".to_string(),
+            ));
+        }
+    }
+    Ok(body)
+}
+
 pub fn automated_reply_body(body: &str) -> String {
     if body.contains(AUTOMATED_REPLY_NOTICE) {
         return body.to_string();
@@ -431,6 +486,17 @@ pub fn reply_recipient(from_addr: &str) -> String {
             .unwrap_or_else(|| from_addr.trim().to_string()),
         Err(_) => from_addr.trim().to_string(),
     }
+}
+
+pub fn outbound_message_id(mailbox: &MailboxConfig) -> String {
+    let domain = mailbox
+        .smtp
+        .from
+        .rsplit_once('@')
+        .map(|(_, domain)| domain.trim())
+        .filter(|domain| !domain.is_empty())
+        .unwrap_or("ai-memmail.local");
+    format!("<{}@{}>", Uuid::new_v4(), domain)
 }
 
 fn first_message_id(value: &str) -> Option<String> {

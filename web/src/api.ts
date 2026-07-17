@@ -4,7 +4,8 @@ import type {
   NewEmailRule,
   ProcessedEmail,
   PromptFile,
-  StatusResponse
+  StatusResponse,
+  ThreadHandoffSummary
 } from "./types";
 
 export class ApiError extends Error {
@@ -89,6 +90,25 @@ export async function loadMessages(
     fetcher
   );
   return payload.messages ?? [];
+}
+
+export async function createHandoff(
+  runId: string,
+  destination: string,
+  fetchImpl?: typeof fetch
+): Promise<ThreadHandoffSummary | null> {
+  const payload = await requestJson<{ handoff?: ThreadHandoffSummary | null }>(
+    `/api/messages/${encodeURIComponent(runId)}/handoff`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        request_id: crypto.randomUUID(),
+        destination
+      })
+    },
+    fetchImpl
+  );
+  return payload.handoff ?? null;
 }
 
 export async function loadPromptFile(

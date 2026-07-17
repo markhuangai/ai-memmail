@@ -13,16 +13,18 @@ use crate::logging::{
     action_event, ActionEvent, ActionLogger, FanoutLogger, LogLevel, StdoutLogger,
 };
 use crate::mail::{
-    automated_reply_body, forward_body, message_matches_accepted_conditions, reply_references,
-    InboundMessage, LiveMailTransport, MailTransport, OutboundAction, OutboundActionKind,
-    ThreadContext,
+    automated_reply_body, forward_body, message_matches_accepted_conditions, reply_recipient,
+    reply_references, thread_handoff_body, InboundMessage, LiveMailTransport, MailError,
+    MailTransport, MessageDirection, OutboundAction, OutboundActionKind, ThreadContext,
+    ThreadMessage,
 };
 use crate::safety::{
     decide, sender_is_banned, suspicious_forward_intro, suspicious_forward_subject, SafetyDecision,
     SafetyDisposition, SafetyScanResult,
 };
 use crate::storage::{
-    MemoryProcessingStore, PgStore, ProcessingClaim, ProcessingStore,
+    MemoryProcessingStore, NewThreadHandoffDelivery, PgStore, ProcessingClaim, ProcessingStore,
+    INBOUND_BODY_STORAGE_MAX_CHARS, PROCESSING_STATUS_HANDED_OFF,
     PROCESSING_STATUS_RETRYABLE_FAILED, PROCESSING_STATUS_SEND_FAILED,
 };
 
@@ -208,6 +210,8 @@ include!("worker/sent_sync.rs");
 include!("worker/thread_context.rs");
 
 include!("worker/classification.rs");
+
+include!("worker/handoff.rs");
 
 include!("worker/process.rs");
 

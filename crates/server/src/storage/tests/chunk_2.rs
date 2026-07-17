@@ -51,6 +51,7 @@ async fn processing_store_trait_defaults_are_noops() {
         subject: String::new(),
         body: String::new(),
         reason: "nothing to do".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
@@ -138,4 +139,119 @@ async fn processing_store_trait_defaults_are_noops() {
         .unwrap();
     assert_eq!(context.thread_id, message.metadata.thread_id());
     assert!(context.messages.is_empty());
+
+    assert_eq!(
+        store
+            .active_thread_handoff("support", "thread-1")
+            .await
+            .unwrap(),
+        None
+    );
+
+    let request_id = uuid::Uuid::new_v4();
+    let delivery = NewThreadHandoffDelivery {
+        request_id,
+        mailbox_id: "support".to_string(),
+        thread_id: "thread-1".to_string(),
+        source_run_id: None,
+        destination: "personal@example.com".to_string(),
+        remote_target: "person@example.com".to_string(),
+        outbound_message_id: "<handoff@example.com>".to_string(),
+    };
+    let started = store
+        .begin_thread_handoff_delivery(&delivery)
+        .await
+        .unwrap();
+    assert_eq!(started.request_id, request_id);
+    assert_eq!(started.status, "sending");
+    assert_eq!(started.error, None);
+    store
+        .finish_thread_handoff_delivery("support", "thread-1", request_id, "sent", None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn memory_processing_store_records_thread_handoff_delivery() {
+    let store = MemoryProcessingStore::default();
+    let request_id = uuid::Uuid::new_v4();
+
+    store.set_thread_handoff(ThreadHandoff {
+        mailbox_id: "support".to_string(),
+        thread_id: "thread-1".to_string(),
+        destination: "personal@example.com".to_string(),
+        remote_target: "person@example.com".to_string(),
+        state: "paused".to_string(),
+        last_error: Some("already sent".to_string()),
+        updated_at: "2026-07-16T21:00:00Z".to_string(),
+    });
+    assert_eq!(
+        store
+            .active_thread_handoff("support", "thread-1")
+            .await
+            .unwrap(),
+        None
+    );
+
+    for state in ["active", "sending", "uncertain"] {
+        store.set_thread_handoff(ThreadHandoff {
+            mailbox_id: "support".to_string(),
+            thread_id: "thread-1".to_string(),
+            destination: "personal@example.com".to_string(),
+            remote_target: "person@example.com".to_string(),
+            state: state.to_string(),
+            last_error: None,
+            updated_at: "2026-07-16T21:01:00Z".to_string(),
+        });
+        let handoff = store
+            .active_thread_handoff("support", "thread-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(handoff.state, state);
+        assert_eq!(handoff.destination, "personal@example.com");
+        assert_eq!(handoff.remote_target, "person@example.com");
+    }
+
+    let delivery = NewThreadHandoffDelivery {
+        request_id,
+        mailbox_id: "support".to_string(),
+        thread_id: "thread-1".to_string(),
+        source_run_id: None,
+        destination: "personal@example.com".to_string(),
+        remote_target: "person@example.com".to_string(),
+        outbound_message_id: "<handoff@example.com>".to_string(),
+    };
+    let started = store
+        .begin_thread_handoff_delivery(&delivery)
+        .await
+        .unwrap();
+    assert_eq!(started.status, "sending");
+    assert_eq!(
+        store
+            .begin_thread_handoff_delivery(&NewThreadHandoffDelivery {
+                outbound_message_id: "<different@example.com>".to_string(),
+                ..delivery.clone()
+            })
+            .await
+            .unwrap()
+            .outbound_message_id,
+        "<handoff@example.com>"
+    );
+
+    store
+        .finish_thread_handoff_delivery(
+            "support",
+            "thread-1",
+            request_id,
+            "failed",
+            Some("smtp unavailable"),
+        )
+        .await
+        .unwrap();
+    let finished = store
+        .handoff_delivery("support", "thread-1", request_id)
+        .unwrap();
+    assert_eq!(finished.status, "failed");
+    assert_eq!(finished.error.as_deref(), Some("smtp unavailable"));
 }

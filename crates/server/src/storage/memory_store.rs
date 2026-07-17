@@ -56,6 +56,26 @@ impl MemoryProcessingStore {
             .cloned()
     }
 
+    pub fn set_thread_handoff(&self, handoff: ThreadHandoff) {
+        self.handoffs
+            .lock()
+            .expect("memory handoff store poisoned")
+            .insert((handoff.mailbox_id.clone(), handoff.thread_id.clone()), handoff);
+    }
+
+    pub fn handoff_delivery(
+        &self,
+        mailbox_id: &str,
+        thread_id: &str,
+        request_id: uuid::Uuid,
+    ) -> Option<ThreadHandoffDelivery> {
+        self.handoff_deliveries
+            .lock()
+            .expect("memory handoff delivery store poisoned")
+            .get(&(mailbox_id.to_string(), thread_id.to_string(), request_id))
+            .cloned()
+    }
+
     pub fn add_email_rule(&self, mut rule: NewEmailRule) -> EmailRule {
         let mut state = self
             .classification
@@ -461,6 +481,71 @@ impl ProcessingStore for MemoryProcessingStore {
                     reason: reason.to_string(),
                 },
             );
+        Ok(())
+    }
+
+    async fn active_thread_handoff(
+        &self,
+        mailbox_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<ThreadHandoff>, StorageError> {
+        Ok(self
+            .handoffs
+            .lock()
+            .map_err(|_| StorageError::LockPoisoned)?
+            .get(&(mailbox_id.to_string(), thread_id.to_string()))
+            .filter(|handoff| matches!(handoff.state.as_str(), "active" | "sending" | "uncertain"))
+            .cloned())
+    }
+
+    async fn begin_thread_handoff_delivery(
+        &self,
+        delivery: &NewThreadHandoffDelivery,
+    ) -> Result<ThreadHandoffDelivery, StorageError> {
+        let mut deliveries = self
+            .handoff_deliveries
+            .lock()
+            .map_err(|_| StorageError::LockPoisoned)?;
+        let key = (
+            delivery.mailbox_id.clone(),
+            delivery.thread_id.clone(),
+            delivery.request_id,
+        );
+        let stored = deliveries
+            .entry(key)
+            .or_insert_with(|| ThreadHandoffDelivery {
+                request_id: delivery.request_id,
+                mailbox_id: delivery.mailbox_id.clone(),
+                thread_id: delivery.thread_id.clone(),
+                source_run_id: delivery.source_run_id,
+                destination: delivery.destination.clone(),
+                remote_target: delivery.remote_target.clone(),
+                outbound_message_id: delivery.outbound_message_id.clone(),
+                status: "sending".to_string(),
+                error: None,
+            })
+            .clone();
+        Ok(stored)
+    }
+
+    async fn finish_thread_handoff_delivery(
+        &self,
+        mailbox_id: &str,
+        thread_id: &str,
+        request_id: uuid::Uuid,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<(), StorageError> {
+        let mut deliveries = self
+            .handoff_deliveries
+            .lock()
+            .map_err(|_| StorageError::LockPoisoned)?;
+        if let Some(delivery) =
+            deliveries.get_mut(&(mailbox_id.to_string(), thread_id.to_string(), request_id))
+        {
+            delivery.status = status.to_string();
+            delivery.error = error.map(ToString::to_string);
+        }
         Ok(())
     }
 }

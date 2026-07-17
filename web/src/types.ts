@@ -150,6 +150,15 @@ export interface ProcessedEmail {
   created_at: string;
   updated_at: string;
   logs: ProcessedEmailLog[];
+  handoff?: ThreadHandoffSummary | null;
+}
+
+export interface ThreadHandoffSummary {
+  state: string;
+  destination: string;
+  remote_target: string;
+  last_error?: string | null;
+  updated_at: string;
 }
 
 export interface ProcessedEmailLog {

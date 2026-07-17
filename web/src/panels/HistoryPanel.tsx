@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { KeyRound, Mail, MessageSquareText, RefreshCw, ShieldAlert, Send } from "lucide-react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { Forward, KeyRound, Mail, MessageSquareText, RefreshCw, ShieldAlert, Send } from "lucide-react";
 import type { ProcessedEmail } from "../types";
 import { formatTimestamp, messageKey, statusPillClass, timestampMs } from "../viewUtils";
 
@@ -7,11 +7,13 @@ export function HistoryPanel({
   canLoadMore,
   messageLimit,
   messages,
+  onCreateHandoff,
   onLoadMore
 }: {
   canLoadMore: boolean;
   messageLimit: number;
   messages: ProcessedEmail[];
+  onCreateHandoff: (message: ProcessedEmail, destination: string) => Promise<void>;
   onLoadMore: () => void;
 }) {
   const [selectedKey, setSelectedKey] = useState("");
@@ -77,7 +79,10 @@ export function HistoryPanel({
                   <strong>{message.subject || "(no subject)"}</strong>
                   <span>{message.from_addr}</span>
                 </span>
-                <span className={statusPillClass(message.status)}>{message.status}</span>
+                <span className="message-row-badges">
+                  <span className={statusPillClass(message.status)}>{message.status}</span>
+                  <HandoffBadge message={message} />
+                </span>
                 <span className="message-row-time">{formatTimestamp(message.updated_at)}</span>
               </button>
             );
@@ -86,6 +91,7 @@ export function HistoryPanel({
       </section>
       <MessageDetail
         message={selected}
+        onCreateHandoff={onCreateHandoff}
         onSelectMessage={(message) => setSelectedKey(messageKey(message))}
         threadMessages={threadMessages}
       />
@@ -95,13 +101,40 @@ export function HistoryPanel({
 
 function MessageDetail({
   message,
+  onCreateHandoff,
   onSelectMessage,
   threadMessages
 }: {
   message: ProcessedEmail;
+  onCreateHandoff: (message: ProcessedEmail, destination: string) => Promise<void>;
   onSelectMessage: (message: ProcessedEmail) => void;
   threadMessages: ProcessedEmail[];
 }) {
+  const [handoffOpen, setHandoffOpen] = useState(false);
+  const [destination, setDestination] = useState(message.handoff?.destination ?? "");
+  const [submitting, setSubmitting] = useState(false);
+  const [handoffError, setHandoffError] = useState("");
+
+  useEffect(() => {
+    setDestination(message.handoff?.destination ?? "");
+    setHandoffError("");
+    setSubmitting(false);
+  }, [message]);
+
+  async function submitHandoff(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitting(true);
+    setHandoffError("");
+    try {
+      await onCreateHandoff(message, destination);
+      setHandoffOpen(false);
+    } catch (cause) {
+      setHandoffError(cause instanceof Error ? cause.message : "handoff failed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
     <section className="panel message-detail-panel">
       <div className="panel-heading">
@@ -109,8 +142,50 @@ function MessageDetail({
           <h2>{message.subject || "(no subject)"}</h2>
           <p>{message.from_addr}</p>
         </div>
-        <span className={statusPillClass(message.status)}>{message.status}</span>
+        <span className="message-detail-badges">
+          <span className={statusPillClass(message.status)}>{message.status}</span>
+          <HandoffBadge message={message} />
+        </span>
       </div>
+
+      <section className="handoff-panel" aria-label="Thread handoff">
+        <div>
+          <HandoffBadge message={message} />
+          {message.handoff ? (
+            <p>
+              {message.handoff.destination} to {message.handoff.remote_target}
+            </p>
+          ) : (
+            <p>No handoff destination set.</p>
+          )}
+        </div>
+        {handoffOpen ? (
+          <form className="handoff-form" onSubmit={submitHandoff}>
+            <label>
+              Handoff destination
+              <input
+                type="email"
+                value={destination}
+                onChange={(event) => setDestination(event.target.value)}
+                required
+              />
+            </label>
+            <button type="submit" disabled={submitting}>
+              <Forward aria-hidden="true" />
+              {submitting ? "Sending" : "Forward chain"}
+            </button>
+            <button type="button" onClick={() => setHandoffOpen(false)}>
+              Cancel
+            </button>
+            {handoffError ? <p role="alert">{handoffError}</p> : null}
+          </form>
+        ) : (
+          <button type="button" onClick={() => setHandoffOpen(true)}>
+            <Forward aria-hidden="true" />
+            {message.handoff ? "Forward again" : "Hand off thread"}
+          </button>
+        )}
+      </section>
 
       <section className="message-section">
         <h3><Mail aria-hidden="true" /> Inbound</h3>
@@ -214,7 +289,10 @@ function MessageDetail({
                   <strong>{threadMessage.subject || "(no subject)"}</strong>
                   <span>{threadMessage.from_addr}</span>
                 </span>
-                <span className={statusPillClass(threadMessage.status)}>{threadMessage.status}</span>
+                <span className="message-row-badges">
+                  <span className={statusPillClass(threadMessage.status)}>{threadMessage.status}</span>
+                  <HandoffBadge message={threadMessage} />
+                </span>
                 <span>{formatTimestamp(threadMessage.updated_at)}</span>
               </button>
             );
@@ -289,6 +367,24 @@ function MessageDetail({
       </details>
     </section>
   );
+}
+
+function HandoffBadge({ message }: { message: ProcessedEmail }) {
+  if (!message.handoff) {
+    return null;
+  }
+  const label = handoffLabel(message.handoff.state);
+  return <span className={`handoff-chip ${message.handoff.state}`}>{label}</span>;
+}
+
+function handoffLabel(state: string): string {
+  if (state === "sending") {
+    return "Handoff pending";
+  }
+  if (state === "uncertain") {
+    return "Handoff uncertain";
+  }
+  return "Handed off";
 }
 
 function TextBlock({ label, value }: { label: string; value?: string | null }) {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   ApiError,
+  createHandoff,
   createEmailCategory,
   createEmailRule,
   createEmailTopic,
@@ -81,6 +82,36 @@ describe("api", () => {
     expect(fetchImpl).toHaveBeenCalledWith(
       "/api/messages?limit=250",
       expect.objectContaining({ credentials: "same-origin" })
+    );
+  });
+
+  it("posts thread handoff requests with an idempotency key", async () => {
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("11111111-1111-4111-8111-111111111111");
+    const handoff = {
+      state: "active",
+      destination: "mark.personal@example.com",
+      remote_target: "person@example.com",
+      last_error: null,
+      updated_at: "2026-07-01 00:04:00+00"
+    };
+    const fetchImpl = vi.fn(async () => jsonResponse({ handoff }));
+
+    await expect(
+      createHandoff(
+        "2e7bcb41-5034-45a4-8135-3c33e6275d67",
+        "mark.personal@example.com",
+        fetchImpl as typeof fetch
+      )
+    ).resolves.toEqual(handoff);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/api/messages/2e7bcb41-5034-45a4-8135-3c33e6275d67/handoff",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          request_id: "11111111-1111-4111-8111-111111111111",
+          destination: "mark.personal@example.com"
+        })
+      })
     );
   });
 

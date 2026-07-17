@@ -12,6 +12,10 @@ use ai_memmail_server::mail::{
 use ai_memmail_server::storage::PgStore;
 use ai_memmail_server::worker;
 
+#[path = "live_e2e/handoff.rs"]
+mod handoff;
+use handoff::{run_thread_handoff, LiveHandoffExpectation};
+
 const DEFAULT_CONFIG_PATH: &str = "config/config.yaml";
 
 #[tokio::test(flavor = "multi_thread")]
@@ -54,7 +58,7 @@ async fn live_email_processing_scenarios() {
         &known_reply_message_id,
     )
     .await;
-    let subjects = [
+    let subjects = vec![
         known_subject.clone(),
         escalation_subject.clone(),
         run_human_forward(
@@ -85,7 +89,23 @@ async fn live_email_processing_scenarios() {
         )
         .await,
     ];
-    assert_processed_history(&processing, &subjects, &known_subject, &escalation_subject).await;
+    let handoff = run_thread_handoff(
+        &config,
+        monitored,
+        &forward,
+        &transport,
+        &processing,
+        &known_subject,
+    )
+    .await;
+    assert_processed_history(
+        &processing,
+        &subjects,
+        &known_subject,
+        &escalation_subject,
+        handoff.as_ref(),
+    )
+    .await;
 }
 
 async fn run_known_mcp_reply(
@@ -151,6 +171,7 @@ async fn run_escalation_followup(
                 subject: subject.clone(),
                 body: probe_body.to_string(),
                 reason: "live e2e escalation follow-up".to_string(),
+                reply_to: None,
                 message_id: None,
                 in_reply_to: Some(known_reply_message_id.to_string()),
                 references: vec![known_reply_message_id.to_string()],
@@ -308,6 +329,7 @@ async fn send_probe(
                 subject: subject.to_string(),
                 body: body.to_string(),
                 reason: "live e2e probe".to_string(),
+                reply_to: None,
                 message_id: None,
                 in_reply_to: None,
                 references: vec![],
@@ -385,6 +407,7 @@ async fn assert_processed_history(
     subjects: &[String],
     known_subject: &str,
     escalation_subject: &str,
+    handoff: Option<&LiveHandoffExpectation>,
 ) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
@@ -438,6 +461,22 @@ async fn assert_processed_history(
                 known.logs.iter().any(|entry| entry.action == "smtp_send"),
                 "known MCP history row should include SMTP timeline logs"
             );
+            if let Some(expected) = handoff {
+                let handoff = known
+                    .handoff
+                    .as_ref()
+                    .expect("known thread handoff summary");
+                assert_eq!(handoff.state, "active");
+                assert_eq!(handoff.destination, expected.destination);
+                assert_eq!(handoff.remote_target, expected.remote_target);
+                assert!(
+                    known
+                        .logs
+                        .iter()
+                        .any(|entry| entry.action == "thread_handoff" && entry.status == "sent"),
+                    "known MCP history row should include handoff timeline logs"
+                );
+            }
 
             let escalation = messages
                 .iter()

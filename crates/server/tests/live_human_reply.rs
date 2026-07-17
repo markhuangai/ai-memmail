@@ -95,6 +95,7 @@ async fn capture_human_client_reply_without_ai_processing() {
                 subject: subject.clone(),
                 body,
                 reason: "authorized human reply context probe".to_string(),
+                reply_to: None,
                 message_id: Some(message_id.clone()),
                 in_reply_to: None,
                 references: vec![],

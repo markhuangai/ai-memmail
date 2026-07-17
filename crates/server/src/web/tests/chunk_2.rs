@@ -145,3 +145,53 @@ fn missing_or_malformed_cookie_has_no_session_token() {
     headers.insert(COOKIE, "bad-cookie".parse().unwrap());
     assert_eq!(session_token(&headers), None);
 }
+
+#[test]
+fn handoff_destination_validation_rejects_managed_and_remote_addresses() {
+    let mut config = config();
+    let mailbox = config.mailboxes.remove(0);
+
+    let managed = validate_handoff_destination(&mailbox, "support@example.com").unwrap_err();
+    assert_eq!(managed.status, StatusCode::BAD_REQUEST);
+    assert!(managed.message.contains("managed mailbox"));
+
+    let valid = validate_handoff_destination(&mailbox, "Mark <mark.personal@example.com>").unwrap();
+    assert_eq!(valid, "mark.personal@example.com");
+
+    let remote = validate_handoff_target("person@example.com", "person@example.com").unwrap_err();
+    assert_eq!(remote.status, StatusCode::BAD_REQUEST);
+    assert!(remote.message.contains("remote sender"));
+}
+
+#[test]
+fn handoff_action_sets_reply_to_and_thread_headers() {
+    let mut config = config();
+    let mailbox = config.mailboxes.remove(0);
+    let mut context = ThreadContext::empty("<root@example.com>".to_string());
+    context.messages.push(ThreadMessage {
+        direction: MessageDirection::Inbound,
+        message_id: Some("<root@example.com>".to_string()),
+        in_reply_to: None,
+        references: vec![],
+        from_addr: "person@example.com".to_string(),
+        recipients: vec!["support@example.com".to_string()],
+        subject: "Project follow up".to_string(),
+        authored_text: "Can Mark reply?".to_string(),
+        body_truncated: false,
+        timestamp: 1,
+    });
+
+    let action = handoff_action(
+        &mailbox,
+        &context,
+        "mark.personal@example.com",
+        "person@example.com",
+    )
+    .unwrap();
+
+    assert_eq!(action.recipients, vec!["mark.personal@example.com"]);
+    assert_eq!(action.reply_to.as_deref(), Some("person@example.com"));
+    assert_eq!(action.in_reply_to.as_deref(), Some("<root@example.com>"));
+    assert_eq!(action.references, vec!["<root@example.com>"]);
+    assert!(action.body.contains("Can Mark reply?"));
+}

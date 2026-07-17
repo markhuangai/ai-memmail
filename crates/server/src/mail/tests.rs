@@ -4,6 +4,8 @@ use crate::config::{AcceptedCondition, AgentConfig, ImapConfig, MailboxConfig, S
 
 use super::*;
 
+mod coverage_tests;
+mod handoff_tests;
 mod thread_context_tests;
 
 #[derive(Clone, Default)]
@@ -170,6 +172,7 @@ async fn live_transport_delegates_to_blocking_client() {
         subject: "Re: Question".to_string(),
         body: "Answer".to_string(),
         reason: "test".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
@@ -269,6 +272,7 @@ fn validates_reply_requires_recipient_subject_and_body() {
         subject: "".to_string(),
         body: "".to_string(),
         reason: "test".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
@@ -285,6 +289,7 @@ fn validates_noop_has_no_recipients() {
         subject: "".to_string(),
         body: "".to_string(),
         reason: "nothing to do".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
@@ -301,6 +306,7 @@ fn validates_complete_reply_forward_and_noop_actions() {
         subject: "Re: Hello".to_string(),
         body: "Thanks".to_string(),
         reason: "known answer".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
@@ -313,6 +319,7 @@ fn validates_complete_reply_forward_and_noop_actions() {
         subject: "Review".to_string(),
         body: "Please review".to_string(),
         reason: "needs human review".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
@@ -325,6 +332,7 @@ fn validates_complete_reply_forward_and_noop_actions() {
         subject: "".to_string(),
         body: "".to_string(),
         reason: "nothing safe to do".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
@@ -599,6 +607,7 @@ fn send_blocking_rejects_invalid_action_before_smtp() {
         subject: "".to_string(),
         body: "".to_string(),
         reason: "invalid".to_string(),
+        reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
@@ -613,6 +622,19 @@ fn send_blocking_rejects_invalid_action_before_smtp() {
 fn parse_mailbox_reports_invalid_addresses() {
     assert!(crate::mail_external::parse_mailbox("support@example.com").is_ok());
     assert!(crate::mail_external::parse_mailbox("not an address").is_err());
+}
+
+#[test]
+fn outbound_message_id_uses_sender_domain_or_fallback() {
+    let mut mailbox = mailbox_config();
+    let message_id = outbound_message_id(&mailbox);
+    assert!(message_id.starts_with('<'));
+    assert!(message_id.ends_with("@example.com>"));
+
+    mailbox.smtp.from = "support".to_string();
+    let fallback_message_id = outbound_message_id(&mailbox);
+    assert!(fallback_message_id.starts_with('<'));
+    assert!(fallback_message_id.ends_with("@ai-memmail.local>"));
 }
 
 fn filter_message(subject: &str, recipients: Vec<String>) -> InboundMessage {

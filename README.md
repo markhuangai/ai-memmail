@@ -407,7 +407,8 @@ only and use untracked credentials from `config/config.yaml`.
 
 ## Docker
 
-The local Compose stack pulls `ghcr.io/markhuangai/ai-memmail:latest` and runs:
+The local Compose stack pulls `ghcr.io/markhuangai/ai-memmail:latest` by
+default and runs:
 
 - PostgreSQL
 - `app`
@@ -415,6 +416,10 @@ The local Compose stack pulls `ghcr.io/markhuangai/ai-memmail:latest` and runs:
 The published image is a multi-stage build: Node builds the React control panel,
 Rust builds the service binary, and the runtime image contains only the compiled
 assets needed to run ai-memmail.
+
+`scripts/live-e2e.sh` builds a local `AI_MEMMAIL_APP_IMAGE` tag before starting
+the app container so the container E2E path tests the current checkout instead
+of the published image.
 
 ## Git Vibe
 

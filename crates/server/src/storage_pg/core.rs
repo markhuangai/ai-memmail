@@ -151,9 +151,13 @@ impl PgStore {
                     ),
                     pr.classification_reason, pr.classification_confidence, pr.decision_source,
                     pr.matched_rule_id, pr.matched_rule_name, pr.matched_rule_goal,
-                    pr.created_at::text, pr.updated_at::text
+                    pr.created_at::text, pr.updated_at::text,
+                    th.state, th.destination, th.remote_target, th.last_error, th.updated_at::text
                 FROM processing_runs pr
                 LEFT JOIN email_categories c ON c.id = pr.classification_category_id
+                LEFT JOIN thread_handoffs th
+                    ON th.mailbox_id = pr.mailbox_id
+                    AND th.thread_id = COALESCE(pr.thread_id, pr.message_id, pr.mailbox_id || ':' || pr.uid_validity::text || ':' || pr.uid::text)
                 ORDER BY pr.updated_at DESC
                 LIMIT $1",
                 &[&limit],
@@ -206,6 +210,13 @@ impl PgStore {
                 created_at: row.get(34),
                 updated_at: row.get(35),
                 logs,
+                handoff: row.get::<_, Option<String>>(36).map(|state| ThreadHandoffSummary {
+                    state,
+                    destination: row.get(37),
+                    remote_target: row.get(38),
+                    last_error: row.get(39),
+                    updated_at: row.get(40),
+                }),
             });
         }
         Ok(emails)

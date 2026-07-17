@@ -78,6 +78,7 @@ pub fn forward_decision(
                 message.metadata.from_addr
             ),
             reason: reason.into(),
+            reply_to: None,
             message_id: None,
             in_reply_to: None,
             references: vec![],

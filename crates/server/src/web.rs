@@ -11,14 +11,25 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use lettre::message::Mailbox as LettreMailbox;
 use serde::{Deserialize, Serialize};
 use tower_http::services::ServeDir;
 use uuid::Uuid;
 
 use crate::classification::{EmailClassificationConfig, NewEmailRule};
-use crate::config::{AppConfig, ConfigError};
+use crate::config::{AppConfig, ConfigError, MailboxConfig};
+use crate::logging::{ActionEvent, LogLevel};
+#[cfg(test)]
+use crate::mail::ThreadMessage;
+use crate::mail::{
+    outbound_message_id, reply_recipient, thread_handoff_body, LiveMailTransport, MailError,
+    MailTransport, MessageDirection, OutboundAction, OutboundActionKind, ThreadContext,
+};
 use crate::prompts;
-use crate::storage::{PgStore, ProcessedEmail, ProcessingStore, StorageError};
+use crate::storage::{
+    NewThreadHandoffDelivery, PgStore, ProcessedEmail, ProcessingStore, StorageError,
+    ThreadHandoffSource, ThreadHandoffSummary,
+};
 use crate::worker;
 
 const SESSION_COOKIE: &str = "ai_memmail_session";
@@ -33,6 +44,7 @@ pub struct AppState {
     sessions: SessionStore,
     control_panel_key: String,
     started_at: SystemTime,
+    mail: Arc<dyn MailTransport>,
 }
 
 #[derive(Clone, Default)]
@@ -68,9 +80,20 @@ pub struct MessagesResponse {
     pub messages: Vec<ProcessedEmail>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct HandoffResponse {
+    pub handoff: Option<ThreadHandoffSummary>,
+}
+
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 pub struct MessagesQuery {
     pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+pub struct HandoffRequest {
+    pub request_id: Uuid,
+    pub destination: String,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -131,6 +154,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/logout", post(logout))
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/messages", get(get_messages))
+        .route("/api/messages/:run_id/handoff", post(create_handoff))
         .route(
             "/api/prompt-file",
             get(get_prompt_file).put(update_prompt_file),
@@ -149,12 +173,27 @@ pub fn router(state: AppState) -> Router {
 
 impl AppState {
     pub fn new(config_path: PathBuf, config: AppConfig, control_panel_key: String) -> Self {
+        Self::new_with_mail(
+            config_path,
+            config,
+            control_panel_key,
+            Arc::new(LiveMailTransport::default()),
+        )
+    }
+
+    pub fn new_with_mail(
+        config_path: PathBuf,
+        config: AppConfig,
+        control_panel_key: String,
+        mail: Arc<dyn MailTransport>,
+    ) -> Self {
         Self {
             config_path,
             config: Arc::new(RwLock::new(config)),
             sessions: SessionStore::default(),
             control_panel_key,
             started_at: SystemTime::now(),
+            mail,
         }
     }
 
@@ -291,6 +330,8 @@ async fn get_messages(
         .map_err(ApiError::from_storage)?;
     Ok(Json(MessagesResponse { messages }))
 }
+
+include!("web/handoff.rs");
 
 async fn get_prompt_file(
     State(state): State<AppState>,
@@ -535,11 +576,21 @@ impl ApiError {
     fn from_storage(error: StorageError) -> Self {
         let status = match &error {
             StorageError::ClassificationNotFound(_) => StatusCode::NOT_FOUND,
-            StorageError::InvalidClassification(_) => StatusCode::BAD_REQUEST,
+            StorageError::HandoffSourceNotFound(_) => StatusCode::NOT_FOUND,
+            StorageError::InvalidClassification(_) | StorageError::InvalidHandoff(_) => {
+                StatusCode::BAD_REQUEST
+            }
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         Self {
             status,
+            message: error.to_string(),
+        }
+    }
+
+    fn from_mail_build(error: MailError) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
             message: error.to_string(),
         }
     }

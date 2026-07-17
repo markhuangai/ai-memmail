@@ -174,6 +174,60 @@ describe("App history", () => {
     expect(screen.getByText("<auto-42@example.com>")).toBeInTheDocument();
   });
 
+  it("creates a thread handoff and refreshes the history badge", async () => {
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("22222222-2222-4222-8222-222222222222");
+    const handedOff = {
+      ...sampleMessages[0],
+      handoff: {
+        state: "active",
+        destination: "mark.personal@example.com",
+        remote_target: "person@example.com",
+        last_error: null,
+        updated_at: "2026-07-01 00:04:00+00"
+      }
+    };
+    const messageResponses = [sampleMessages, [handedOff]];
+    const handoffRequests: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((path, init) => {
+      if (path === "/api/status") {
+        return jsonResponse({
+          service: "ai-memmail",
+          authenticated: true,
+          uptime_seconds: 3,
+          enabled_mailboxes: 1
+        });
+      }
+      if (String(path).startsWith("/api/messages") && init?.method === "POST") {
+        handoffRequests.push(String(init.body));
+        return jsonResponse({ handoff: handedOff.handoff });
+      }
+      if (String(path).startsWith("/api/messages")) {
+        return jsonResponse({ messages: messageResponses.shift() ?? [handedOff] });
+      }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
+      }
+      return jsonResponse({ config: sampleConfig });
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /hand off thread/i }));
+    fireEvent.change(screen.getByLabelText(/handoff destination/i), {
+      target: { value: "mark.personal@example.com" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /forward chain/i }));
+
+    await waitFor(() => expect(handoffRequests).toHaveLength(1));
+    expect(JSON.parse(handoffRequests[0])).toEqual({
+      request_id: "22222222-2222-4222-8222-222222222222",
+      destination: "mark.personal@example.com"
+    });
+    await waitFor(() => expect(screen.getAllByText("Handed off").length).toBeGreaterThan(0));
+    expect(screen.getByText("mark.personal@example.com to person@example.com")).toBeInTheDocument();
+  });
+
   it("renders history status variants and raw invalid timestamps", async () => {
     const variantMessages = [
       {
