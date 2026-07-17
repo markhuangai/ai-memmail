@@ -13,7 +13,7 @@ RUN cargo build --release --locked -p ai-memmail-server
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=server-build /app/target/release/ai-memmail-server /usr/local/bin/ai-memmail-server

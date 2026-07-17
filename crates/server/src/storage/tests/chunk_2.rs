@@ -193,22 +193,25 @@ async fn memory_processing_store_records_thread_handoff_delivery() {
         None
     );
 
-    store.set_thread_handoff(ThreadHandoff {
-        mailbox_id: "support".to_string(),
-        thread_id: "thread-1".to_string(),
-        destination: "personal@example.com".to_string(),
-        remote_target: "person@example.com".to_string(),
-        state: "active".to_string(),
-        last_error: None,
-        updated_at: "2026-07-16T21:01:00Z".to_string(),
-    });
-    let handoff = store
-        .active_thread_handoff("support", "thread-1")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(handoff.destination, "personal@example.com");
-    assert_eq!(handoff.remote_target, "person@example.com");
+    for state in ["active", "sending", "uncertain"] {
+        store.set_thread_handoff(ThreadHandoff {
+            mailbox_id: "support".to_string(),
+            thread_id: "thread-1".to_string(),
+            destination: "personal@example.com".to_string(),
+            remote_target: "person@example.com".to_string(),
+            state: state.to_string(),
+            last_error: None,
+            updated_at: "2026-07-16T21:01:00Z".to_string(),
+        });
+        let handoff = store
+            .active_thread_handoff("support", "thread-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(handoff.state, state);
+        assert_eq!(handoff.destination, "personal@example.com");
+        assert_eq!(handoff.remote_target, "person@example.com");
+    }
 
     let delivery = NewThreadHandoffDelivery {
         request_id,

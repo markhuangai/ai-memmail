@@ -494,7 +494,7 @@ impl ProcessingStore for MemoryProcessingStore {
             .lock()
             .map_err(|_| StorageError::LockPoisoned)?
             .get(&(mailbox_id.to_string(), thread_id.to_string()))
-            .filter(|handoff| handoff.state == "active")
+            .filter(|handoff| matches!(handoff.state.as_str(), "active" | "sending" | "uncertain"))
             .cloned())
     }
 

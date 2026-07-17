@@ -26,6 +26,12 @@ services:
     volumes:
       - ./config/config.yaml:/app/config/config.yaml
       - ./prompts:/app/prompts:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/api/status >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
