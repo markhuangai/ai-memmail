@@ -115,6 +115,47 @@ describe("api", () => {
     );
   });
 
+  it("falls back to getRandomValues when randomUUID is unavailable", async () => {
+    const randomUUIDDescriptor = Object.getOwnPropertyDescriptor(crypto, "randomUUID");
+    Object.defineProperty(crypto, "randomUUID", {
+      configurable: true,
+      value: undefined
+    });
+    const getRandomValues = vi.spyOn(crypto, "getRandomValues").mockImplementation((array) => {
+      const bytes = array as Uint8Array;
+      bytes.set([
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+        0x0d, 0x0e, 0x0f
+      ]);
+      return array;
+    });
+    let handoffRequest = "";
+    const fetchImpl = vi.fn(async (_path: RequestInfo | URL, init?: RequestInit) => {
+      handoffRequest = String(init?.body);
+      return jsonResponse({ handoff: null });
+    });
+
+    try {
+      await createHandoff(
+        "2e7bcb41-5034-45a4-8135-3c33e6275d67",
+        "mark.personal@example.com",
+        fetchImpl as typeof fetch
+      );
+    } finally {
+      getRandomValues.mockRestore();
+      if (randomUUIDDescriptor) {
+        Object.defineProperty(crypto, "randomUUID", randomUUIDDescriptor);
+      } else {
+        delete (crypto as Partial<Crypto>).randomUUID;
+      }
+    }
+
+    expect(JSON.parse(handoffRequest)).toEqual({
+      request_id: "00010203-0405-4607-8809-0a0b0c0d0e0f",
+      destination: "mark.personal@example.com"
+    });
+  });
+
   it("loads and saves prompt files", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({ path: "support-agent.md", content: "Prompt content" })

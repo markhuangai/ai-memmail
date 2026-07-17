@@ -13,7 +13,6 @@ set -euo pipefail
 export CONTROL_PANEL_KEY AI_MEMMAIL_CONFIG AI_MEMMAIL_HTTP_PORT PLAYWRIGHT_BASE_URL
 export AI_MEMMAIL_LIVE_E2E_RUN_ID AI_MEMMAIL_LIVE_E2E_DB_HOST AI_MEMMAIL_LIVE_E2E_DB_PORT
 export AI_MEMMAIL_POSTGRES_PORT AI_MEMMAIL_APP_IMAGE
-export AI_MEMMAIL_LIVE_HANDOFF_TO AI_MEMMAIL_LIVE_HANDOFF_IMAP_USERNAME AI_MEMMAIL_LIVE_HANDOFF_IMAP_PASSWORD
 
 if [ ! -f "$AI_MEMMAIL_CONFIG" ]; then
   echo "$AI_MEMMAIL_CONFIG does not exist. Create it from config/config.example.yaml." >&2
@@ -37,3 +36,7 @@ docker compose up --wait --wait-timeout 120 app
 cd web
 npm ci
 E2E_LIVE=1 npm run e2e
+
+cd ..
+AI_MEMMAIL_LIVE_E2E=1 AI_MEMMAIL_LIVE_E2E_VERIFY_UI_HANDOFF=1 \
+  cargo test -p ai-memmail-server --test live_e2e live_email_processing_scenarios -- --nocapture

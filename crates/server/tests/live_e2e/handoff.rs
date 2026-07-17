@@ -1,17 +1,10 @@
 use std::time::Duration;
 
-use ai_memmail_server::config::{AppConfig, MailboxConfig};
-use ai_memmail_server::logging::{ActionEvent, LogLevel};
+use ai_memmail_server::config::MailboxConfig;
 use ai_memmail_server::mail::{
-    outbound_message_id, reply_recipient, thread_handoff_body, LiveMailTransport, MailTransport,
-    MessageDirection, OutboundAction, OutboundActionKind, AUTOMATED_REPLY_NOTICE,
+    reply_recipient, InboundMessage, LiveMailTransport, MailTransport, AUTOMATED_REPLY_NOTICE,
 };
-use ai_memmail_server::storage::{
-    NewThreadHandoffDelivery, PgStore, ProcessedEmail, ProcessingStore,
-};
-use uuid::Uuid;
-
-use super::wait_for_forward_mail;
+use ai_memmail_server::storage::{PgStore, ProcessedEmail, ProcessingStore};
 
 #[derive(Debug, Clone)]
 pub(super) struct LiveHandoffExpectation {
@@ -19,20 +12,14 @@ pub(super) struct LiveHandoffExpectation {
     pub(super) remote_target: String,
 }
 
-pub(super) async fn run_thread_handoff(
-    config: &AppConfig,
+pub(super) async fn verify_ui_thread_handoff(
     monitored: &MailboxConfig,
     forward: &MailboxConfig,
     transport: &LiveMailTransport,
     processing: &PgStore,
     known_subject: &str,
 ) -> Option<LiveHandoffExpectation> {
-    let Some(handoff_mailbox) = handoff_mailbox(monitored, forward) else {
-        eprintln!(
-            "skipping live handoff delivery; set AI_MEMMAIL_LIVE_HANDOFF_TO to an accessible mailbox distinct from the monitored and remote sender addresses"
-        );
-        return None;
-    };
+    let handoff_mailbox = handoff_mailbox(forward);
 
     let source_row = wait_for_history_row(processing, known_subject).await;
     let source = processing
@@ -52,119 +39,36 @@ pub(super) async fn run_thread_handoff(
     let destination = reply_recipient(&handoff_mailbox.address);
     assert!(
         !destination.eq_ignore_ascii_case(&reply_recipient(&monitored.address)),
-        "AI_MEMMAIL_LIVE_HANDOFF_TO must not be the monitored mailbox"
+        "derived live handoff destination must not be the monitored mailbox"
     );
     assert!(
         !destination.eq_ignore_ascii_case(&remote_target),
-        "AI_MEMMAIL_LIVE_HANDOFF_TO must differ from the remote sender mailbox"
+        "derived live handoff destination must differ from the remote sender mailbox"
     );
 
-    let thread_context = processing
-        .load_thread_context_by_id(monitored, &source.thread_id)
-        .await
-        .expect("load live handoff thread context");
-    let latest = thread_context
-        .messages
-        .iter()
-        .rev()
-        .find(|message| message.direction == MessageDirection::Inbound)
-        .expect("live handoff thread has an inbound message");
-    let mut references = latest.references.clone();
-    if let Some(message_id) = &latest.message_id {
-        if !references.iter().any(|reference| reference == message_id) {
-            references.push(message_id.clone());
-        }
-    }
-    let action = OutboundAction {
-        kind: OutboundActionKind::Forward,
-        recipients: vec![destination.clone()],
-        subject: latest.subject.clone(),
-        body: thread_handoff_body(&thread_context).expect("build live handoff thread body"),
-        reason: "live e2e thread handoff".to_string(),
-        reply_to: Some(remote_target.clone()),
-        message_id: Some(outbound_message_id(monitored)),
-        in_reply_to: latest.message_id.clone(),
-        references,
-    };
-    let request_id = Uuid::new_v4();
-    let delivery = NewThreadHandoffDelivery {
-        request_id,
-        mailbox_id: source.mailbox_id.clone(),
-        thread_id: source.thread_id.clone(),
-        source_run_id: Some(source.run_id),
-        destination: destination.clone(),
-        remote_target: remote_target.clone(),
-        outbound_message_id: action
-            .message_id
-            .clone()
-            .expect("live handoff action message id"),
-    };
-    let started = processing
-        .begin_thread_handoff_delivery(&delivery)
-        .await
-        .expect("begin live handoff delivery");
-    assert_eq!(started.status, "sending");
-    match transport.send(&monitored.smtp, &action).await {
-        Ok(()) => {
-            processing
-                .finish_thread_handoff_delivery(
-                    &source.mailbox_id,
-                    &source.thread_id,
-                    request_id,
-                    "sent",
-                    None,
-                )
-                .await
-                .expect("finish live handoff delivery");
-            processing
-                .insert_action_log(&ActionEvent {
-                    level: LogLevel::Info,
-                    run_id: source.run_id.to_string(),
-                    mailbox_id: Some(source.mailbox_id.clone()),
-                    message_uid_validity: Some(source.uid_validity),
-                    message_uid: Some(source.uid),
-                    action: "thread_handoff".to_string(),
-                    status: "sent".to_string(),
-                    duration_ms: 0,
-                    detail: Some(format!("destination={destination}")),
-                })
-                .await
-                .expect("record live handoff log");
-        }
-        Err(error) => {
-            let detail = error.to_string();
-            processing
-                .finish_thread_handoff_delivery(
-                    &source.mailbox_id,
-                    &source.thread_id,
-                    request_id,
-                    "failed",
-                    Some(&detail),
-                )
-                .await
-                .expect("finish failed live handoff delivery");
-            panic!("send live handoff delivery failed: {detail}");
-        }
-    }
-
-    let message = wait_for_forward_mail(
-        config,
-        &handoff_mailbox,
-        transport,
+    let handoff = wait_for_active_handoff(
         processing,
         known_subject,
-        |message| {
-            message.metadata.subject.contains(known_subject)
-                && message
-                    .plain_text
-                    .contains("---------- Conversation handoff ---------")
-                && message
-                    .plain_text
-                    .contains("According to configured MCP memory")
-                && message.plain_text.contains(AUTOMATED_REPLY_NOTICE)
-                && message.plain_text.contains("escalation to human")
-        },
+        &source.mailbox_id,
+        &source.thread_id,
+        &destination,
+        &remote_target,
     )
+    .await;
+    assert_eq!(handoff.destination, destination);
+    assert_eq!(handoff.remote_target, remote_target);
+
+    let message = wait_for_handoff_mail(&handoff_mailbox, transport, known_subject, |message| {
+        message.metadata.subject.contains(known_subject)
+            && message
+                .plain_text
+                .contains("---------- Conversation handoff ---------")
+            && message
+                .plain_text
+                .contains("According to configured MCP memory")
+            && message.plain_text.contains(AUTOMATED_REPLY_NOTICE)
+            && message.plain_text.contains("escalation to human")
+    })
     .await;
     assert!(
         message.plain_text.contains("90"),
@@ -175,6 +79,75 @@ pub(super) async fn run_thread_handoff(
         destination,
         remote_target,
     })
+}
+
+async fn wait_for_active_handoff(
+    store: &PgStore,
+    subject: &str,
+    mailbox_id: &str,
+    thread_id: &str,
+    destination: &str,
+    remote_target: &str,
+) -> ai_memmail_server::storage::ThreadHandoff {
+    let timeout = std::env::var("AI_MEMMAIL_LIVE_E2E_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(420);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
+    loop {
+        let handoff = store
+            .active_thread_handoff(mailbox_id, thread_id)
+            .await
+            .expect("load live UI handoff");
+        if let Some(handoff) = handoff {
+            if handoff.state == "active"
+                && handoff.destination == destination
+                && handoff.remote_target == remote_target
+            {
+                return handoff;
+            }
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for UI-created handoff state; subject={subject}"
+        );
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+async fn wait_for_handoff_mail(
+    mailbox: &MailboxConfig,
+    transport: &LiveMailTransport,
+    subject: &str,
+    matches: impl Fn(&InboundMessage) -> bool,
+) -> InboundMessage {
+    let timeout = std::env::var("AI_MEMMAIL_LIVE_E2E_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(420);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
+    loop {
+        let messages = transport
+            .fetch_unseen(mailbox, 200)
+            .await
+            .expect("fetch live handoff mailbox");
+        for message in messages {
+            if matches(&message) {
+                transport
+                    .mark_seen(mailbox, message.metadata.uid)
+                    .await
+                    .expect("mark live handoff message seen");
+                return message;
+            }
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for UI-created handoff mail; subject={subject}"
+        );
+        tokio::time::sleep(Duration::from_secs(8)).await;
+    }
 }
 
 async fn wait_for_history_row(store: &PgStore, subject: &str) -> ProcessedEmail {
@@ -198,21 +171,21 @@ async fn wait_for_history_row(store: &PgStore, subject: &str) -> ProcessedEmail 
     }
 }
 
-fn handoff_mailbox(monitored: &MailboxConfig, forward: &MailboxConfig) -> Option<MailboxConfig> {
-    let handoff_address = match std::env::var("AI_MEMMAIL_LIVE_HANDOFF_TO") {
-        Ok(address) if !address.trim().is_empty() => reply_recipient(&address),
-        _ => return None,
-    };
-    let mut handoff = monitored.clone();
+fn handoff_mailbox(forward: &MailboxConfig) -> MailboxConfig {
+    let handoff_address = handoff_alias(&forward.address);
+    let mut handoff = forward.clone();
     handoff.id = "live-e2e-handoff".to_string();
     handoff.address = handoff_address.clone();
     handoff.enabled = false;
-    handoff.imap.username = std::env::var("AI_MEMMAIL_LIVE_HANDOFF_IMAP_USERNAME")
-        .unwrap_or_else(|_| handoff_address.clone());
-    handoff.imap.password = std::env::var("AI_MEMMAIL_LIVE_HANDOFF_IMAP_PASSWORD")
-        .unwrap_or_else(|_| forward.imap.password.clone());
-    handoff.smtp.username = handoff_address.clone();
-    handoff.smtp.password = forward.smtp.password.clone();
     handoff.smtp.from = handoff_address;
-    Some(handoff)
+    handoff
+}
+
+fn handoff_alias(address: &str) -> String {
+    let address = reply_recipient(address);
+    let (local, domain) = address
+        .rsplit_once('@')
+        .expect("forward mailbox address should include a domain");
+    let local = local.split_once('+').map_or(local, |(base, _)| base);
+    format!("{local}+handoff@{domain}")
 }

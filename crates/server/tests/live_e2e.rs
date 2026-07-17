@@ -14,7 +14,7 @@ use ai_memmail_server::worker;
 
 #[path = "live_e2e/handoff.rs"]
 mod handoff;
-use handoff::{run_thread_handoff, LiveHandoffExpectation};
+use handoff::{verify_ui_thread_handoff, LiveHandoffExpectation};
 
 const DEFAULT_CONFIG_PATH: &str = "config/config.yaml";
 
@@ -38,6 +38,13 @@ async fn live_email_processing_scenarios() {
     let transport = LiveMailTransport::default();
     let processing = live_processing_store(&config.database).await;
     let run_id = unique_run_id();
+    let known_subject = format!("live-e2e known mcp {run_id}");
+
+    if std::env::var("AI_MEMMAIL_LIVE_E2E_VERIFY_UI_HANDOFF").as_deref() == Ok("1") {
+        verify_ui_thread_handoff(monitored, &forward, &transport, &processing, &known_subject)
+            .await;
+        return;
+    }
 
     let (known_subject, known_reply_message_id) = run_known_mcp_reply(
         &config,
@@ -89,21 +96,12 @@ async fn live_email_processing_scenarios() {
         )
         .await,
     ];
-    let handoff = run_thread_handoff(
-        &config,
-        monitored,
-        &forward,
-        &transport,
-        &processing,
-        &known_subject,
-    )
-    .await;
     assert_processed_history(
         &processing,
         &subjects,
         &known_subject,
         &escalation_subject,
-        handoff.as_ref(),
+        None,
     )
     .await;
 }
