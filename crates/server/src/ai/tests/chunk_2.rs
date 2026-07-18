@@ -131,6 +131,7 @@ async fn live_decision_engine_uses_review_prompt_for_outbound_review() {
             recipients: vec!["person@example.com".to_string()],
             subject: "Re: Question".to_string(),
             body: "Answer".to_string(),
+            html_body: None,
             reason: "draft".to_string(),
             reply_to: None,
             message_id: None,

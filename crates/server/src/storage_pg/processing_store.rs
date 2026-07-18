@@ -192,20 +192,22 @@ impl ProcessingStore for PgStore {
         key: &DedupeKey,
         action: &OutboundAction,
     ) -> Result<(), StorageError> {
-        let (body, body_redacted) = outbound_body_for_storage(action);
+        let (body, html_body, body_redacted) = outbound_body_for_storage(action);
         self.client
             .execute(
                 "UPDATE processing_runs
                 SET outbound_action = $1, outbound_recipients = $2, outbound_subject = $3,
-                    outbound_body = $4, outbound_body_redacted = $5, outbound_message_id = $6,
-                    outbound_reason = $7,
+                    outbound_body = $4, outbound_body_html = $5,
+                    outbound_body_redacted = $6, outbound_message_id = $7,
+                    outbound_reason = $8,
                     updated_at = now()
-                WHERE mailbox_id = $8 AND uid_validity = $9 AND uid = $10",
+                WHERE mailbox_id = $9 AND uid_validity = $10 AND uid = $11",
                 &[
                     &outbound_action_value(&action.kind),
                     &action.recipients,
                     &empty_string_as_none(&action.subject),
                     &body,
+                    &html_body,
                     &body_redacted,
                     &action.message_id,
                     &empty_string_as_none(&action.reason),

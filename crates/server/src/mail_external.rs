@@ -3,7 +3,7 @@ use std::net::TcpStream;
 
 use chrono::{DateTime, Utc};
 use imap::types::NameAttribute;
-use lettre::message::Mailbox;
+use lettre::message::{header, Mailbox};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use native_tls::TlsConnector;
@@ -359,9 +359,17 @@ pub(crate) fn build_message(
     for recipient in &action.recipients {
         builder = builder.to(parse_mailbox(recipient)?);
     }
-    builder
-        .body(action.body.clone())
-        .map_err(|error| MailError::Build(error.to_string()))
+    if let Some(html_body) = &action.html_body {
+        builder = builder.header(header::ContentType::TEXT_HTML);
+        builder
+            .body(html_body.clone())
+            .map_err(|error| MailError::Build(error.to_string()))
+    } else {
+        builder = builder.header(header::ContentType::TEXT_PLAIN);
+        builder
+            .body(action.body.clone())
+            .map_err(|error| MailError::Build(error.to_string()))
+    }
 }
 
 pub(crate) fn parse_mailbox(value: &str) -> Result<Mailbox, MailError> {
@@ -450,6 +458,7 @@ mod tests {
             recipients: vec!["person@example.com".to_string()],
             subject: "Re: Question".to_string(),
             body: "Answer".to_string(),
+            html_body: None,
             reason: "known answer".to_string(),
             reply_to: Some("remote@example.com".to_string()),
             message_id: Some("<reply@example.com>".to_string()),
@@ -469,6 +478,38 @@ mod tests {
         assert!(rendered.contains("References: <root@example.com> <inbound@example.com>\r\n"));
     }
 
+    #[test]
+    fn build_message_uses_html_body_as_single_html_part() {
+        let smtp = SmtpConfig {
+            host: "smtp.example.com".to_string(),
+            port: 587,
+            starttls: true,
+            username: "support@example.com".to_string(),
+            password: "secret".to_string(),
+            from: "support@example.com".to_string(),
+        };
+        let action = OutboundAction {
+            kind: OutboundActionKind::Reply,
+            recipients: vec!["person@example.com".to_string()],
+            subject: "Re: Question".to_string(),
+            body: "Answer".to_string(),
+            html_body: Some("<p>Answer</p>".to_string()),
+            reason: "known answer".to_string(),
+            reply_to: None,
+            message_id: Some("<reply@example.com>".to_string()),
+            in_reply_to: Some("<inbound@example.com>".to_string()),
+            references: vec![],
+        };
+
+        let message = build_message(&smtp, &action).unwrap();
+        let rendered = String::from_utf8(message.formatted()).unwrap();
+
+        assert!(rendered.contains("Content-Type: text/html; charset=utf-8\r\n"));
+        assert!(rendered.contains("<p>Answer</p>"));
+        assert!(!rendered.contains("multipart/alternative"));
+        assert!(!rendered.contains("Content-Type: text/plain"));
+    }
+
     fn mailbox_config() -> MailboxConfig {
         MailboxConfig {
             id: "support".to_string(),
@@ -476,6 +517,7 @@ mod tests {
             enabled: true,
             poll_interval_seconds: 30,
             safety_forward_to: vec!["safety@example.com".to_string()],
+            signature: None,
             accepted_conditions: vec![],
             mcp_servers: vec![],
             agent: AgentConfig {

@@ -60,6 +60,7 @@ pub const DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL: &str =
     include_str!("../migrations/004_default_email_rule_seed_uniqueness.sql");
 pub const SENT_THREAD_CONTEXT_SQL: &str = include_str!("../migrations/005_sent_thread_context.sql");
 pub const THREAD_HANDOFFS_SQL: &str = include_str!("../migrations/006_thread_handoffs.sql");
+pub const OUTBOUND_HTML_BODY_SQL: &str = include_str!("../migrations/007_outbound_html_body.sql");
 pub(crate) const MIGRATION_LOCK_ID: i64 = 4_971_774_501_001;
 pub(crate) const SCHEMA_MIGRATIONS_SQL: &str = "
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -99,6 +100,11 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         version: 6,
         name: "006_thread_handoffs",
         sql: THREAD_HANDOFFS_SQL,
+    },
+    Migration {
+        version: 7,
+        name: "007_outbound_html_body",
+        sql: OUTBOUND_HTML_BODY_SQL,
     },
 ];
 pub const PROCESSING_STATUS_PROCESSING: &str = "processing";
@@ -479,6 +485,7 @@ pub struct StoredOutboundAction {
     pub recipients: Vec<String>,
     pub subject: String,
     pub body: Option<String>,
+    pub html_body: Option<String>,
     pub body_redacted: bool,
     pub reason: String,
     pub message_id: Option<String>,
@@ -523,6 +530,7 @@ pub struct ProcessedEmail {
     pub outbound_recipients: Vec<String>,
     pub outbound_subject: Option<String>,
     pub outbound_body: Option<String>,
+    pub outbound_body_html: Option<String>,
     pub outbound_body_redacted: bool,
     pub outbound_message_id: Option<String>,
     pub outbound_reason: Option<String>,

@@ -10,6 +10,7 @@ import {
   updateMailbox
 } from "../configModel";
 import type { AcceptedCondition, AppConfig, MailboxConfig } from "../types";
+import { SignatureEditor } from "./SignatureEditor";
 
 export function Mailboxes({
   config,
@@ -215,6 +216,15 @@ export function Mailboxes({
                 Add condition
               </button>
             </fieldset>
+            <SignatureEditor
+              mailbox={mailbox}
+              onChange={(signature) =>
+                patchMailbox(mailbox.id, (next) => ({
+                  ...next,
+                  signature
+                }))
+              }
+            />
             <label>
               IMAP host
               <input

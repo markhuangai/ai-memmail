@@ -237,6 +237,11 @@
   white-space: pre-wrap;
 }
 
+.html-body-archive {
+  display: grid;
+  gap: 12px;
+}
+
 .chain-list {
   display: grid;
   gap: 8px;

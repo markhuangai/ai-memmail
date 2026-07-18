@@ -3,11 +3,14 @@ import {
   addBannedSender,
   addMailbox,
   addMcpServer,
+  AUTOMATED_REPLY_NOTICE,
   displaySecret,
   envToText,
+  escapeHtml,
   listToLines,
   listToText,
   mailboxRouteLabel,
+  plainTextToHtml,
   removeBannedSender,
   removeMailbox,
   removeMcpServer,
@@ -15,6 +18,7 @@ import {
   setLinesFromText,
   setListFromText,
   setMailboxScalar,
+  signaturePreviewHtml,
   summarizeConfig,
   textToEnv,
   updateMcpServer
@@ -70,6 +74,7 @@ describe("configModel", () => {
       enabled: false,
       poll_interval_seconds: 60,
       safety_forward_to: ["review@example.com"],
+      signature: null,
       accepted_conditions: [],
       agent: { system_prompt_path: "support-agent.md" },
       imap: { sent_folder: null, sent_backfill_days: 30 }
@@ -88,6 +93,24 @@ describe("configModel", () => {
       ]
     });
     expect(withCollision.mailboxes.at(-1)?.id).toBe("mailbox_4");
+  });
+
+  it("builds escaped signature previews", () => {
+    expect(escapeHtml("<Mark & Co>")).toBe("&lt;Mark &amp; Co&gt;");
+    expect(plainTextToHtml("Line 1\nLine <2>")).toBe("Line 1<br>Line &lt;2&gt;");
+    expect(signaturePreviewHtml(null)).toContain(plainTextToHtml(AUTOMATED_REPLY_NOTICE));
+    expect(
+      signaturePreviewHtml({
+        format: "plain_text",
+        content: "Mark <mark@example.com>"
+      })
+    ).toContain("Mark &lt;mark@example.com&gt;");
+    expect(
+      signaturePreviewHtml({
+        format: "html",
+        content: "<p><strong>Mark</strong></p>"
+      })
+    ).toContain("<p><strong>Mark</strong></p>");
   });
 
   it("converts comma separated list fields", () => {

@@ -50,6 +50,7 @@ export const sampleConfig: AppConfig = {
       enabled: true,
       poll_interval_seconds: 60,
       safety_forward_to: ["human@example.com"],
+      signature: null,
       accepted_conditions: [],
       mcp_servers: ["dense_mem_primary"],
       agent: {
@@ -108,6 +109,7 @@ export const sampleMessages: ProcessedEmail[] = [
     outbound_recipients: ["person@example.com"],
     outbound_subject: "Re: Pricing question",
     outbound_body: "Thanks for reaching out. The current plan is available.\n\n--\nThis is an automated email reply from ai-memmail. If this needs to be escalated to a human, reply with: escalation to human",
+    outbound_body_html: null,
     outbound_body_redacted: false,
     outbound_message_id: "<auto-42@example.com>",
     outbound_reason: "memory supported answer",
@@ -166,6 +168,7 @@ export const sampleMessages: ProcessedEmail[] = [
     outbound_recipients: ["human@example.com"],
     outbound_subject: "[Potential jailbreak] Suspicious prompt injection sample",
     outbound_body: null,
+    outbound_body_html: null,
     outbound_body_redacted: true,
     outbound_message_id: null,
     outbound_reason: "message contains prompt-injection language",

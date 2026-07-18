@@ -126,19 +126,47 @@ async fn enabled_outbound_review_approves_reply_before_send() {
     let reviewed = decisions.reviewed_actions();
     assert_eq!(reviewed.len(), 1);
     assert_eq!(reviewed[0].kind, OutboundActionKind::Reply);
-    assert!(reviewed[0]
-        .body
-        .contains(crate::mail::AUTOMATED_REPLY_NOTICE));
+    assert_eq!(reviewed[0].body, "Known answer");
+    assert_eq!(reviewed[0].html_body, None);
     assert_eq!(
         reviewed[0].in_reply_to,
         Some("<56@example.com>".to_string())
     );
-    assert_eq!(mail.sent()[0].body, reviewed[0].body);
+    assert!(mail.sent()[0]
+        .body
+        .contains(crate::mail::AUTOMATED_REPLY_NOTICE));
     assert_eq!(mail.sent()[0].message_id, reviewed[0].message_id);
     assert!(logger
         .events()
         .iter()
         .any(|event| event.action == "outbound_review" && event.status == "approved"));
+}
+
+#[tokio::test]
+async fn configured_html_signature_is_applied_after_outbound_review() {
+    let mut config = config();
+    config.ai.review.enabled = true;
+    config.mailboxes[0].signature = Some(EmailSignatureConfig {
+        format: EmailSignatureFormat::Html,
+        content: "<p><strong>Mark</strong></p>".to_string(),
+    });
+    let logger = crate::logging::MemoryLogger::default();
+    let mail = FakeMail::new(vec![inbound(66, "person@example.com", "Hello", "A <question>")]);
+    let decisions = fake_decisions(safe_scan(), reply_action());
+
+    run_once_with(&config, &logger, "run-test", &mail, &decisions).await;
+
+    let reviewed = decisions.reviewed_actions();
+    assert_eq!(reviewed[0].body, "Known answer");
+    assert_eq!(reviewed[0].html_body, None);
+    let sent = mail.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].body, "Known answer");
+    assert_eq!(
+        sent[0].html_body.as_deref(),
+        Some("Known answer<br><br><p><strong>Mark</strong></p>")
+    );
+    assert!(!sent[0].body.contains(crate::mail::AUTOMATED_REPLY_NOTICE));
 }
 
 #[tokio::test]

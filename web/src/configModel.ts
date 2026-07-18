@@ -1,9 +1,19 @@
 import type {
   AppConfig,
   BannedSenderConfig,
+  EmailSignatureConfig,
   MailboxConfig,
   McpServerConfig
 } from "./types";
+
+export const AUTOMATED_REPLY_NOTICE =
+  "This automated reply was sent on Mark's behalf. If this needs Mark's attention, reply with: escalation to human";
+
+export const SIGNATURE_SAMPLE_REPLY =
+  "Thanks for reaching out. I will follow up with the details.";
+
+export const DEFAULT_PLAIN_SIGNATURE = "--\nMark";
+export const DEFAULT_HTML_SIGNATURE = "<p><strong>Mark</strong></p>";
 
 export interface ConfigSummary {
   mailboxCount: number;
@@ -59,6 +69,7 @@ export function addMailbox(config: AppConfig): AppConfig {
     enabled: false,
     poll_interval_seconds: 60,
     safety_forward_to: ["review@example.com"],
+    signature: null,
     accepted_conditions: [],
     mcp_servers: [],
     agent: {
@@ -88,6 +99,30 @@ export function addMailbox(config: AppConfig): AppConfig {
     ...config,
     mailboxes: [...config.mailboxes, mailbox]
   };
+}
+
+export function signaturePreviewHtml(signature: EmailSignatureConfig | null | undefined): string {
+  const reply = plainTextToHtml(SIGNATURE_SAMPLE_REPLY);
+  if (!signature) {
+    return `${reply}<br><br>--<br>${plainTextToHtml(AUTOMATED_REPLY_NOTICE)}`;
+  }
+  if (signature.format === "html") {
+    return `${reply}<br><br>${signature.content.trimEnd()}`;
+  }
+  return `${reply}<br><br>${plainTextToHtml(signature.content.trimEnd())}`;
+}
+
+export function plainTextToHtml(value: string): string {
+  return escapeHtml(value).replace(/\r\n|\r|\n/g, "<br>");
+}
+
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 export function removeMailbox(config: AppConfig, mailboxId: string): AppConfig {

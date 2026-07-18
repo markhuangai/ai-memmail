@@ -35,11 +35,15 @@ pub fn safety_category_value(category: &SafetyCategory) -> &'static str {
     }
 }
 
-pub(crate) fn outbound_body_for_storage(action: &OutboundAction) -> (Option<&str>, bool) {
+pub(crate) fn outbound_body_for_storage(action: &OutboundAction) -> (Option<&str>, Option<&str>, bool) {
     match action.kind {
-        OutboundActionKind::Reply => (Some(action.body.as_str()), false),
-        OutboundActionKind::Forward => (None, true),
-        OutboundActionKind::Noop => (None, false),
+        OutboundActionKind::Reply => (
+            Some(action.body.as_str()),
+            action.html_body.as_deref(),
+            false,
+        ),
+        OutboundActionKind::Forward => (None, None, true),
+        OutboundActionKind::Noop => (None, None, false),
     }
 }
 

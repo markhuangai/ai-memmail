@@ -231,7 +231,7 @@ impl ProcessingStore for MemoryProcessingStore {
         key: &DedupeKey,
         action: &OutboundAction,
     ) -> Result<(), StorageError> {
-        let (body, body_redacted) = outbound_body_for_storage(action);
+        let (body, html_body, body_redacted) = outbound_body_for_storage(action);
         self.outbound_actions
             .lock()
             .map_err(|_| StorageError::LockPoisoned)?
@@ -242,6 +242,7 @@ impl ProcessingStore for MemoryProcessingStore {
                     recipients: action.recipients.clone(),
                     subject: action.subject.clone(),
                     body: body.map(ToString::to_string),
+                    html_body: html_body.map(ToString::to_string),
                     body_redacted,
                     reason: action.reason.clone(),
                     message_id: action.message_id.clone(),

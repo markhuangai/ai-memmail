@@ -221,7 +221,12 @@ function MessageDetail({
             <dd>{message.outbound_message_id ?? "none"}</dd>
           </div>
         </dl>
-        {message.outbound_body ? (
+        {message.outbound_body_html ? (
+          <HtmlOutboundBody
+            authoredBody={message.outbound_body}
+            htmlBody={message.outbound_body_html}
+          />
+        ) : message.outbound_body ? (
           <pre className="message-body">{message.outbound_body}</pre>
         ) : message.outbound_body_redacted ? (
           <p className="muted">Forward body omitted because it can include original inbound email content.</p>
@@ -375,6 +380,36 @@ function HandoffBadge({ message }: { message: ProcessedEmail }) {
   }
   const label = handoffLabel(message.handoff.state);
   return <span className={`handoff-chip ${message.handoff.state}`}>{label}</span>;
+}
+
+function HtmlOutboundBody({
+  authoredBody,
+  htmlBody
+}: {
+  authoredBody?: string | null;
+  htmlBody: string;
+}) {
+  return (
+    <div className="html-body-archive">
+      <iframe
+        className="html-body-preview"
+        referrerPolicy="no-referrer"
+        sandbox=""
+        srcDoc={htmlBody}
+        title="Outbound HTML preview"
+      />
+      {authoredBody ? (
+        <div className="text-block">
+          <span>Authored text</span>
+          <pre className="message-body">{authoredBody}</pre>
+        </div>
+      ) : null}
+      <details className="collapsed-section">
+        <summary>HTML source</summary>
+        <pre className="message-body">{htmlBody}</pre>
+      </details>
+    </div>
+  );
 }
 
 function handoffLabel(state: string): string {

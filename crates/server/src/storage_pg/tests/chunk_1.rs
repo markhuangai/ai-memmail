@@ -144,6 +144,7 @@ async fn pg_store_records_processed_email_history_and_logs() {
         recipients: vec!["person@example.com".to_string()],
         subject: "Re: Question".to_string(),
         body: "Answer".to_string(),
+        html_body: Some("<p>Answer</p>".to_string()),
         reason: "known answer".to_string(),
         reply_to: None,
         message_id: Some("<reply-71@example.com>".to_string()),
@@ -287,6 +288,7 @@ async fn pg_store_records_processed_email_history_and_logs() {
     assert_eq!(email.outbound_recipients, vec!["person@example.com"]);
     assert_eq!(email.outbound_subject, Some("Re: Question".to_string()));
     assert_eq!(email.outbound_body, Some("Answer".to_string()));
+    assert_eq!(email.outbound_body_html, Some("<p>Answer</p>".to_string()));
     assert!(!email.outbound_body_redacted);
     assert_eq!(
         email.outbound_message_id,
@@ -341,6 +343,7 @@ async fn pg_store_redacts_forward_body_and_records_sender_review() {
         recipients: vec!["human@example.com".to_string()],
         subject: "Fwd: Question".to_string(),
         body: "contains the inbound body".to_string(),
+        html_body: None,
         reason: "needs human review".to_string(),
         reply_to: None,
         message_id: None,
@@ -371,6 +374,7 @@ async fn pg_store_redacts_forward_body_and_records_sender_review() {
         .unwrap();
     assert_eq!(email.outbound_action, Some("forward".to_string()));
     assert_eq!(email.outbound_body, None);
+    assert_eq!(email.outbound_body_html, None);
     assert!(email.outbound_body_redacted);
 
     let row = pg
@@ -388,4 +392,3 @@ async fn pg_store_redacts_forward_body_and_records_sender_review() {
 
     pg.cleanup().await;
 }
-

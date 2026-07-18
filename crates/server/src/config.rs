@@ -116,12 +116,27 @@ pub struct MailboxConfig {
     pub poll_interval_seconds: u64,
     pub safety_forward_to: Vec<String>,
     #[serde(default)]
+    pub signature: Option<EmailSignatureConfig>,
+    #[serde(default)]
     pub accepted_conditions: Vec<AcceptedCondition>,
     #[serde(default)]
     pub mcp_servers: Vec<String>,
     pub agent: AgentConfig,
     pub imap: ImapConfig,
     pub smtp: SmtpConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EmailSignatureConfig {
+    pub format: EmailSignatureFormat,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EmailSignatureFormat {
+    PlainText,
+    Html,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -387,6 +402,7 @@ fn validate_mailbox(
             mailbox.id
         )));
     }
+    validate_mailbox_signature(mailbox)?;
     validate_accepted_conditions(mailbox)?;
     if mailbox.enabled {
         validate_enabled_mailbox_connection(mailbox)?;
@@ -402,6 +418,19 @@ fn validate_mailbox(
                 mailbox.id, server
             )));
         }
+    }
+    Ok(())
+}
+
+fn validate_mailbox_signature(mailbox: &MailboxConfig) -> Result<(), ConfigError> {
+    let Some(signature) = &mailbox.signature else {
+        return Ok(());
+    };
+    if signature.content.trim().is_empty() {
+        return Err(ConfigError::Invalid(format!(
+            "mailbox {} signature.content must not be empty",
+            mailbox.id
+        )));
     }
     Ok(())
 }

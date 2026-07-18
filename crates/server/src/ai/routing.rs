@@ -77,6 +77,7 @@ pub fn forward_decision(
                 "Human review requested for message from {}.",
                 message.metadata.from_addr
             ),
+            html_body: None,
             reason: reason.into(),
             reply_to: None,
             message_id: None,
