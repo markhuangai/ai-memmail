@@ -39,6 +39,7 @@ fn app_config_with_mailboxes(mailbox_ids: Vec<&str>) -> AppConfig {
                 enabled: true,
                 poll_interval_seconds: 30,
                 safety_forward_to: vec!["human@example.com".to_string()],
+                signature: None,
                 accepted_conditions: vec![],
                 mcp_servers: vec![],
                 agent: AgentConfig {

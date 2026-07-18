@@ -1,6 +1,7 @@
 export type AiProtocol = "openai" | "anthropic";
 export type McpTransport = "stdio" | "streamable_http";
 export type BannedSenderKind = "email" | "domain";
+export type EmailSignatureFormat = "plain_text" | "html";
 
 export interface AppConfig {
   version: number;
@@ -62,11 +63,17 @@ export interface MailboxConfig {
   enabled: boolean;
   poll_interval_seconds: number;
   safety_forward_to: string[];
+  signature?: EmailSignatureConfig | null;
   accepted_conditions: AcceptedCondition[];
   mcp_servers: string[];
   agent: AgentConfig;
   imap: ImapConfig;
   smtp: SmtpConfig;
+}
+
+export interface EmailSignatureConfig {
+  format: EmailSignatureFormat;
+  content: string;
 }
 
 export interface AcceptedCondition {
@@ -134,6 +141,7 @@ export interface ProcessedEmail {
   outbound_recipients: string[];
   outbound_subject?: string | null;
   outbound_body?: string | null;
+  outbound_body_html?: string | null;
   outbound_body_redacted: boolean;
   outbound_message_id?: string | null;
   outbound_reason?: string | null;

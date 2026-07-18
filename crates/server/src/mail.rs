@@ -6,8 +6,10 @@ use uuid::Uuid;
 
 use crate::config::{AcceptedCondition, MailboxConfig, SmtpConfig};
 
+mod signature;
 mod threading;
 
+pub use signature::{apply_reply_signature, automated_reply_body, AUTOMATED_REPLY_NOTICE};
 pub use threading::{
     extract_authored_text, MessageDirection, QuoteExtraction, ThreadContext, ThreadMessage,
 };
@@ -50,6 +52,8 @@ pub struct OutboundAction {
     pub recipients: Vec<String>,
     pub subject: String,
     pub body: String,
+    #[serde(skip)]
+    pub html_body: Option<String>,
     pub reason: String,
     #[serde(default)]
     pub reply_to: Option<String>,
@@ -279,8 +283,6 @@ impl MessageMetadata {
     }
 }
 
-pub const AUTOMATED_REPLY_NOTICE: &str = "This automated reply was sent on Mark's behalf. If this needs Mark's attention, reply with: escalation to human";
-
 pub fn parse_inbound_message(
     mailbox_id: &str,
     uid_validity: u64,
@@ -378,6 +380,17 @@ pub fn validate_outbound_action(action: &OutboundAction) -> Result<(), Vec<Valid
                     message: "body is required".to_string(),
                 });
             }
+            if matches!(action.kind, OutboundActionKind::Reply)
+                && action
+                    .html_body
+                    .as_ref()
+                    .is_some_and(|body| body.trim().is_empty())
+            {
+                errors.push(ValidationError {
+                    field: "html_body".to_string(),
+                    message: "html_body must not be empty when provided".to_string(),
+                });
+            }
         }
         OutboundActionKind::Noop => {
             if !action.recipients.is_empty() {
@@ -387,6 +400,12 @@ pub fn validate_outbound_action(action: &OutboundAction) -> Result<(), Vec<Valid
                 });
             }
         }
+    }
+    if !matches!(action.kind, OutboundActionKind::Reply) && action.html_body.is_some() {
+        errors.push(ValidationError {
+            field: "html_body".to_string(),
+            message: "html_body is only supported for replies".to_string(),
+        });
     }
     if errors.is_empty() {
         Ok(())
@@ -457,14 +476,6 @@ pub fn thread_handoff_body(thread_context: &ThreadContext) -> Result<String, Mai
         }
     }
     Ok(body)
-}
-
-pub fn automated_reply_body(body: &str) -> String {
-    if body.contains(AUTOMATED_REPLY_NOTICE) {
-        return body.to_string();
-    }
-    let trimmed = body.trim_end();
-    format!("{trimmed}\n\n--\n{AUTOMATED_REPLY_NOTICE}")
 }
 
 pub fn reply_references(metadata: &MessageMetadata) -> Vec<String> {

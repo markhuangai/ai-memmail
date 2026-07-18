@@ -69,6 +69,44 @@ describe("App history", () => {
     expect(screen.getByRole("heading", { name: "No processed messages" })).toBeInTheDocument();
   });
 
+  it("renders archived outbound HTML with sandboxed preview and source", async () => {
+    const htmlMessage = {
+      ...sampleMessages[0],
+      outbound_body: "Thanks for reaching out.",
+      outbound_body_html: "<p>Thanks for reaching out.</p><p><strong>Mark</strong></p>"
+    };
+    vi.spyOn(globalThis, "fetch").mockImplementation((path) => {
+      if (path === "/api/status") {
+        return jsonResponse({
+          service: "ai-memmail",
+          authenticated: true,
+          uptime_seconds: 3,
+          enabled_mailboxes: 1
+        });
+      }
+      if (String(path).startsWith("/api/messages")) {
+        return jsonResponse({ messages: [htmlMessage] });
+      }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
+      }
+      return jsonResponse({ config: sampleConfig });
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
+    const preview = screen.getByTitle("Outbound HTML preview");
+    expect(preview).toHaveAttribute("sandbox", "");
+    expect(preview).toHaveAttribute(
+      "srcdoc",
+      "<p>Thanks for reaching out.</p><p><strong>Mark</strong></p>"
+    );
+    expect(screen.getByText("Authored text")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("HTML source"));
+    expect(screen.getByText("<p>Thanks for reaching out.</p><p><strong>Mark</strong></p>")).toBeInTheDocument();
+  });
+
   it("loads more processed email history when the current limit is full", async () => {
     const firstBatch = Array.from({ length: 2 }, (_, index) => ({
       ...sampleMessages[0],

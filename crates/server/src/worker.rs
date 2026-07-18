@@ -13,7 +13,7 @@ use crate::logging::{
     action_event, ActionEvent, ActionLogger, FanoutLogger, LogLevel, StdoutLogger,
 };
 use crate::mail::{
-    automated_reply_body, forward_body, message_matches_accepted_conditions, reply_recipient,
+    apply_reply_signature, forward_body, message_matches_accepted_conditions, reply_recipient,
     reply_references, thread_handoff_body, InboundMessage, LiveMailTransport, MailError,
     MailTransport, MessageDirection, OutboundAction, OutboundActionKind, ThreadContext,
     ThreadMessage,

@@ -1,5 +1,7 @@
 use super::*;
 
+mod signature_tests;
+
 fn valid_config() -> AppConfig {
     AppConfig {
         version: 1,
@@ -48,6 +50,7 @@ fn valid_config() -> AppConfig {
             enabled: true,
             poll_interval_seconds: 60,
             safety_forward_to: vec!["human@example.com".to_string()],
+            signature: None,
             accepted_conditions: vec![],
             mcp_servers: vec!["dense_mem".to_string()],
             agent: AgentConfig {
@@ -352,8 +355,50 @@ smtp:
     .unwrap();
 
     assert!(mailbox.accepted_conditions.is_empty());
+    assert_eq!(mailbox.signature, None);
     assert_eq!(mailbox.imap.sent_folder, None);
     assert_eq!(mailbox.imap.sent_backfill_days, 30);
+}
+
+#[test]
+fn mailbox_config_parses_html_signature() {
+    let mailbox: MailboxConfig = serde_yaml_ng::from_str(
+        r#"
+id: support
+address: support@example.com
+enabled: false
+poll_interval_seconds: 60
+safety_forward_to: ["human@example.com"]
+signature:
+  format: html
+  content: "<p><strong>Mark</strong></p>"
+agent:
+  system_prompt_path: support-agent.md
+imap:
+  host: imap.example.com
+  port: 993
+  tls: true
+  username: support@example.com
+  password: secret
+  folder: INBOX
+smtp:
+  host: smtp.example.com
+  port: 587
+  starttls: true
+  username: support@example.com
+  password: secret
+  from: support@example.com
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        mailbox.signature,
+        Some(EmailSignatureConfig {
+            format: EmailSignatureFormat::Html,
+            content: "<p><strong>Mark</strong></p>".to_string()
+        })
+    );
 }
 
 #[test]

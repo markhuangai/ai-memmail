@@ -223,6 +223,7 @@ fn mailbox_config() -> MailboxConfig {
         enabled: true,
         poll_interval_seconds: 30,
         safety_forward_to: vec!["safety@example.com".to_string()],
+        signature: None,
         accepted_conditions: vec![],
         mcp_servers: vec![],
         agent: AgentConfig {

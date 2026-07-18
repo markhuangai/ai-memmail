@@ -8,7 +8,8 @@ use crate::classification::{
 };
 use crate::config::{
     AcceptedCondition, AgentConfig, AiConfig, AiProtocol, BannedSenderConfig, BannedSenderKind,
-    DatabaseConfig, ImapConfig, LoggingConfig, PromptConfig, ReviewConfig, SmtpConfig,
+    DatabaseConfig, EmailSignatureConfig, EmailSignatureFormat, ImapConfig, LoggingConfig,
+    PromptConfig, ReviewConfig, SmtpConfig,
 };
 use crate::mail::{
     DedupeKey, MailError, MessageDirection, MessageMetadata, SentFetchBatch, SentSyncCursor,
@@ -57,6 +58,7 @@ fn config() -> AppConfig {
             enabled: true,
             poll_interval_seconds: 30,
             safety_forward_to: vec!["human@example.com".to_string()],
+            signature: None,
             accepted_conditions: vec![],
             mcp_servers: vec![],
             agent: AgentConfig {
@@ -664,4 +666,3 @@ impl ProcessingStore for FakeProcessingStore {
         Ok(())
     }
 }
-

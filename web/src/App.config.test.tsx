@@ -170,6 +170,43 @@ describe("App config", () => {
     });
   });
 
+  it("edits mailbox HTML signature and saves config", async () => {
+    const savedBodies: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((path, init) => {
+      if (path === "/api/status") {
+        return jsonResponse({
+          service: "ai-memmail",
+          authenticated: true,
+          uptime_seconds: 3,
+          enabled_mailboxes: 1
+        });
+      }
+      if (path === "/api/config" && init?.method === "PUT") {
+        savedBodies.push(String(init.body));
+        return jsonResponse({ config: JSON.parse(String(init.body)) as AppConfig });
+      }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
+      }
+      return jsonResponse({ config: sampleConfig });
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /mailboxes/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^html$/i }));
+    expect(screen.getByTitle("Signature preview for support")).toHaveAttribute("sandbox", "");
+    expect(screen.getByRole("toolbar", { name: /html signature toolbar/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() => expect(savedBodies).toHaveLength(1));
+    const saved = JSON.parse(savedBodies[0]) as AppConfig;
+    expect(saved.mailboxes[0].signature).toEqual({
+      format: "html",
+      content: "<p><strong>Mark</strong></p>"
+    });
+  });
+
   it("adds a mailbox from an empty config and saves it", async () => {
     const emptyConfig: AppConfig = {
       ...sampleConfig,

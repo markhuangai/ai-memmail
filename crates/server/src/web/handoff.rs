@@ -157,6 +157,7 @@ fn handoff_action(
         recipients: vec![destination.to_string()],
         subject: latest.subject.clone(),
         body: thread_handoff_body(thread_context)?,
+        html_body: None,
         reason: "thread handed off for manual handling".to_string(),
         reply_to: Some(remote_target.to_string()),
         message_id: Some(outbound_message_id(mailbox)),

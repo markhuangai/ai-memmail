@@ -9,7 +9,8 @@ use crate::logging::LogLevel;
 use crate::mail::{MessageMetadata, SentMessage};
 use crate::storage::{
     DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL, EMAIL_CLASSIFICATION_RULES_SQL,
-    HISTORY_BODY_THREADING_SQL, INIT_SQL, SENT_THREAD_CONTEXT_SQL, THREAD_HANDOFFS_SQL,
+    HISTORY_BODY_THREADING_SQL, INIT_SQL, OUTBOUND_HTML_BODY_SQL, SENT_THREAD_CONTEXT_SQL,
+    THREAD_HANDOFFS_SQL,
 };
 
 #[tokio::test]
@@ -30,7 +31,7 @@ async fn pg_store_migrates_idempotently_and_tracks_checksum() {
         )
         .await
         .unwrap();
-    assert_eq!(rows.len(), 6);
+    assert_eq!(rows.len(), 7);
     assert_eq!(rows[0].get::<_, i32>(0), 1);
     assert_eq!(rows[0].get::<_, String>(1), "001_init");
     assert_eq!(rows[0].get::<_, String>(2), migration_checksum(INIT_SQL));
@@ -69,6 +70,12 @@ async fn pg_store_migrates_idempotently_and_tracks_checksum() {
     assert_eq!(
         rows[5].get::<_, String>(2),
         migration_checksum(THREAD_HANDOFFS_SQL)
+    );
+    assert_eq!(rows[6].get::<_, i32>(0), 7);
+    assert_eq!(rows[6].get::<_, String>(1), "007_outbound_html_body");
+    assert_eq!(
+        rows[6].get::<_, String>(2),
+        migration_checksum(OUTBOUND_HTML_BODY_SQL)
     );
 
     pg.cleanup().await;
@@ -144,6 +151,7 @@ async fn pg_store_records_processed_email_history_and_logs() {
         recipients: vec!["person@example.com".to_string()],
         subject: "Re: Question".to_string(),
         body: "Answer".to_string(),
+        html_body: Some("<p>Answer</p>".to_string()),
         reason: "known answer".to_string(),
         reply_to: None,
         message_id: Some("<reply-71@example.com>".to_string()),
@@ -287,6 +295,7 @@ async fn pg_store_records_processed_email_history_and_logs() {
     assert_eq!(email.outbound_recipients, vec!["person@example.com"]);
     assert_eq!(email.outbound_subject, Some("Re: Question".to_string()));
     assert_eq!(email.outbound_body, Some("Answer".to_string()));
+    assert_eq!(email.outbound_body_html, Some("<p>Answer</p>".to_string()));
     assert!(!email.outbound_body_redacted);
     assert_eq!(
         email.outbound_message_id,
@@ -341,6 +350,7 @@ async fn pg_store_redacts_forward_body_and_records_sender_review() {
         recipients: vec!["human@example.com".to_string()],
         subject: "Fwd: Question".to_string(),
         body: "contains the inbound body".to_string(),
+        html_body: None,
         reason: "needs human review".to_string(),
         reply_to: None,
         message_id: None,
@@ -371,6 +381,7 @@ async fn pg_store_redacts_forward_body_and_records_sender_review() {
         .unwrap();
     assert_eq!(email.outbound_action, Some("forward".to_string()));
     assert_eq!(email.outbound_body, None);
+    assert_eq!(email.outbound_body_html, None);
     assert!(email.outbound_body_redacted);
 
     let row = pg
@@ -388,4 +399,3 @@ async fn pg_store_redacts_forward_body_and_records_sender_review() {
 
     pg.cleanup().await;
 }
-

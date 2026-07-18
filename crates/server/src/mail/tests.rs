@@ -6,6 +6,7 @@ use super::*;
 
 mod coverage_tests;
 mod handoff_tests;
+mod signature_tests;
 mod thread_context_tests;
 
 #[derive(Clone, Default)]
@@ -171,6 +172,7 @@ async fn live_transport_delegates_to_blocking_client() {
         recipients: vec!["person@example.com".to_string()],
         subject: "Re: Question".to_string(),
         body: "Answer".to_string(),
+        html_body: None,
         reason: "test".to_string(),
         reply_to: None,
         message_id: None,
@@ -271,6 +273,7 @@ fn validates_reply_requires_recipient_subject_and_body() {
         recipients: vec![],
         subject: "".to_string(),
         body: "".to_string(),
+        html_body: None,
         reason: "test".to_string(),
         reply_to: None,
         message_id: None,
@@ -288,6 +291,7 @@ fn validates_noop_has_no_recipients() {
         recipients: vec!["person@example.com".to_string()],
         subject: "".to_string(),
         body: "".to_string(),
+        html_body: None,
         reason: "nothing to do".to_string(),
         reply_to: None,
         message_id: None,
@@ -305,6 +309,7 @@ fn validates_complete_reply_forward_and_noop_actions() {
         recipients: vec!["person@example.com".to_string()],
         subject: "Re: Hello".to_string(),
         body: "Thanks".to_string(),
+        html_body: None,
         reason: "known answer".to_string(),
         reply_to: None,
         message_id: None,
@@ -318,6 +323,7 @@ fn validates_complete_reply_forward_and_noop_actions() {
         recipients: vec!["human@example.com".to_string()],
         subject: "Review".to_string(),
         body: "Please review".to_string(),
+        html_body: None,
         reason: "needs human review".to_string(),
         reply_to: None,
         message_id: None,
@@ -331,6 +337,7 @@ fn validates_complete_reply_forward_and_noop_actions() {
         recipients: vec![],
         subject: "".to_string(),
         body: "".to_string(),
+        html_body: None,
         reason: "nothing safe to do".to_string(),
         reply_to: None,
         message_id: None,
@@ -550,17 +557,6 @@ fn reply_recipient_extracts_address_from_display_header() {
 }
 
 #[test]
-fn automated_reply_body_appends_escalation_notice_once() {
-    let body = automated_reply_body("Answer");
-
-    assert_eq!(
-        body,
-        "Answer\n\n--\nThis automated reply was sent on Mark's behalf. If this needs Mark's attention, reply with: escalation to human"
-    );
-    assert_eq!(automated_reply_body(&body), body);
-}
-
-#[test]
 fn parses_text_part_from_multipart_message() {
     let raw = b"From: sender@example.com\r\nSubject: Multipart\r\nContent-Type: multipart/alternative; boundary=abc\r\n\r\n--abc\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nPlain body\r\n--abc\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>HTML body</p>\r\n--abc--";
     let message = parse_inbound_message("support", 1, 2, raw).unwrap();
@@ -606,6 +602,7 @@ fn send_blocking_rejects_invalid_action_before_smtp() {
         recipients: vec![],
         subject: "".to_string(),
         body: "".to_string(),
+        html_body: None,
         reason: "invalid".to_string(),
         reply_to: None,
         message_id: None,
@@ -661,6 +658,7 @@ fn mailbox_config() -> MailboxConfig {
         enabled: true,
         poll_interval_seconds: 30,
         safety_forward_to: vec!["safety@example.com".to_string()],
+        signature: None,
         accepted_conditions: vec![],
         mcp_servers: vec![],
         agent: AgentConfig {

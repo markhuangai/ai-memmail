@@ -5,6 +5,10 @@ use std::path::{Component, Path, PathBuf};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+mod signature;
+
+use signature::validate_mailbox_signature;
+
 pub const REDACTED_SECRET: &str = "********";
 
 #[derive(Debug, thiserror::Error)]
@@ -116,12 +120,27 @@ pub struct MailboxConfig {
     pub poll_interval_seconds: u64,
     pub safety_forward_to: Vec<String>,
     #[serde(default)]
+    pub signature: Option<EmailSignatureConfig>,
+    #[serde(default)]
     pub accepted_conditions: Vec<AcceptedCondition>,
     #[serde(default)]
     pub mcp_servers: Vec<String>,
     pub agent: AgentConfig,
     pub imap: ImapConfig,
     pub smtp: SmtpConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EmailSignatureConfig {
+    pub format: EmailSignatureFormat,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EmailSignatureFormat {
+    PlainText,
+    Html,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -387,6 +406,7 @@ fn validate_mailbox(
             mailbox.id
         )));
     }
+    validate_mailbox_signature(mailbox)?;
     validate_accepted_conditions(mailbox)?;
     if mailbox.enabled {
         validate_enabled_mailbox_connection(mailbox)?;

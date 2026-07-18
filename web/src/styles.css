@@ -344,6 +344,118 @@ p {
   grid-column: 1 / -1;
 }
 
+.signature-panel {
+  grid-column: 1 / -1;
+}
+
+.segmented-control {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border: 1px solid #cbd4ca;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.segmented-control button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 0;
+  border-right: 1px solid #cbd4ca;
+  padding: 0 12px;
+}
+
+.segmented-control button:last-child {
+  border-right: 0;
+}
+
+.segmented-control button.active,
+.signature-toolbar button.active {
+  background: #eaf7f1;
+  color: #1e775d;
+}
+
+.rich-signature-editor,
+.signature-preview {
+  display: grid;
+  gap: 10px;
+}
+
+.signature-toolbar,
+.signature-asset-row {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.signature-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  padding: 0;
+}
+
+.signature-select,
+.signature-color {
+  min-width: 96px;
+}
+
+.signature-color input {
+  width: 48px;
+  padding: 2px;
+}
+
+.signature-asset-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto minmax(160px, 1fr) minmax(130px, 0.7fr) auto;
+}
+
+.signature-asset-row button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+.signature-error {
+  color: #8f2f28;
+}
+
+.signature-editor-surface {
+  min-height: 132px;
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid #cbd4ca;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+  color: #17211b;
+}
+
+.signature-editor-surface:focus {
+  outline: 2px solid #7cc7aa;
+  outline-offset: 1px;
+}
+
+.signature-preview span {
+  color: #667367;
+  font-size: 0.86rem;
+  font-weight: 750;
+}
+
+.signature-preview iframe,
+.html-body-preview {
+  width: 100%;
+  min-height: 150px;
+  border: 1px solid #e4e8e1;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
 .condition-list {
   display: grid;
   gap: 10px;

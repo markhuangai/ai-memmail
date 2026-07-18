@@ -3,6 +3,7 @@ use super::*;
 #[test]
 fn migration_is_metadata_only() {
     metadata_only_schema_guard(INIT_SQL).unwrap();
+    metadata_only_schema_guard(OUTBOUND_HTML_BODY_SQL).unwrap();
 }
 
 #[test]
@@ -26,6 +27,7 @@ fn migration_defines_expected_tables() {
     assert!(HISTORY_BODY_THREADING_SQL.contains("ADD COLUMN IF NOT EXISTS outbound_message_id"));
     assert!(DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL
         .contains("email_rules_default_marketing_seed_unique_idx"));
+    assert!(OUTBOUND_HTML_BODY_SQL.contains("ADD COLUMN IF NOT EXISTS outbound_body_html"));
 }
 
 #[test]
@@ -48,6 +50,12 @@ fn migration_runner_defines_version_tracking() {
     assert_eq!(MIGRATIONS[4].version, 5);
     assert_eq!(MIGRATIONS[4].name, "005_sent_thread_context");
     assert_eq!(MIGRATIONS[4].sql, SENT_THREAD_CONTEXT_SQL);
+    assert_eq!(MIGRATIONS[5].version, 6);
+    assert_eq!(MIGRATIONS[5].name, "006_thread_handoffs");
+    assert_eq!(MIGRATIONS[5].sql, THREAD_HANDOFFS_SQL);
+    assert_eq!(MIGRATIONS[6].version, 7);
+    assert_eq!(MIGRATIONS[6].name, "007_outbound_html_body");
+    assert_eq!(MIGRATIONS[6].sql, OUTBOUND_HTML_BODY_SQL);
     assert!(SENT_THREAD_CONTEXT_SQL.contains("CREATE TABLE IF NOT EXISTS sent_messages"));
     assert!(SENT_THREAD_CONTEXT_SQL.contains("CREATE TABLE IF NOT EXISTS mailbox_sync_state"));
 }
@@ -189,39 +197,51 @@ fn outbound_body_storage_keeps_replies_and_redacts_forwards() {
         recipients: vec!["person@example.com".to_string()],
         subject: "Re: Question".to_string(),
         body: "Answer".to_string(),
+        html_body: None,
         reason: "known answer".to_string(),
         reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
     };
-    assert_eq!(outbound_body_for_storage(&reply), (Some("Answer"), false));
+    assert_eq!(
+        outbound_body_for_storage(&reply),
+        (Some("Answer"), None, false)
+    );
+    let mut html_reply = reply.clone();
+    html_reply.html_body = Some("<p>Answer</p>".to_string());
+    assert_eq!(
+        outbound_body_for_storage(&html_reply),
+        (Some("Answer"), Some("<p>Answer</p>"), false)
+    );
 
     let forward = OutboundAction {
         kind: OutboundActionKind::Forward,
         recipients: vec!["human@example.com".to_string()],
         subject: "Fwd: Question".to_string(),
         body: "contains original inbound body".to_string(),
+        html_body: None,
         reason: "human review".to_string(),
         reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
     };
-    assert_eq!(outbound_body_for_storage(&forward), (None, true));
+    assert_eq!(outbound_body_for_storage(&forward), (None, None, true));
 
     let noop = OutboundAction {
         kind: OutboundActionKind::Noop,
         recipients: vec![],
         subject: String::new(),
         body: String::new(),
+        html_body: None,
         reason: "nothing to do".to_string(),
         reply_to: None,
         message_id: None,
         in_reply_to: None,
         references: vec![],
     };
-    assert_eq!(outbound_body_for_storage(&noop), (None, false));
+    assert_eq!(outbound_body_for_storage(&noop), (None, None, false));
 }
 
 #[test]
@@ -379,6 +399,7 @@ async fn memory_processing_store_records_history_outcomes() {
         recipients: vec!["person@example.com".to_string()],
         subject: "Re: Question".to_string(),
         body: "Answer".to_string(),
+        html_body: None,
         reason: "known answer".to_string(),
         reply_to: None,
         message_id: Some("<reply@example.com>".to_string()),
@@ -411,6 +432,7 @@ async fn memory_processing_store_records_history_outcomes() {
             recipients: vec!["person@example.com".to_string()],
             subject: "Re: Question".to_string(),
             body: Some("Answer".to_string()),
+            html_body: None,
             body_redacted: false,
             reason: "known answer".to_string(),
             message_id: Some("<reply@example.com>".to_string())

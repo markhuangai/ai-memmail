@@ -26,7 +26,6 @@ fn action_with_runtime_fields(
         }
         OutboundActionKind::Reply => {
             let mut action = action.clone();
-            action.body = automated_reply_body(&action.body);
             action.message_id = Some(outbound_message_id(mailbox));
             action.in_reply_to = message.metadata.message_id.clone();
             action.references = reply_references(&message.metadata);
@@ -201,10 +200,11 @@ async fn send_and_mark_seen(
     mail: &dyn MailTransport,
     processing: &dyn ProcessingStore,
     message: &InboundMessage,
-    action: OutboundAction,
+    mut action: OutboundAction,
     status: &'static str,
 ) {
     let started = Instant::now();
+    apply_reply_signature(mailbox, &mut action);
     record_outbound_action_for_history(processing, logger, run_id, message, &action).await;
     match mail.send(&mailbox.smtp, &action).await {
         Ok(()) => {
