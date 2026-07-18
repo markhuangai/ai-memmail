@@ -9,7 +9,8 @@ use crate::logging::LogLevel;
 use crate::mail::{MessageMetadata, SentMessage};
 use crate::storage::{
     DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL, EMAIL_CLASSIFICATION_RULES_SQL,
-    HISTORY_BODY_THREADING_SQL, INIT_SQL, SENT_THREAD_CONTEXT_SQL, THREAD_HANDOFFS_SQL,
+    HISTORY_BODY_THREADING_SQL, INIT_SQL, OUTBOUND_HTML_BODY_SQL, SENT_THREAD_CONTEXT_SQL,
+    THREAD_HANDOFFS_SQL,
 };
 
 #[tokio::test]
@@ -30,7 +31,7 @@ async fn pg_store_migrates_idempotently_and_tracks_checksum() {
         )
         .await
         .unwrap();
-    assert_eq!(rows.len(), 6);
+    assert_eq!(rows.len(), 7);
     assert_eq!(rows[0].get::<_, i32>(0), 1);
     assert_eq!(rows[0].get::<_, String>(1), "001_init");
     assert_eq!(rows[0].get::<_, String>(2), migration_checksum(INIT_SQL));
@@ -69,6 +70,12 @@ async fn pg_store_migrates_idempotently_and_tracks_checksum() {
     assert_eq!(
         rows[5].get::<_, String>(2),
         migration_checksum(THREAD_HANDOFFS_SQL)
+    );
+    assert_eq!(rows[6].get::<_, i32>(0), 7);
+    assert_eq!(rows[6].get::<_, String>(1), "007_outbound_html_body");
+    assert_eq!(
+        rows[6].get::<_, String>(2),
+        migration_checksum(OUTBOUND_HTML_BODY_SQL)
     );
 
     pg.cleanup().await;

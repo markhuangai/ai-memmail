@@ -5,6 +5,10 @@ use std::path::{Component, Path, PathBuf};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+mod signature;
+
+use signature::validate_mailbox_signature;
+
 pub const REDACTED_SECRET: &str = "********";
 
 #[derive(Debug, thiserror::Error)]
@@ -418,19 +422,6 @@ fn validate_mailbox(
                 mailbox.id, server
             )));
         }
-    }
-    Ok(())
-}
-
-fn validate_mailbox_signature(mailbox: &MailboxConfig) -> Result<(), ConfigError> {
-    let Some(signature) = &mailbox.signature else {
-        return Ok(());
-    };
-    if signature.content.trim().is_empty() {
-        return Err(ConfigError::Invalid(format!(
-            "mailbox {} signature.content must not be empty",
-            mailbox.id
-        )));
     }
     Ok(())
 }

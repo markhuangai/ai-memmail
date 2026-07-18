@@ -7,7 +7,7 @@ import {
 } from "../configModel";
 import { sampleConfig } from "../fixtures";
 import type { EmailSignatureConfig, MailboxConfig } from "../types";
-import { SignatureEditor } from "./SignatureEditor";
+import { sanitizeSignatureHtml, SignatureEditor } from "./SignatureEditor";
 
 const jsdomRect: DOMRect = {
   bottom: 0,
@@ -248,5 +248,30 @@ describe("SignatureEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Load alternate HTML" }));
 
     await waitFor(() => expect(editor).toHaveTextContent("Loaded"));
+  });
+
+  it("removes unsafe or inaccessible images from pasted and loaded HTML", async () => {
+    expect(
+      sanitizeSignatureHtml(
+        '<p>Mark<img src="http://example.com/logo.png" alt="Logo"><img src="https://example.com/missing-alt.png"><img src="https://example.com/ok.png" alt="Logo"></p>'
+      )
+    ).toBe(
+      '<p>Mark<img src="https://example.com/ok.png" alt="Logo"></p>'
+    );
+
+    const { changes } = renderControlled({
+      format: "html",
+      content:
+        '<p>Mark<img src="http://example.com/logo.png" alt="Logo"><img src="https://example.com/ok.png" alt="Logo"></p>'
+    });
+
+    await waitFor(() =>
+      expect(changes.at(-1)).toEqual({
+        format: "html",
+        content:
+          '<p>Mark<img src="https://example.com/ok.png" alt="Logo"></p>'
+      })
+    );
+    expect(previewSource()).not.toContain("http://example.com/logo.png");
   });
 });

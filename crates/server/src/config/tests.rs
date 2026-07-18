@@ -1,5 +1,7 @@
 use super::*;
 
+mod signature_tests;
+
 fn valid_config() -> AppConfig {
     AppConfig {
         version: 1,
@@ -89,17 +91,6 @@ fn assert_invalid_config(config: AppConfig, expected: &str) {
 #[test]
 fn validates_good_config() {
     assert!(valid_config().validate().is_ok());
-}
-
-#[test]
-fn validates_mailbox_signature_content_when_configured() {
-    let mut config = valid_config();
-    config.mailboxes[0].signature = Some(EmailSignatureConfig {
-        format: EmailSignatureFormat::Html,
-        content: "   ".to_string(),
-    });
-
-    assert_invalid_config(config, "signature.content must not be empty");
 }
 
 #[test]

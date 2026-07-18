@@ -85,7 +85,24 @@ export function SignatureEditor({
 }) {
   const signature = mailbox.signature ?? null;
   const mode: SignatureMode = signature?.format ?? "notice";
-  const previewHtml = useMemo(() => signaturePreviewHtml(signature), [signature]);
+  const sanitizedSignature =
+    signature?.format === "html"
+      ? { ...signature, content: sanitizeSignatureHtml(signature.content) }
+      : signature;
+  const previewHtml = useMemo(
+    () => signaturePreviewHtml(sanitizedSignature),
+    [sanitizedSignature]
+  );
+
+  useEffect(() => {
+    if (signature?.format !== "html") {
+      return;
+    }
+    const sanitizedContent = sanitizeSignatureHtml(signature.content);
+    if (sanitizedContent !== signature.content) {
+      onChange({ format: "html", content: sanitizedContent });
+    }
+  }, [onChange, signature]);
 
   function setMode(nextMode: SignatureMode) {
     if (nextMode === "notice") {
@@ -136,7 +153,11 @@ export function SignatureEditor({
 
       {mode === "html" ? (
         <HtmlSignatureEditor
-          content={signature?.format === "html" ? signature.content : DEFAULT_HTML_SIGNATURE}
+          content={
+            signature?.format === "html"
+              ? sanitizeSignatureHtml(signature.content)
+              : DEFAULT_HTML_SIGNATURE
+          }
           onChange={(content) => onChange({ format: "html", content })}
         />
       ) : null}
@@ -181,9 +202,10 @@ function HtmlSignatureEditor({
   const [imageUrl, setImageUrl] = useState("");
   const [imageAlt, setImageAlt] = useState("");
   const [error, setError] = useState("");
+  const sanitizedContent = useMemo(() => sanitizeSignatureHtml(content), [content]);
   const editor = useEditor({
     extensions: editorExtensions,
-    content,
+    content: sanitizedContent,
     immediatelyRender: false,
     editorProps: {
       attributes: {
@@ -192,16 +214,24 @@ function HtmlSignatureEditor({
       }
     },
     onUpdate({ editor: updatedEditor }) {
-      onChange(updatedEditor.getHTML());
+      const html = updatedEditor.getHTML();
+      const sanitizedHtml = sanitizeSignatureHtml(html);
+      if (html !== sanitizedHtml) {
+        updatedEditor.commands.setContent(sanitizedHtml, { emitUpdate: false });
+      }
+      onChange(sanitizedHtml);
     }
   });
 
   useEffect(() => {
-    if (!editor || editor.getHTML() === content) {
+    if (content !== sanitizedContent) {
+      onChange(sanitizedContent);
+    }
+    if (!editor || editor.getHTML() === sanitizedContent) {
       return;
     }
-    editor.commands.setContent(content, { emitUpdate: false });
-  }, [content, editor]);
+    editor.commands.setContent(sanitizedContent, { emitUpdate: false });
+  }, [content, editor, onChange, sanitizedContent]);
 
   function setLink() {
     if (!editor) {
@@ -366,6 +396,21 @@ function allowedLinkUrl(value: string): boolean {
 
 function allowedImageUrl(value: string): boolean {
   return allowedProtocol(value, ["https:"]);
+}
+
+export function sanitizeSignatureHtml(content: string): string {
+  const parsed = new DOMParser().parseFromString(content, "text/html");
+  parsed.body.querySelectorAll("img").forEach((image) => {
+    const src = image.getAttribute("src")?.trim() ?? "";
+    const alt = image.getAttribute("alt")?.trim() ?? "";
+    if (!allowedImageUrl(src) || !alt) {
+      image.remove();
+      return;
+    }
+    image.setAttribute("src", src);
+    image.setAttribute("alt", alt);
+  });
+  return parsed.body.innerHTML;
 }
 
 function allowedProtocol(value: string, protocols: string[]): boolean {
