@@ -25,8 +25,6 @@ import {
 } from "../configModel";
 import type { EmailSignatureConfig, EmailSignatureFormat, MailboxConfig } from "../types";
 
-type SignatureMode = EmailSignatureFormat | "notice";
-
 const editorExtensions = [
   StarterKit.configure({
     blockquote: false,
@@ -84,7 +82,20 @@ export function SignatureEditor({
   onChange: (signature: EmailSignatureConfig | null) => void;
 }) {
   const signature = mailbox.signature ?? null;
-  const mode: SignatureMode = signature?.format ?? "notice";
+  const [lastPlainSignature, setLastPlainSignature] =
+    useState<EmailSignatureConfig | null>(
+      signature?.format === "plain_text" ? signature : null
+    );
+  const [lastHtmlSignature, setLastHtmlSignature] =
+    useState<EmailSignatureConfig | null>(
+      signature?.format === "html"
+        ? { ...signature, content: sanitizeSignatureHtml(signature.content) }
+        : null
+    );
+  const [lastCustomFormat, setLastCustomFormat] = useState<EmailSignatureFormat>(
+    signature?.format ?? "plain_text"
+  );
+  const mode: EmailSignatureFormat = signature?.format ?? lastCustomFormat;
   const sanitizedSignature =
     signature?.format === "html"
       ? { ...signature, content: sanitizeSignatureHtml(signature.content) }
@@ -95,55 +106,85 @@ export function SignatureEditor({
   );
 
   useEffect(() => {
+    if (signature?.format === "plain_text") {
+      setLastPlainSignature(signature);
+      setLastCustomFormat("plain_text");
+      return;
+    }
     if (signature?.format !== "html") {
       return;
     }
     const sanitizedContent = sanitizeSignatureHtml(signature.content);
+    const nextSignature = { format: "html" as const, content: sanitizedContent };
+    setLastHtmlSignature(nextSignature);
+    setLastCustomFormat("html");
     if (sanitizedContent !== signature.content) {
-      onChange({ format: "html", content: sanitizedContent });
+      onChange(nextSignature);
     }
   }, [onChange, signature]);
 
-  function setMode(nextMode: SignatureMode) {
-    if (nextMode === "notice") {
+  function setCustomSignatureEnabled(enabled: boolean) {
+    if (!enabled) {
       onChange(null);
       return;
     }
+    onChange(signatureForMode(mode));
+  }
+
+  function setMode(nextMode: EmailSignatureFormat) {
+    setLastCustomFormat(nextMode);
+    onChange(signatureForMode(nextMode));
+  }
+
+  function signatureForMode(nextMode: EmailSignatureFormat): EmailSignatureConfig {
     if (nextMode === "plain_text") {
-      onChange({
-        format: "plain_text",
-        content:
-          signature?.format === "plain_text" && signature.content
-            ? signature.content
-            : DEFAULT_PLAIN_SIGNATURE
-      });
-      return;
+      return (
+        lastPlainSignature ?? {
+          format: "plain_text",
+          content: DEFAULT_PLAIN_SIGNATURE
+        }
+      );
     }
-    onChange({
-      format: "html",
-      content:
-        signature?.format === "html" && signature.content
-          ? signature.content
-          : DEFAULT_HTML_SIGNATURE
-    });
+    return lastHtmlSignature ?? { format: "html", content: DEFAULT_HTML_SIGNATURE };
   }
 
   function setPlainContent(content: string) {
-    onChange({ format: "plain_text", content });
+    const nextSignature = { format: "plain_text" as const, content };
+    setLastPlainSignature(nextSignature);
+    setLastCustomFormat("plain_text");
+    onChange(nextSignature);
   }
 
   return (
     <fieldset className="checkbox-panel signature-panel">
       <legend>Email signature</legend>
-      <div className="segmented-control" role="group" aria-label="Signature mode">
-        <ModeButton active={mode === "notice"} label="Current notice" onClick={() => setMode("notice")} />
-        <ModeButton active={mode === "plain_text"} label="Plain" onClick={() => setMode("plain_text")} />
-        <ModeButton active={mode === "html"} label="HTML" onClick={() => setMode("html")} />
-      </div>
+      <label className="switch signature-toggle">
+        <input
+          checked={signature !== null}
+          onChange={(event) => setCustomSignatureEnabled(event.target.checked)}
+          type="checkbox"
+        />
+        Use custom signature
+      </label>
 
-      {mode === "plain_text" ? (
+      {signature ? (
+        <div className="segmented-control" role="group" aria-label="Signature type">
+          <ModeButton
+            active={mode === "plain_text"}
+            label="Plain text"
+            onClick={() => setMode("plain_text")}
+          />
+          <ModeButton
+            active={mode === "html"}
+            label="HTML"
+            onClick={() => setMode("html")}
+          />
+        </div>
+      ) : null}
+
+      {signature && mode === "plain_text" ? (
         <label>
-          Plain text
+          Signature text
           <textarea
             value={signature?.format === "plain_text" ? signature.content : ""}
             onChange={(event) => setPlainContent(event.target.value)}
@@ -151,14 +192,19 @@ export function SignatureEditor({
         </label>
       ) : null}
 
-      {mode === "html" ? (
+      {signature && mode === "html" ? (
         <HtmlSignatureEditor
           content={
             signature?.format === "html"
               ? sanitizeSignatureHtml(signature.content)
               : DEFAULT_HTML_SIGNATURE
           }
-          onChange={(content) => onChange({ format: "html", content })}
+          onChange={(content) => {
+            const nextSignature = { format: "html" as const, content };
+            setLastHtmlSignature(nextSignature);
+            setLastCustomFormat("html");
+            onChange(nextSignature);
+          }}
         />
       ) : null}
 

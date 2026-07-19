@@ -1,0 +1,133 @@
+.segmented-control {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border: 1px solid var(--divider-strong);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--paper);
+}
+
+.segmented-control button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 0;
+  border-right: 1px solid var(--divider-strong);
+  padding: 0 12px;
+}
+
+.segmented-control button:last-child {
+  border-right: 0;
+}
+
+.segmented-control button.active,
+.signature-toolbar button.active {
+  background: var(--emerald-soft);
+  color: var(--emerald);
+}
+
+.rich-signature-editor,
+.signature-preview {
+  display: grid;
+  gap: 10px;
+}
+
+.signature-toolbar,
+.signature-asset-row {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.signature-toolbar button {
+  width: 40px;
+  padding: 0;
+}
+
+.signature-select,
+.signature-color {
+  min-width: 96px;
+}
+
+.signature-color input {
+  width: 48px;
+  padding: 2px;
+}
+
+.signature-asset-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto minmax(160px, 1fr) minmax(130px, 0.7fr) auto;
+}
+
+.signature-asset-row button {
+  padding: 0 12px;
+}
+
+.signature-error {
+  color: #9f3030;
+}
+
+.signature-editor-surface {
+  min-height: 132px;
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--divider-strong);
+  border-radius: 6px;
+  background: var(--paper);
+  padding: 12px;
+  color: var(--ink);
+}
+
+.signature-preview span {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin: 16px 0 0;
+}
+
+.detail-grid div {
+  min-width: 0;
+}
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.timeline-table {
+  min-width: 860px;
+}
+
+table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 12px;
+  border-bottom: 1px solid var(--divider);
+  vertical-align: top;
+}
+
+th {
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+}
+
+.inline-form {
+  display: grid;
+  grid-template-columns: 140px minmax(160px, 1fr) minmax(160px, 1fr) auto;
+  gap: 10px;
+  margin: 14px 0 18px;
+}

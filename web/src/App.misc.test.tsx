@@ -43,6 +43,7 @@ describe("App safety and tabs", () => {
 
     expect(screen.getByText("bad.example")).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("button", { name: /remove/i })[0]);
+    fireEvent.click(screen.getByRole("button", { name: /remove sender/i }));
     expect(screen.queryByText("blocked.example")).not.toBeInTheDocument();
   });
 
@@ -65,7 +66,7 @@ describe("App safety and tabs", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /mcp servers/i }));
-    expect(screen.getByText("dense_mem_primary")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "dense_mem_primary" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^settings$/i }));
     expect(screen.getByLabelText(/ai model/i)).toHaveValue("gpt-test");

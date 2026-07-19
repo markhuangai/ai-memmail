@@ -152,6 +152,7 @@ describe("App rules", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: /delete/i }));
+    fireEvent.click(screen.getByRole("button", { name: /delete rule/i }));
     await waitFor(() => expect(deletedRules).toEqual(["/api/email-rules/1"]));
     expect(await screen.findByText("No rules configured.")).toBeInTheDocument();
   });

@@ -45,7 +45,7 @@ describe("App", () => {
     expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 
-  it("shows save errors and logs out", async () => {
+  it("shows save errors and protects draft config on sign out", async () => {
     let authenticated = true;
     vi.spyOn(globalThis, "fetch").mockImplementation((path, init) => {
       if (path === "/api/status") {
@@ -72,10 +72,16 @@ describe("App", () => {
     render(<App />);
 
     await screen.findByText("Runtime");
-    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^settings$/i }));
+    fireEvent.change(await screen.findByLabelText(/ai model/i), {
+      target: { value: "broken-model" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent("invalid config");
 
-    fireEvent.click(screen.getByRole("button", { name: /logout/i }));
+    fireEvent.click(screen.getByRole("button", { name: /sign out/i }));
+    expect(screen.getByRole("dialog", { name: /unsaved config changes/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /discard and continue/i }));
     expect(await screen.findByLabelText(/control panel key/i)).toBeInTheDocument();
   });
 });

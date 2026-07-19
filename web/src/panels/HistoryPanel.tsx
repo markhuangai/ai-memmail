@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 import { Forward, KeyRound, Mail, MessageSquareText, RefreshCw, ShieldAlert, Send } from "lucide-react";
 import type { ProcessedEmail } from "../types";
 import { formatTimestamp, messageKey, statusPillClass, timestampMs } from "../viewUtils";
@@ -51,11 +51,11 @@ export function HistoryPanel({
   }
 
   return (
-    <div className="history-layout">
-      <section className="panel message-list-panel">
+    <div className="history-console">
+      <section className="panel message-list-panel history-queue">
         <div className="panel-heading">
           <div>
-            <h2>Processed Email</h2>
+            <h2>Processed email</h2>
             <p>{messages.length} loaded / limit {messageLimit}</p>
           </div>
           {canLoadMore ? (
@@ -136,241 +136,244 @@ function MessageDetail({
   }
 
   return (
-    <section className="panel message-detail-panel">
-      <div className="panel-heading">
-        <div>
-          <h2>{message.subject || "(no subject)"}</h2>
-          <p>{message.from_addr}</p>
+    <>
+      <section className="panel message-detail-panel history-correspondence">
+        <div className="panel-heading">
+          <div>
+            <h2>{message.subject || "(no subject)"}</h2>
+            <p>{message.from_addr}</p>
+          </div>
+          <span className="message-detail-badges">
+            <span className={statusPillClass(message.status)}>{message.status}</span>
+            <HandoffBadge message={message} />
+          </span>
         </div>
-        <span className="message-detail-badges">
-          <span className={statusPillClass(message.status)}>{message.status}</span>
-          <HandoffBadge message={message} />
-        </span>
-      </div>
 
-      <section className="handoff-panel" aria-label="Thread handoff">
-        <div>
-          <HandoffBadge message={message} />
-          {message.handoff ? (
-            <p>
-              {message.handoff.destination} to {message.handoff.remote_target}
-            </p>
-          ) : (
-            <p>No handoff destination set.</p>
-          )}
-        </div>
-        {handoffOpen ? (
-          <form className="handoff-form" onSubmit={submitHandoff}>
-            <label>
-              Handoff destination
-              <input
-                type="email"
-                value={destination}
-                onChange={(event) => setDestination(event.target.value)}
-                required
-              />
-            </label>
-            <button type="submit" disabled={submitting}>
-              <Forward aria-hidden="true" />
-              {submitting ? "Sending" : "Forward chain"}
-            </button>
-            <button type="button" onClick={() => setHandoffOpen(false)}>
-              Cancel
-            </button>
-            {handoffError ? <p role="alert">{handoffError}</p> : null}
-          </form>
-        ) : (
-          <button type="button" onClick={() => setHandoffOpen(true)}>
-            <Forward aria-hidden="true" />
-            {message.handoff ? "Forward again" : "Hand off thread"}
-          </button>
-        )}
-      </section>
-
-      <section className="message-section">
-        <h3><Mail aria-hidden="true" /> Inbound</h3>
-        {message.inbound_body ? (
-          <>
-            <pre className="message-body">{message.inbound_body}</pre>
-            {message.inbound_body_truncated ? (
-              <p className="muted">Inbound body truncated for storage.</p>
-            ) : null}
-          </>
-        ) : (
-          <p className="muted">No inbound body recorded.</p>
-        )}
-      </section>
-
-      <section className="message-section">
-        <h3><Send aria-hidden="true" /> Outbound</h3>
-        <dl className="detail-grid message-detail-grid">
+        <section className="handoff-panel" aria-label="Thread handoff">
           <div>
-            <dt>Recipients</dt>
-            <dd>{message.outbound_recipients.length ? message.outbound_recipients.join(", ") : "none"}</dd>
+            <HandoffBadge message={message} />
+            {message.handoff ? (
+              <p>
+                {message.handoff.destination} to {message.handoff.remote_target}
+              </p>
+            ) : (
+              <p>No handoff destination set.</p>
+            )}
           </div>
-          <div>
-            <dt>Subject</dt>
-            <dd>{message.outbound_subject ?? "none"}</dd>
-          </div>
-          <div>
-            <dt>Reason</dt>
-            <dd>{message.outbound_reason ?? "none"}</dd>
-          </div>
-          <div>
-            <dt>Outbound Message ID</dt>
-            <dd>{message.outbound_message_id ?? "none"}</dd>
-          </div>
-        </dl>
-        {message.outbound_body_html ? (
-          <HtmlOutboundBody
-            authoredBody={message.outbound_body}
-            htmlBody={message.outbound_body_html}
-          />
-        ) : message.outbound_body ? (
-          <pre className="message-body">{message.outbound_body}</pre>
-        ) : message.outbound_body_redacted ? (
-          <p className="muted">Forward body omitted because it can include original inbound email content.</p>
-        ) : (
-          <p className="muted">No outbound body recorded.</p>
-        )}
-      </section>
-
-      <details className="message-section collapsed-section">
-        <summary><ShieldAlert aria-hidden="true" /> Safety and AI</summary>
-        <dl className="detail-grid message-detail-grid">
-          <div>
-            <dt>Safety</dt>
-            <dd>{message.safety_category ?? "not recorded"}</dd>
-          </div>
-          <div>
-            <dt>Agent action</dt>
-            <dd>{message.agent_action ?? "not recorded"}</dd>
-          </div>
-          <div>
-            <dt>Review</dt>
-            <dd>{message.outbound_review_status ?? "not reviewed"}</dd>
-          </div>
-          <div>
-            <dt>Final action</dt>
-            <dd>{message.outbound_action ?? "not recorded"}</dd>
-          </div>
-          <div>
-            <dt>Category</dt>
-            <dd>{message.classification_category ?? "not classified"}</dd>
-          </div>
-          <div>
-            <dt>Topics</dt>
-            <dd>{message.classification_topics.length ? message.classification_topics.join(", ") : "none"}</dd>
-          </div>
-          <div>
-            <dt>Decision source</dt>
-            <dd>{message.decision_source ?? "not recorded"}</dd>
-          </div>
-          <div>
-            <dt>Matched rule</dt>
-            <dd>{message.matched_rule_name ?? "none"}</dd>
-          </div>
-        </dl>
-        <TextBlock label="Classification reason" value={message.classification_reason} />
-        <TextBlock label="Matched rule goal" value={message.matched_rule_goal} />
-        <TextBlock label="Safety reason" value={message.safety_reason} />
-        <TextBlock label="Agent notes" value={message.agent_safety_notes} />
-        <TextBlock label="Review reason" value={message.outbound_review_reason} />
-      </details>
-
-      <details className="message-section collapsed-section">
-        <summary><MessageSquareText aria-hidden="true" /> Email chain</summary>
-        <div className="chain-list" role="list">
-          {threadMessages.map((threadMessage) => {
-            const active = messageKey(threadMessage) === messageKey(message);
-            return (
-              <button
-                className={active ? "chain-item active" : "chain-item"}
-                key={messageKey(threadMessage)}
-                onClick={() => onSelectMessage(threadMessage)}
-                type="button"
-              >
-                <span>
-                  <strong>{threadMessage.subject || "(no subject)"}</strong>
-                  <span>{threadMessage.from_addr}</span>
-                </span>
-                <span className="message-row-badges">
-                  <span className={statusPillClass(threadMessage.status)}>{threadMessage.status}</span>
-                  <HandoffBadge message={threadMessage} />
-                </span>
-                <span>{formatTimestamp(threadMessage.updated_at)}</span>
+          {handoffOpen ? (
+            <form className="handoff-form" onSubmit={submitHandoff}>
+              <label>
+                Handoff destination
+                <input
+                  type="email"
+                  value={destination}
+                  onChange={(event) => setDestination(event.target.value)}
+                  required
+                />
+              </label>
+              <button type="submit" disabled={submitting}>
+                <Forward aria-hidden="true" />
+                {submitting ? "Sending" : "Forward chain"}
               </button>
-            );
-          })}
-        </div>
-      </details>
+              <button type="button" onClick={() => setHandoffOpen(false)}>
+                Cancel
+              </button>
+              {handoffError ? <p role="alert">{handoffError}</p> : null}
+            </form>
+          ) : (
+            <button type="button" onClick={() => setHandoffOpen(true)}>
+              <Forward aria-hidden="true" />
+              {message.handoff ? "Forward again" : "Hand off thread"}
+            </button>
+          )}
+        </section>
 
-      <details className="message-section collapsed-section">
-        <summary><MessageSquareText aria-hidden="true" /> Timeline</summary>
-        {message.logs.length === 0 ? (
-          <p className="muted">No log entries recorded.</p>
-        ) : (
-          <div className="table-wrap">
-            <table className="timeline-table">
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Level</th>
-                  <th>Action</th>
-                  <th>Status</th>
-                  <th>Detail</th>
-                </tr>
-              </thead>
-              <tbody>
-                {message.logs.map((entry, index) => (
-                  <tr key={`${entry.created_at}:${entry.action}:${index}`}>
-                    <td>{formatTimestamp(entry.created_at)}</td>
-                    <td>{entry.level}</td>
-                    <td>{entry.action}</td>
-                    <td>{entry.status}</td>
-                    <td>{entry.detail ?? ""}</td>
+        <section className="message-section">
+          <h3><Mail aria-hidden="true" /> Inbound</h3>
+          {message.inbound_body ? (
+            <>
+              <pre className="message-body">{message.inbound_body}</pre>
+              {message.inbound_body_truncated ? (
+                <p className="muted">Inbound body truncated for storage.</p>
+              ) : null}
+            </>
+          ) : (
+            <p className="muted">No inbound body recorded.</p>
+          )}
+        </section>
+
+        <section className="message-section">
+          <h3><Send aria-hidden="true" /> Outbound</h3>
+          <dl className="detail-grid message-detail-grid">
+            <div>
+              <dt>Recipients</dt>
+              <dd>{message.outbound_recipients.length ? message.outbound_recipients.join(", ") : "none"}</dd>
+            </div>
+            <div>
+              <dt>Subject</dt>
+              <dd>{message.outbound_subject ?? "none"}</dd>
+            </div>
+            <div>
+              <dt>Reason</dt>
+              <dd>{message.outbound_reason ?? "none"}</dd>
+            </div>
+            <div>
+              <dt>Outbound Message ID</dt>
+              <dd>{message.outbound_message_id ?? "none"}</dd>
+            </div>
+          </dl>
+          {message.outbound_body_html ? (
+            <HtmlOutboundBody
+              authoredBody={message.outbound_body}
+              htmlBody={message.outbound_body_html}
+            />
+          ) : message.outbound_body ? (
+            <pre className="message-body">{message.outbound_body}</pre>
+          ) : message.outbound_body_redacted ? (
+            <p className="muted">Forward body omitted because it can include original inbound email content.</p>
+          ) : (
+            <p className="muted">No outbound body recorded.</p>
+          )}
+        </section>
+
+        <details className="message-section collapsed-section">
+          <summary><ShieldAlert aria-hidden="true" /> Safety and AI</summary>
+          <dl className="detail-grid message-detail-grid">
+            <div>
+              <dt>Safety</dt>
+              <dd>{message.safety_category ?? "not recorded"}</dd>
+            </div>
+            <div>
+              <dt>Agent action</dt>
+              <dd>{message.agent_action ?? "not recorded"}</dd>
+            </div>
+            <div>
+              <dt>Review</dt>
+              <dd>{message.outbound_review_status ?? "not reviewed"}</dd>
+            </div>
+            <div>
+              <dt>Final action</dt>
+              <dd>{message.outbound_action ?? "not recorded"}</dd>
+            </div>
+            <div>
+              <dt>Category</dt>
+              <dd>{message.classification_category ?? "not classified"}</dd>
+            </div>
+            <div>
+              <dt>Topics</dt>
+              <dd>{message.classification_topics.length ? message.classification_topics.join(", ") : "none"}</dd>
+            </div>
+            <div>
+              <dt>Decision source</dt>
+              <dd>{message.decision_source ?? "not recorded"}</dd>
+            </div>
+            <div>
+              <dt>Matched rule</dt>
+              <dd>{message.matched_rule_name ?? "none"}</dd>
+            </div>
+          </dl>
+          <TextBlock label="Classification reason" value={message.classification_reason} />
+          <TextBlock label="Matched rule goal" value={message.matched_rule_goal} />
+          <TextBlock label="Safety reason" value={message.safety_reason} />
+          <TextBlock label="Agent notes" value={message.agent_safety_notes} />
+          <TextBlock label="Review reason" value={message.outbound_review_reason} />
+        </details>
+
+        <details className="message-section collapsed-section">
+          <summary><MessageSquareText aria-hidden="true" /> Email chain</summary>
+          <div className="chain-list" role="list">
+            {threadMessages.map((threadMessage) => {
+              const active = messageKey(threadMessage) === messageKey(message);
+              return (
+                <button
+                  className={active ? "chain-item active" : "chain-item"}
+                  key={messageKey(threadMessage)}
+                  onClick={() => onSelectMessage(threadMessage)}
+                  type="button"
+                >
+                  <span>
+                    <strong>{threadMessage.subject || "(no subject)"}</strong>
+                    <span>{threadMessage.from_addr}</span>
+                  </span>
+                  <span className="message-row-badges">
+                    <span className={statusPillClass(threadMessage.status)}>{threadMessage.status}</span>
+                    <HandoffBadge message={threadMessage} />
+                  </span>
+                  <span>{formatTimestamp(threadMessage.updated_at)}</span>
+                </button>
+              );
+            })}
+          </div>
+        </details>
+
+        <details className="message-section collapsed-section">
+          <summary><MessageSquareText aria-hidden="true" /> Timeline</summary>
+          {message.logs.length === 0 ? (
+            <p className="muted">No log entries recorded.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="timeline-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Level</th>
+                    <th>Action</th>
+                    <th>Status</th>
+                    <th>Detail</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </details>
+                </thead>
+                <tbody>
+                  {message.logs.map((entry, index) => (
+                    <tr key={`${entry.created_at}:${entry.action}:${index}`}>
+                      <td>{formatTimestamp(entry.created_at)}</td>
+                      <td>{entry.level}</td>
+                      <td>{entry.action}</td>
+                      <td>{entry.status}</td>
+                      <td>{entry.detail ?? ""}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </details>
 
-      <details className="message-section collapsed-section">
-        <summary><KeyRound aria-hidden="true" /> Diagnostics</summary>
-        <dl className="detail-grid message-detail-grid">
-          <div>
-            <dt>Mailbox</dt>
-            <dd>{message.mailbox_id}</dd>
-          </div>
-          <div>
-            <dt>UID</dt>
-            <dd>{message.uid_validity}:{message.uid}</dd>
-          </div>
-          <div>
-            <dt>Message ID</dt>
-            <dd>{message.message_id ?? "none"}</dd>
-          </div>
-          <div>
-            <dt>Thread</dt>
-            <dd>{message.thread_id}</dd>
-          </div>
-          <div>
-            <dt>In reply to</dt>
-            <dd>{message.in_reply_to ?? "none"}</dd>
-          </div>
-          <div>
-            <dt>References</dt>
-            <dd>{message.references.length ? message.references.join(", ") : "none"}</dd>
-          </div>
-          <div>
-            <dt>Updated</dt>
-            <dd>{formatTimestamp(message.updated_at)}</dd>
-          </div>
-        </dl>
-      </details>
-    </section>
+        <details className="message-section collapsed-section">
+          <summary><KeyRound aria-hidden="true" /> Diagnostics</summary>
+          <dl className="detail-grid message-detail-grid">
+            <div>
+              <dt>Mailbox</dt>
+              <dd>{message.mailbox_id}</dd>
+            </div>
+            <div>
+              <dt>UID</dt>
+              <dd>{message.uid_validity}:{message.uid}</dd>
+            </div>
+            <div>
+              <dt>Message ID</dt>
+              <dd>{message.message_id ?? "none"}</dd>
+            </div>
+            <div>
+              <dt>Thread</dt>
+              <dd>{message.thread_id}</dd>
+            </div>
+            <div>
+              <dt>In reply to</dt>
+              <dd>{message.in_reply_to ?? "none"}</dd>
+            </div>
+            <div>
+              <dt>References</dt>
+              <dd>{message.references.length ? message.references.join(", ") : "none"}</dd>
+            </div>
+            <div>
+              <dt>Updated</dt>
+              <dd>{formatTimestamp(message.updated_at)}</dd>
+            </div>
+          </dl>
+        </details>
+      </section>
+      <EvidencePanel message={message} />
+    </>
   );
 }
 
@@ -432,4 +435,78 @@ function TextBlock({ label, value }: { label: string; value?: string | null }) {
       <p>{value}</p>
     </div>
   );
+}
+
+function EvidencePanel({ message }: { message: ProcessedEmail }) {
+  return (
+    <aside className="panel evidence-panel" aria-label="Decision evidence">
+      <div className="panel-heading">
+        <div>
+          <h2>Decision evidence</h2>
+          <p>Recorded fields only</p>
+        </div>
+      </div>
+      <EvidenceSection title="Safety" tone="safe">
+        <EvidenceField label="Safety" value={message.safety_category ?? "not recorded"} />
+        <EvidenceField label="Safety reason" value={message.safety_reason ?? "not recorded"} />
+        <EvidenceField label="Agent action" value={message.agent_action ?? "not recorded"} />
+        <EvidenceField label="Review" value={message.outbound_review_status ?? "not reviewed"} />
+        <EvidenceField label="Review reason" value={message.outbound_review_reason ?? "not recorded"} />
+        <EvidenceField label="Final action" value={message.outbound_action ?? "not recorded"} />
+      </EvidenceSection>
+      <EvidenceSection title="Classification" tone="classify">
+        <EvidenceField label="Category" value={message.classification_category ?? "not classified"} />
+        <EvidenceField
+          label="Topics"
+          value={message.classification_topics.length ? message.classification_topics.join(", ") : "none"}
+        />
+        <EvidenceField label="Confidence" value={confidenceLabel(message.classification_confidence)} />
+        <EvidenceField label="Classification reason" value={message.classification_reason ?? "not recorded"} />
+        <EvidenceField label="Decision source" value={message.decision_source ?? "not recorded"} />
+        <EvidenceField label="Matched rule" value={message.matched_rule_name ?? "none"} />
+      </EvidenceSection>
+      <EvidenceSection title="Outbound" tone="outbound">
+        <EvidenceField label="Final action" value={message.outbound_action ?? "not recorded"} />
+        <EvidenceField label="Reason" value={message.outbound_reason ?? "not recorded"} />
+        <EvidenceField
+          label="Recipients"
+          value={message.outbound_recipients.length ? message.outbound_recipients.join(", ") : "none"}
+        />
+        <EvidenceField label="Subject" value={message.outbound_subject ?? "none"} />
+      </EvidenceSection>
+    </aside>
+  );
+}
+
+function EvidenceSection({
+  children,
+  title,
+  tone
+}: {
+  children: ReactNode;
+  title: string;
+  tone: "safe" | "classify" | "outbound";
+}) {
+  return (
+    <section className={`evidence-section ${tone}`}>
+      <h3>{title}</h3>
+      <dl>{children}</dl>
+    </section>
+  );
+}
+
+function EvidenceField({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
+  );
+}
+
+function confidenceLabel(value?: number | null): string {
+  if (value === null || value === undefined) {
+    return "not recorded";
+  }
+  return `${Math.round(value * 100)}%`;
 }
