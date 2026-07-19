@@ -82,25 +82,29 @@ function previewSource(): string {
 }
 
 describe("SignatureEditor", () => {
-  it("switches between legacy notice, plain text, and default HTML modes", () => {
+  it("uses the default notice until custom signature is enabled", () => {
     const { changes } = renderControlled(null);
 
     expect(screen.getByTitle("Signature preview for support")).toHaveAttribute(
       "sandbox",
       ""
     );
+    expect(
+      screen.getByRole("checkbox", { name: "Use custom signature" })
+    ).not.toBeChecked();
     expect(previewSource()).toContain("This automated reply was sent on Mark");
+    expect(screen.queryByRole("group", { name: "Signature type" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Plain" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use custom signature" }));
     expect(changes.at(-1)).toEqual({
       format: "plain_text",
       content: DEFAULT_PLAIN_SIGNATURE
     });
-    expect(screen.getByLabelText("Plain text")).toHaveValue(
+    expect(screen.getByLabelText("Signature text")).toHaveValue(
       DEFAULT_PLAIN_SIGNATURE
     );
 
-    fireEvent.change(screen.getByLabelText("Plain text"), {
+    fireEvent.change(screen.getByLabelText("Signature text"), {
       target: { value: "Thanks\nMark <mark@example.com>" }
     });
     expect(changes.at(-1)).toEqual({
@@ -109,10 +113,16 @@ describe("SignatureEditor", () => {
     });
     expect(previewSource()).toContain("Mark &lt;mark@example.com&gt;");
 
-    fireEvent.click(screen.getByRole("button", { name: "Current notice" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use custom signature" }));
     expect(changes.at(-1)).toBeNull();
-    expect(screen.queryByLabelText("Plain text")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Signature text")).not.toBeInTheDocument();
     expect(previewSource()).toContain("This automated reply was sent on Mark");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use custom signature" }));
+    expect(changes.at(-1)).toEqual({
+      format: "plain_text",
+      content: "Thanks\nMark <mark@example.com>"
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "HTML" }));
     expect(changes.at(-1)).toEqual({
@@ -130,7 +140,10 @@ describe("SignatureEditor", () => {
       content: "--\nExisting"
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Plain" }));
+    expect(
+      screen.getByRole("checkbox", { name: "Use custom signature" })
+    ).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Plain text" }));
     expect(plain.changes.at(-1)).toEqual({
       format: "plain_text",
       content: "--\nExisting"

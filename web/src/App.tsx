@@ -1,21 +1,18 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   Activity,
-  FileText,
   History as HistoryIcon,
   KeyRound,
   LogOut,
   Mail,
-  MessageSquareText,
-  Plus,
+  Menu,
   RefreshCw,
   Save,
   Server,
   Settings,
   ShieldAlert,
-  Send,
   Tags,
-  Trash2
+  X
 } from "lucide-react";
 import { summarizeConfig } from "./configModel";
 import { createHandoff, loadConfig, loadEmailClassification, loadMessages, loadStatus, login, logout, saveConfig } from "./api";
@@ -26,6 +23,7 @@ import { Overview } from "./panels/OverviewPanel";
 import { RulesPanel } from "./panels/RulesPanel";
 import { Safety } from "./panels/SafetyPanel";
 import { SettingsPanel } from "./panels/SettingsPanel";
+import { ConfirmDialog } from "./panels/ConfirmDialog";
 import type { AppConfig, EmailClassificationConfig, ProcessedEmail, StatusResponse } from "./types";
 import { errorMessage } from "./viewUtils";
 
@@ -45,27 +43,43 @@ const tabs: Array<{ id: TabId; label: string; icon: typeof Activity }> = [
   { id: "settings", label: "Settings", icon: Settings }
 ];
 
+const configTabs = new Set<TabId>(["mailboxes", "mcp", "safety", "settings"]);
+
+type PendingGuardAction = "refresh" | "logout";
+
 export function App({
   initialHistoryLimit = DEFAULT_HISTORY_LIMIT
 }: {
   initialHistoryLimit?: number;
 } = {}) {
   const [status, setStatus] = useState<StatusResponse | null>(null);
-  const [config, setConfig] = useState<AppConfig | null>(null);
+  const [savedConfig, setSavedConfig] = useState<AppConfig | null>(null);
+  const [draftConfig, setDraftConfig] = useState<AppConfig | null>(null);
   const [messages, setMessages] = useState<ProcessedEmail[]>([]);
   const [classification, setClassification] = useState<EmailClassificationConfig | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
+  const [lastEditedConfigTab, setLastEditedConfigTab] = useState<TabId>("mailboxes");
+  const [pendingGuardAction, setPendingGuardAction] = useState<PendingGuardAction | null>(null);
+  const [navOpen, setNavOpen] = useState(false);
   const [loginKey, setLoginKey] = useState("");
   const [messageLimit, setMessageLimit] = useState(initialHistoryLimit);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
-  async function refresh(nextMessageLimit = messageLimit) {
+  const isConfigDirty = useMemo(
+    () => Boolean(savedConfig && draftConfig && !configsEqual(savedConfig, draftConfig)),
+    [savedConfig, draftConfig]
+  );
+  const activeConfigTab = configTabs.has(activeTab);
+
+  async function refreshFromServer(nextMessageLimit = messageLimit) {
     setError("");
     const nextStatus = await loadStatus();
     setStatus(nextStatus);
     if (nextStatus.authenticated) {
-      setConfig(await loadConfig());
+      const nextConfig = await loadConfig();
+      setSavedConfig(nextConfig);
+      setDraftConfig(nextConfig);
       try {
         setMessages(await loadMessages(nextMessageLimit));
       } catch (cause) {
@@ -79,7 +93,8 @@ export function App({
         setError(errorMessage(cause));
       }
     } else {
-      setConfig(null);
+      setSavedConfig(null);
+      setDraftConfig(null);
       setMessages([]);
       setClassification(null);
     }
@@ -97,39 +112,106 @@ export function App({
   }
 
   useEffect(() => {
-    refresh().catch((cause) => setError(errorMessage(cause)));
+    refreshFromServer().catch((cause) => setError(errorMessage(cause)));
   }, []);
+
+  useEffect(() => {
+    if (!isConfigDirty) {
+      return;
+    }
+    function warnBeforeUnload(event: BeforeUnloadEvent) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [isConfigDirty]);
 
   async function onLogin(event: FormEvent) {
     event.preventDefault();
     setError("");
     await login(loginKey);
     setLoginKey("");
-    await refresh();
+    await refreshFromServer();
   }
 
-  async function onLogout() {
+  async function logoutNow() {
     setError("");
     await logout();
-    setConfig(null);
+    setSavedConfig(null);
+    setDraftConfig(null);
     setMessages([]);
     setClassification(null);
-    await refresh();
+    await refreshFromServer();
   }
 
-  async function onSave() {
-    if (!config) {
-      return;
+  async function saveDraftConfig() {
+    if (!draftConfig) {
+      return false;
     }
     setSaving(true);
     setError("");
     try {
-      setConfig(await saveConfig(config));
+      const nextConfig = await saveConfig(draftConfig);
+      setSavedConfig(nextConfig);
+      setDraftConfig(nextConfig);
+      return true;
     } catch (cause) {
       setError(errorMessage(cause));
+      return false;
     } finally {
       setSaving(false);
     }
+  }
+
+  function applyDraftConfig(nextConfig: AppConfig) {
+    setDraftConfig(nextConfig);
+    if (activeConfigTab) {
+      setLastEditedConfigTab(activeTab);
+    }
+  }
+
+  function requestRefresh() {
+    if (isConfigDirty) {
+      setPendingGuardAction("refresh");
+      return;
+    }
+    refreshFromServer().catch((cause) => setError(errorMessage(cause)));
+  }
+
+  function requestLogout() {
+    if (isConfigDirty) {
+      setPendingGuardAction("logout");
+      return;
+    }
+    logoutNow().catch((cause) => setError(errorMessage(cause)));
+  }
+
+  async function continueAfterSaving() {
+    const saved = await saveDraftConfig();
+    if (!saved || !pendingGuardAction) {
+      return;
+    }
+    const action = pendingGuardAction;
+    setPendingGuardAction(null);
+    if (action === "refresh") {
+      await refreshFromServer();
+      return;
+    }
+    await logoutNow();
+  }
+
+  function continueAfterDiscarding() {
+    if (savedConfig) {
+      setDraftConfig(savedConfig);
+    }
+    const action = pendingGuardAction;
+    setPendingGuardAction(null);
+    if (action === "refresh") {
+      refreshFromServer().catch((cause) => setError(errorMessage(cause)));
+      return;
+    }
+    logoutNow().catch((cause) => setError(errorMessage(cause)));
   }
 
   async function onCreateHandoff(message: ProcessedEmail, destination: string) {
@@ -144,9 +226,11 @@ export function App({
   }
 
   const summary = useMemo(
-    () => (config ? summarizeConfig(config) : null),
-    [config]
+    () => (draftConfig ? summarizeConfig(draftConfig) : null),
+    [draftConfig]
   );
+  const activeTabMeta = tabs.find((tab) => tab.id === activeTab) ?? tabs[0];
+  const dirtyTabLabel = tabs.find((tab) => tab.id === lastEditedConfigTab)?.label ?? "Config";
 
   if (!status?.authenticated) {
     return (
@@ -175,10 +259,18 @@ export function App({
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside className={navOpen ? "sidebar open" : "sidebar"}>
         <div className="brand">
           <Mail aria-hidden="true" />
           <span>ai-memmail</span>
+          <button
+            aria-label="Close navigation"
+            className="mobile-nav-close"
+            type="button"
+            onClick={() => setNavOpen(false)}
+          >
+            <X aria-hidden="true" />
+          </button>
         </div>
         <nav aria-label="Primary">
           {tabs.map((tab) => {
@@ -187,7 +279,11 @@ export function App({
               <button
                 className={activeTab === tab.id ? "active" : ""}
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
+                title={tab.label}
+                onClick={() => {
+                  setActiveTab(tab.id);
+                  setNavOpen(false);
+                }}
                 type="button"
               >
                 <Icon aria-hidden="true" />
@@ -196,36 +292,76 @@ export function App({
             );
           })}
         </nav>
+        <div className="sidebar-footer">
+          {isConfigDirty ? (
+            <button
+              className="dirty-return"
+              type="button"
+              onClick={() => {
+                setActiveTab(lastEditedConfigTab);
+                setNavOpen(false);
+              }}
+            >
+              <span>Draft changes</span>
+              <small>{dirtyTabLabel}</small>
+            </button>
+          ) : (
+            <p className="saved-state">Config saved</p>
+          )}
+          <button className="signout-action" type="button" onClick={requestLogout}>
+            <LogOut aria-hidden="true" />
+            Sign out
+          </button>
+        </div>
       </aside>
 
       <main className="workspace">
         <header className="topbar">
-          <div>
-            <h1>{tabs.find((tab) => tab.id === activeTab)?.label}</h1>
-            <p>{status.enabled_mailboxes} enabled mailboxes</p>
+          <button
+            aria-label="Open navigation"
+            className="mobile-nav-toggle"
+            type="button"
+            onClick={() => setNavOpen(true)}
+          >
+            <Menu aria-hidden="true" />
+          </button>
+          <div className="topbar-title">
+            <h1>{activeTabMeta.label}</h1>
+            <p>{topbarSubtitle(activeTab, status, messages, summary)}</p>
           </div>
           <div className="topbar-actions">
-            <button type="button" title="Refresh" onClick={() => refresh()}>
+            <button
+              aria-label="Refresh data"
+              className="icon-action"
+              title="Refresh data"
+              type="button"
+              onClick={requestRefresh}
+            >
               <RefreshCw aria-hidden="true" />
-              Refresh
             </button>
-            <button type="button" title="Save" onClick={onSave} disabled={!config || saving}>
-              <Save aria-hidden="true" />
-              {saving ? "Saving" : "Save"}
-            </button>
-            <button type="button" title="Logout" onClick={onLogout}>
-              <LogOut aria-hidden="true" />
-              Logout
-            </button>
+            {activeConfigTab ? (
+              <button
+                className="primary-action"
+                type="button"
+                title="Save changes"
+                onClick={() => {
+                  saveDraftConfig().catch((cause) => setError(errorMessage(cause)));
+                }}
+                disabled={!draftConfig || saving || !isConfigDirty}
+              >
+                <Save aria-hidden="true" />
+                {saving ? "Saving" : "Save changes"}
+              </button>
+            ) : null}
           </div>
         </header>
 
         {error ? <div className="banner" role="alert">{error}</div> : null}
-        {!config || !summary ? (
+        {!draftConfig || !summary ? (
           <section className="panel">Loading</section>
         ) : (
           <section className="content-band">
-            {activeTab === "overview" ? <Overview summary={summary} config={config} /> : null}
+            {activeTab === "overview" ? <Overview summary={summary} config={draftConfig} status={status} /> : null}
             {activeTab === "history" ? (
               <HistoryPanel
                 canLoadMore={messages.length >= messageLimit && messageLimit < MAX_HISTORY_LIMIT}
@@ -238,26 +374,94 @@ export function App({
             {activeTab === "rules" ? (
               <RulesPanel
                 classification={classification}
-                config={config}
+                config={draftConfig}
                 setClassification={setClassification}
                 setError={setError}
               />
             ) : null}
             {activeTab === "mailboxes" ? (
-              <Mailboxes config={config} setConfig={setConfig} />
+              <Mailboxes config={draftConfig} setConfig={applyDraftConfig} />
             ) : null}
             {activeTab === "mcp" ? (
-              <McpServers config={config} setConfig={setConfig} />
+              <McpServers config={draftConfig} setConfig={applyDraftConfig} />
             ) : null}
             {activeTab === "safety" ? (
-              <Safety config={config} setConfig={setConfig} />
+              <Safety config={draftConfig} setConfig={applyDraftConfig} />
             ) : null}
             {activeTab === "settings" ? (
-              <SettingsPanel config={config} setConfig={setConfig} />
+              <SettingsPanel config={draftConfig} setConfig={applyDraftConfig} />
             ) : null}
           </section>
         )}
       </main>
+      {navOpen ? (
+        <button
+          aria-label="Close navigation overlay"
+          className="nav-scrim"
+          type="button"
+          onClick={() => setNavOpen(false)}
+        />
+      ) : null}
+      {pendingGuardAction ? (
+        <ConfirmDialog
+          cancelLabel="Keep editing"
+          confirmLabel="Discard and continue"
+          danger
+          onCancel={() => setPendingGuardAction(null)}
+          onConfirm={continueAfterDiscarding}
+          title="Unsaved config changes"
+        >
+          <p>
+            {pendingGuardAction === "refresh"
+              ? "Refreshing will replace the draft config with the latest server copy."
+              : "Signing out will leave this browser session and discard the draft config."}
+          </p>
+          <div className="dialog-actions secondary">
+            <button
+              className="primary-action"
+              disabled={saving}
+              type="button"
+              onClick={() => {
+                continueAfterSaving().catch((cause) => setError(errorMessage(cause)));
+              }}
+            >
+              <Save aria-hidden="true" />
+              {saving ? "Saving" : "Save and continue"}
+            </button>
+          </div>
+        </ConfirmDialog>
+      ) : null}
     </div>
   );
+}
+
+function configsEqual(first: AppConfig, second: AppConfig): boolean {
+  return JSON.stringify(first) === JSON.stringify(second);
+}
+
+function topbarSubtitle(
+  tab: TabId,
+  status: StatusResponse,
+  messages: ProcessedEmail[],
+  summary: ReturnType<typeof summarizeConfig> | null
+): string {
+  if (tab === "history") {
+    return `${messages.length} processed email${messages.length === 1 ? "" : "s"} loaded`;
+  }
+  if (tab === "rules") {
+    return "Classification labels and mailbox actions";
+  }
+  if (tab === "mailboxes" && summary) {
+    return `${summary.enabledMailboxes}/${summary.mailboxCount} enabled mailboxes`;
+  }
+  if (tab === "mcp" && summary) {
+    return `${summary.mcpServerCount} configured MCP server${summary.mcpServerCount === 1 ? "" : "s"}`;
+  }
+  if (tab === "safety" && summary) {
+    return `${summary.bannedSenderCount} banned sender${summary.bannedSenderCount === 1 ? "" : "s"}`;
+  }
+  if (tab === "settings") {
+    return "Database, AI, prompts, and logging";
+  }
+  return `${status.enabled_mailboxes} enabled mailbox${status.enabled_mailboxes === 1 ? "" : "es"}`;
 }

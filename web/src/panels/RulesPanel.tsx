@@ -3,6 +3,7 @@ import { Plus, Save, Trash2 } from "lucide-react";
 import { createEmailCategory, createEmailRule, createEmailTopic, deleteEmailRule, updateEmailRule } from "../api";
 import type { AppConfig, EmailClassificationConfig, EmailRule, NewEmailRule } from "../types";
 import { errorMessage } from "../viewUtils";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 export function RulesPanel({
   classification,
@@ -27,7 +28,7 @@ export function RulesPanel({
   const activeTopics = classification.topics.filter((topic) => topic.status === "active");
 
   return (
-    <div className="stack">
+    <div className="stack rules-layout">
       <div className="rules-grid">
         <LabelCreator
           buttonLabel="Add category"
@@ -211,6 +212,7 @@ function RuleForm({
 }) {
   const [draft, setDraft] = useState<NewEmailRule>(rule);
   const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     setDraft(rule);
@@ -233,9 +235,10 @@ function RuleForm({
   }
 
   return (
-    <form className={mode === "edit" ? "rule-editor" : "rule-editor new"} onSubmit={save}>
-      {title ? <h3>{title}</h3> : null}
-      <div className="form-grid">
+    <>
+      <form className={mode === "edit" ? "rule-editor" : "rule-editor new"} onSubmit={save}>
+        {title ? <h3>{title}</h3> : null}
+        <div className="form-grid">
         <label>
           Rule name
           <input
@@ -299,58 +302,73 @@ function RuleForm({
           />
           Enabled
         </label>
-      </div>
-      <fieldset className="topic-picker">
-        <legend>Topics</legend>
-        <p className="muted">No selected topics means any topic in the category.</p>
-        <div>
-          {topics.map((topic) => (
-            <label className="switch" key={topic.id}>
-              <input
-                checked={draft.topic_ids.includes(topic.id)}
-                type="checkbox"
-                onChange={(event) =>
-                  setDraft({
-                    ...draft,
-                    topic_ids: toggleTopicId(draft.topic_ids, topic.id, event.target.checked)
-                  })
-                }
-              />
-              {topic.name}
-            </label>
-          ))}
         </div>
-      </fieldset>
-      <label>
-        Response goal
-        <textarea
-          value={draft.reply_goal}
-          onChange={(event) => setDraft({ ...draft, reply_goal: event.target.value })}
-        />
-      </label>
-      <div className="panel-actions">
-        {onDelete ? (
+        <fieldset className="topic-picker">
+          <legend>Topics</legend>
+          <p className="muted">No selected topics means any topic in the category.</p>
+          <div>
+            {topics.map((topic) => (
+              <label className="switch" key={topic.id}>
+                <input
+                  checked={draft.topic_ids.includes(topic.id)}
+                  type="checkbox"
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      topic_ids: toggleTopicId(draft.topic_ids, topic.id, event.target.checked)
+                    })
+                  }
+                />
+                {topic.name}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <label>
+          Response goal
+          <textarea
+            value={draft.reply_goal}
+            onChange={(event) => setDraft({ ...draft, reply_goal: event.target.value })}
+          />
+        </label>
+        <div className="panel-actions">
+          {onDelete ? (
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(true)}
+              disabled={saving}
+            >
+              <Trash2 aria-hidden="true" />
+              Delete
+            </button>
+          ) : null}
           <button
-            type="button"
-            onClick={() => {
-              setSaving(true);
-              onDelete().finally(() => setSaving(false));
-            }}
-            disabled={saving}
+            type="submit"
+            disabled={saving || !draft.name.trim() || draft.category_id === 0 || !draft.mailbox_id}
           >
-            <Trash2 aria-hidden="true" />
-            Delete
+            <Save aria-hidden="true" />
+            {saving ? "Saving" : mode === "create" ? "Add rule" : "Save rule"}
           </button>
-        ) : null}
-        <button
-          type="submit"
-          disabled={saving || !draft.name.trim() || draft.category_id === 0 || !draft.mailbox_id}
+        </div>
+      </form>
+      {confirmDelete && onDelete ? (
+        <ConfirmDialog
+          confirmLabel="Delete rule"
+          danger
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => {
+            setSaving(true);
+            onDelete().finally(() => {
+              setSaving(false);
+              setConfirmDelete(false);
+            });
+          }}
+          title="Delete rule"
         >
-          <Save aria-hidden="true" />
-          {saving ? "Saving" : mode === "create" ? "Add rule" : "Save rule"}
-        </button>
-      </div>
-    </form>
+          <p>{title ?? draft.name} will be deleted from classification rules.</p>
+        </ConfirmDialog>
+      ) : null}
+    </>
   );
 }
 

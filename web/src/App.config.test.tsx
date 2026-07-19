@@ -194,6 +194,7 @@ describe("App config", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /mailboxes/i }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /use custom signature/i }));
     fireEvent.click(screen.getByRole("button", { name: /^html$/i }));
     expect(screen.getByTitle("Signature preview for support")).toHaveAttribute("sandbox", "");
     expect(screen.getByRole("toolbar", { name: /html signature toolbar/i })).toBeInTheDocument();
@@ -239,7 +240,7 @@ describe("App config", () => {
     fireEvent.click(await screen.findByRole("button", { name: /mailboxes/i }));
     expect(screen.getByText("No mailboxes configured")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /add mailbox/i }));
-    expect(screen.getByText("mailbox_1@example.com")).toBeInTheDocument();
+    expect(screen.getAllByText("mailbox_1@example.com").length).toBeGreaterThan(0);
     fireEvent.change(screen.getByLabelText(/poll seconds/i), {
       target: { value: "90" }
     });
@@ -281,23 +282,22 @@ describe("App config", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /mcp servers/i }));
     fireEvent.click(screen.getByRole("button", { name: /add server/i }));
-    expect(screen.getByText("dense_mem_2")).toBeInTheDocument();
-    const serverIdInputs = screen.getAllByLabelText(/server id/i);
-    fireEvent.change(serverIdInputs[1], {
+    expect(screen.getAllByText("dense_mem_2").length).toBeGreaterThan(0);
+    fireEvent.change(screen.getByLabelText(/server id/i), {
       target: { value: "project_memory" }
     });
-    fireEvent.blur(serverIdInputs[1]);
-    expect(screen.getByText("project_memory")).toBeInTheDocument();
-    fireEvent.change(screen.getAllByLabelText(/transport/i)[1], {
+    fireEvent.blur(screen.getByLabelText(/server id/i));
+    expect(screen.getAllByText("project_memory").length).toBeGreaterThan(0);
+    fireEvent.change(screen.getByLabelText(/transport/i), {
       target: { value: "streamable_http" }
     });
-    fireEvent.change(screen.getAllByLabelText(/command/i)[1], {
+    fireEvent.change(screen.getByLabelText(/command/i), {
       target: { value: "" }
     });
-    fireEvent.change(screen.getAllByLabelText(/^url$/i)[1], {
+    fireEvent.change(screen.getByLabelText(/^url$/i), {
       target: { value: "http://dense-mem:8080/mcp" }
     });
-    fireEvent.click(screen.getAllByRole("button", { name: /add variable/i })[1]);
+    fireEvent.click(screen.getByRole("button", { name: /add variable/i }));
     const variableInputs = screen.getAllByLabelText(/^variable$/i);
     fireEvent.change(variableInputs[variableInputs.length - 1], {
       target: { value: "DENSE_MEM_API_KEY" }
@@ -365,6 +365,7 @@ describe("App config", () => {
     fireEvent.click(screen.getByRole("button", { name: /remove dense_mem_api_key/i }));
     expect(screen.queryByDisplayValue("DENSE_MEM_API_KEY")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /remove server/i }));
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
 
     await waitFor(() => expect(savedBodies).toHaveLength(1));
