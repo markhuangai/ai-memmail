@@ -109,11 +109,11 @@ pub async fn send_portal_message(
         .await
         .map_err(ApiError::from_storage)?;
     if inserted {
-        let send_result = state
+        let (status, error) = match state
             .mail
             .send_composed(&mailbox.smtp, &prepared.email)
-            .await;
-        let (status, error) = match send_result {
+            .await
+        {
             Ok(()) => ("sent", None),
             Err(error) => ("uncertain", Some(error.to_string())),
         };
@@ -184,7 +184,7 @@ fn prepare_reply(
             status: StatusCode::BAD_REQUEST,
             message: "conversation has no remote sender to reply to".to_string(),
         })?;
-    let parent = latest_message_with_id(&detail.messages).ok_or_else(|| ApiError {
+    let parent = latest_reply_parent(detail).ok_or_else(|| ApiError {
         status: StatusCode::BAD_REQUEST,
         message: "conversation has no message id to reply to".to_string(),
     })?;
@@ -370,13 +370,24 @@ fn render_with_quote(
     RenderedParts { text, html }
 }
 
-fn latest_message_with_id(messages: &[PortalTimelineMessage]) -> Option<&PortalTimelineMessage> {
-    messages.iter().rev().find(|message| {
-        message
-            .message_id
-            .as_ref()
-            .is_some_and(|id| !id.trim().is_empty())
+fn latest_reply_parent(detail: &PortalConversationDetail) -> Option<&PortalTimelineMessage> {
+    detail.messages.iter().rev().find(|message| {
+        reply_parent_belongs_to_conversation(detail, message) && message_has_id(message)
     })
+}
+
+fn reply_parent_belongs_to_conversation(
+    detail: &PortalConversationDetail,
+    message: &PortalTimelineMessage,
+) -> bool {
+    detail.conversation.source_conversation_id.is_some() || message.kind != "portal_forward"
+}
+
+fn message_has_id(message: &PortalTimelineMessage) -> bool {
+    message
+        .message_id
+        .as_ref()
+        .is_some_and(|id| !id.trim().is_empty())
 }
 
 fn references_for_parent(parent: &PortalTimelineMessage) -> Vec<String> {
@@ -444,4 +455,77 @@ fn with_reply_target(mut detail: PortalConversationDetail) -> PortalConversation
         .as_deref()
         .map(reply_recipient);
     detail
+}
+
+#[cfg(test)]
+mod portal_tests {
+    use super::*;
+
+    #[test]
+    fn source_reply_parent_skips_child_forward_message() {
+        let inbound = timeline_message("inbound", "<inbound@example.com>");
+        let forward = timeline_message("portal_forward", "<forward@example.com>");
+        let detail = conversation_detail(None, vec![inbound.clone(), forward]);
+
+        let parent = latest_reply_parent(&detail).unwrap();
+
+        assert_eq!(parent.message_id, inbound.message_id);
+    }
+
+    #[test]
+    fn child_reply_parent_can_use_child_forward_message() {
+        let forward = timeline_message("portal_forward", "<forward@example.com>");
+        let detail = conversation_detail(Some(Uuid::new_v4()), vec![forward.clone()]);
+
+        let parent = latest_reply_parent(&detail).unwrap();
+
+        assert_eq!(parent.message_id, forward.message_id);
+    }
+
+    fn conversation_detail(
+        source_conversation_id: Option<Uuid>,
+        messages: Vec<PortalTimelineMessage>,
+    ) -> PortalConversationDetail {
+        PortalConversationDetail {
+            conversation: PortalConversationSummary {
+                conversation_id: Uuid::new_v4(),
+                mailbox_id: "support".to_string(),
+                thread_id: "<thread@example.com>".to_string(),
+                subject: "Question".to_string(),
+                revision: 1,
+                last_message_at: "2026-07-19T00:00:00Z".to_string(),
+                latest_sender: "person@example.com".to_string(),
+                latest_status: "open".to_string(),
+                remote_reply_to: Some("person@example.com".to_string()),
+                unsafe_reply_requires_confirmation: false,
+                source_conversation_id,
+                handoff: None,
+            },
+            messages,
+            quote_text: String::new(),
+            quote_html: String::new(),
+        }
+    }
+
+    fn timeline_message(kind: &str, message_id: &str) -> PortalTimelineMessage {
+        PortalTimelineMessage {
+            id: format!("test:{message_id}"),
+            direction: "outbound".to_string(),
+            kind: kind.to_string(),
+            status: "sent".to_string(),
+            from_addr: "support@example.com".to_string(),
+            to_recipients: vec!["person@example.com".to_string()],
+            cc_recipients: vec![],
+            bcc_recipients: vec![],
+            subject: "Question".to_string(),
+            text_body: Some("Body".to_string()),
+            html_body: None,
+            body_truncated: false,
+            message_id: Some(message_id.to_string()),
+            in_reply_to: None,
+            references: vec![],
+            safety_category: None,
+            created_at: "2026-07-19T00:00:00Z".to_string(),
+        }
+    }
 }
