@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { sampleConfig, sampleMessages } from "./fixtures";
@@ -36,6 +36,14 @@ describe("App history", () => {
     expect(screen.getByText("Can you send the current pricing plan?")).toBeInTheDocument();
     expect(screen.getByText(/This is an automated email reply/i)).toBeInTheDocument();
     expect(screen.getByText("<auto-42@example.com>")).toBeInTheDocument();
+    const outboundEvidence = screen
+      .getAllByRole("heading", { name: "Outbound" })
+      .map((heading) => heading.closest(".evidence-section"))
+      .find((section) => section !== null);
+    expect(outboundEvidence).not.toBeNull();
+    expect(within(outboundEvidence as HTMLElement).getByText("Final action")).toBeInTheDocument();
+    expect(within(outboundEvidence as HTMLElement).getByText("reply")).toBeInTheDocument();
+    expect(within(outboundEvidence as HTMLElement).queryByText("Agent action")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /Suspicious prompt injection sample/i }));
     expect(screen.getByText("Redacted prompt-injection sample requesting instruction override and secret disclosure.")).toBeInTheDocument();

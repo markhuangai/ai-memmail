@@ -466,7 +466,7 @@ function EvidencePanel({ message }: { message: ProcessedEmail }) {
         <EvidenceField label="Matched rule" value={message.matched_rule_name ?? "none"} />
       </EvidenceSection>
       <EvidenceSection title="Outbound" tone="outbound">
-        <EvidenceField label="Agent action" value={message.outbound_action ?? "not recorded"} />
+        <EvidenceField label="Final action" value={message.outbound_action ?? "not recorded"} />
         <EvidenceField label="Reason" value={message.outbound_reason ?? "not recorded"} />
         <EvidenceField
           label="Recipients"

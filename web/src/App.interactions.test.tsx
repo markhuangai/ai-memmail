@@ -5,6 +5,14 @@ import { sampleConfig } from "./fixtures";
 import { classificationResponse, jsonResponse } from "./testHelpers";
 import type { AppConfig } from "./types";
 
+function deferredResponse() {
+  let resolve!: (response: Response) => void;
+  const promise = new Promise<Response>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
+
 describe("App interaction guards", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -13,6 +21,7 @@ describe("App interaction guards", () => {
   it("saves dirty config before refreshing and closes the mobile drawer", async () => {
     let serverConfig: AppConfig = sampleConfig;
     const savedBodies: string[] = [];
+    const messageRequests: string[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation((path, init) => {
       if (path === "/api/status") {
         return jsonResponse({
@@ -28,6 +37,7 @@ describe("App interaction guards", () => {
         return jsonResponse({ config: serverConfig });
       }
       if (String(path).startsWith("/api/messages")) {
+        messageRequests.push(String(path));
         return jsonResponse({ messages: [] });
       }
       if (path === "/api/email-classification") {
@@ -39,6 +49,8 @@ describe("App interaction guards", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^mailboxes$/i }));
+    await waitFor(() => expect(messageRequests.length).toBeGreaterThan(0));
+    messageRequests.length = 0;
     fireEvent.change(screen.getByLabelText(/poll seconds/i), {
       target: { value: "77" }
     });
@@ -62,7 +74,70 @@ describe("App interaction guards", () => {
     fireEvent.click(within(saveDialog).getByRole("button", { name: /save and continue/i }));
 
     await waitFor(() => expect(savedBodies).toHaveLength(1));
+    await waitFor(() => expect(messageRequests.length).toBeGreaterThan(0));
     expect(JSON.parse(savedBodies[0]).mailboxes[0].poll_interval_seconds).toBe(77);
+  });
+
+  it("does not refresh after a guarded save request is canceled while saving", async () => {
+    let serverConfig: AppConfig = sampleConfig;
+    const save = deferredResponse();
+    const savedBodies: string[] = [];
+    const messageRequests: string[] = [];
+    let statusRequests = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((path, init) => {
+      if (path === "/api/status") {
+        statusRequests += 1;
+        return jsonResponse({
+          service: "ai-memmail",
+          authenticated: true,
+          uptime_seconds: 3,
+          enabled_mailboxes: 1
+        });
+      }
+      if (path === "/api/config" && init?.method === "PUT") {
+        savedBodies.push(String(init.body));
+        serverConfig = JSON.parse(String(init.body)) as AppConfig;
+        return save.promise;
+      }
+      if (String(path).startsWith("/api/messages")) {
+        messageRequests.push(String(path));
+        return jsonResponse({ messages: [] });
+      }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
+      }
+      return jsonResponse({ config: serverConfig });
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^mailboxes$/i }));
+    await waitFor(() => expect(messageRequests.length).toBeGreaterThan(0));
+    messageRequests.length = 0;
+    statusRequests = 0;
+    fireEvent.change(screen.getByLabelText(/poll seconds/i), {
+      target: { value: "88" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /refresh data/i }));
+    const dialog = screen.getByRole("dialog", { name: /unsaved config changes/i });
+    fireEvent.click(within(dialog).getByRole("button", { name: /save and continue/i }));
+    await waitFor(() => expect(savedBodies).toHaveLength(1));
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /keep editing/i }));
+    expect(screen.queryByRole("dialog", { name: /unsaved config changes/i })).not.toBeInTheDocument();
+    save.resolve(
+      new Response(JSON.stringify({ config: serverConfig }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /save changes/i })).toBeDisabled()
+    );
+    await Promise.resolve();
+    expect(statusRequests).toBe(0);
+    expect(messageRequests).toEqual([]);
   });
 
   it("discards dirty config when refresh is confirmed", async () => {

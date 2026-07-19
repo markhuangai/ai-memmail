@@ -563,6 +563,7 @@ function MailboxDetail({
       </div>
 
       <SignatureEditor
+        key={mailbox.id}
         mailbox={mailbox}
         onChange={(signature) =>
           patchMailbox(mailbox.id, (next) => ({

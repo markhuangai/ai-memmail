@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { DEFAULT_PLAIN_SIGNATURE } from "./configModel";
 import { sampleConfig } from "./fixtures";
 import { classificationResponse, jsonResponse } from "./testHelpers";
 import type { AppConfig } from "./types";
@@ -205,6 +206,71 @@ describe("App config", () => {
     expect(saved.mailboxes[0].signature).toEqual({
       format: "html",
       content: "<p><strong>Mark</strong></p>"
+    });
+  });
+
+  it("does not reuse signature state after switching mailboxes", async () => {
+    const config: AppConfig = {
+      ...sampleConfig,
+      mailboxes: [
+        {
+          ...sampleConfig.mailboxes[0],
+          signature: {
+            format: "html",
+            content: "<p>Support signature</p>"
+          }
+        },
+        {
+          ...sampleConfig.mailboxes[0],
+          id: "billing",
+          address: "billing@example.com",
+          signature: null,
+          imap: {
+            ...sampleConfig.mailboxes[0].imap,
+            username: "billing@example.com"
+          },
+          smtp: {
+            ...sampleConfig.mailboxes[0].smtp,
+            username: "billing@example.com",
+            from: "billing@example.com"
+          }
+        }
+      ]
+    };
+    const savedBodies: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((path, init) => {
+      if (path === "/api/status") {
+        return jsonResponse({
+          service: "ai-memmail",
+          authenticated: true,
+          uptime_seconds: 3,
+          enabled_mailboxes: 2
+        });
+      }
+      if (path === "/api/config" && init?.method === "PUT") {
+        savedBodies.push(String(init.body));
+        return jsonResponse({ config: JSON.parse(String(init.body)) as AppConfig });
+      }
+      if (path === "/api/email-classification") {
+        return classificationResponse();
+      }
+      return jsonResponse({ config });
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /mailboxes/i }));
+    expect(screen.getByRole("toolbar", { name: /html signature toolbar/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /billing@example.com/i }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /use custom signature/i }));
+    expect(screen.getByLabelText("Signature text")).toHaveValue(DEFAULT_PLAIN_SIGNATURE);
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() => expect(savedBodies).toHaveLength(1));
+    const saved = JSON.parse(savedBodies[0]) as AppConfig;
+    expect(saved.mailboxes[1].signature).toEqual({
+      format: "plain_text",
+      content: DEFAULT_PLAIN_SIGNATURE
     });
   });
 

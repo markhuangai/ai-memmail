@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   History as HistoryIcon,
@@ -46,6 +46,10 @@ const tabs: Array<{ id: TabId; label: string; icon: typeof Activity }> = [
 const configTabs = new Set<TabId>(["mailboxes", "mcp", "safety", "settings"]);
 
 type PendingGuardAction = "refresh" | "logout";
+type PendingGuardRequest = {
+  action: PendingGuardAction;
+  id: number;
+};
 
 export function App({
   initialHistoryLimit = DEFAULT_HISTORY_LIMIT
@@ -59,7 +63,9 @@ export function App({
   const [classification, setClassification] = useState<EmailClassificationConfig | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [lastEditedConfigTab, setLastEditedConfigTab] = useState<TabId>("mailboxes");
-  const [pendingGuardAction, setPendingGuardAction] = useState<PendingGuardAction | null>(null);
+  const [pendingGuardRequest, setPendingGuardRequestState] = useState<PendingGuardRequest | null>(null);
+  const pendingGuardRequestRef = useRef<PendingGuardRequest | null>(null);
+  const nextPendingGuardRequestId = useRef(0);
   const [navOpen, setNavOpen] = useState(false);
   const [loginKey, setLoginKey] = useState("");
   const [messageLimit, setMessageLimit] = useState(initialHistoryLimit);
@@ -71,6 +77,21 @@ export function App({
     [savedConfig, draftConfig]
   );
   const activeConfigTab = configTabs.has(activeTab);
+
+  function setPendingGuardRequest(action: PendingGuardAction | null) {
+    if (!action) {
+      pendingGuardRequestRef.current = null;
+      setPendingGuardRequestState(null);
+      return;
+    }
+    const request = {
+      action,
+      id: nextPendingGuardRequestId.current + 1
+    };
+    nextPendingGuardRequestId.current = request.id;
+    pendingGuardRequestRef.current = request;
+    setPendingGuardRequestState(request);
+  }
 
   async function refreshFromServer(nextMessageLimit = messageLimit) {
     setError("");
@@ -173,7 +194,7 @@ export function App({
 
   function requestRefresh() {
     if (isConfigDirty) {
-      setPendingGuardAction("refresh");
+      setPendingGuardRequest("refresh");
       return;
     }
     refreshFromServer().catch((cause) => setError(errorMessage(cause)));
@@ -181,20 +202,23 @@ export function App({
 
   function requestLogout() {
     if (isConfigDirty) {
-      setPendingGuardAction("logout");
+      setPendingGuardRequest("logout");
       return;
     }
     logoutNow().catch((cause) => setError(errorMessage(cause)));
   }
 
   async function continueAfterSaving() {
-    const saved = await saveDraftConfig();
-    if (!saved || !pendingGuardAction) {
+    const request = pendingGuardRequestRef.current;
+    if (!request) {
       return;
     }
-    const action = pendingGuardAction;
-    setPendingGuardAction(null);
-    if (action === "refresh") {
+    const saved = await saveDraftConfig();
+    if (!saved || pendingGuardRequestRef.current !== request) {
+      return;
+    }
+    setPendingGuardRequest(null);
+    if (request.action === "refresh") {
       await refreshFromServer();
       return;
     }
@@ -202,12 +226,15 @@ export function App({
   }
 
   function continueAfterDiscarding() {
+    const request = pendingGuardRequestRef.current;
+    if (!request) {
+      return;
+    }
     if (savedConfig) {
       setDraftConfig(savedConfig);
     }
-    const action = pendingGuardAction;
-    setPendingGuardAction(null);
-    if (action === "refresh") {
+    setPendingGuardRequest(null);
+    if (request.action === "refresh") {
       refreshFromServer().catch((cause) => setError(errorMessage(cause)));
       return;
     }
@@ -402,17 +429,17 @@ export function App({
           onClick={() => setNavOpen(false)}
         />
       ) : null}
-      {pendingGuardAction ? (
+      {pendingGuardRequest ? (
         <ConfirmDialog
           cancelLabel="Keep editing"
           confirmLabel="Discard and continue"
           danger
-          onCancel={() => setPendingGuardAction(null)}
+          onCancel={() => setPendingGuardRequest(null)}
           onConfirm={continueAfterDiscarding}
           title="Unsaved config changes"
         >
           <p>
-            {pendingGuardAction === "refresh"
+            {pendingGuardRequest.action === "refresh"
               ? "Refreshing will replace the draft config with the latest server copy."
               : "Signing out will leave this browser session and discard the draft config."}
           </p>
