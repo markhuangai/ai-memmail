@@ -354,14 +354,9 @@ impl PgStore {
                     bcc_recipients, subject, authored_text, authored_html, message_id,
                     in_reply_to, message_references, created_at::text
                 FROM portal_messages
-                WHERE (mailbox_id = $1 AND thread_id = $2)
-                    OR source_conversation_id = $3
+                WHERE mailbox_id = $1 AND thread_id = $2
                 ORDER BY created_at ASC",
-                &[
-                    &conversation.mailbox_id,
-                    &conversation.thread_id,
-                    &conversation.conversation_id,
-                ],
+                &[&conversation.mailbox_id, &conversation.thread_id],
             )
             .await?;
         Ok(rows

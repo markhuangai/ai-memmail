@@ -95,13 +95,14 @@ describe("App history", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Source" }));
     expect(screen.getByLabelText("HTML source")).toHaveValue("<p></p><table><tr><td>Mark</td></tr></table>");
     fireEvent.change(screen.getByLabelText("HTML source"), {
-      target: { value: "<p>I can send details.</p><table><tr><td>Mark</td></tr></table>" }
+      target: { value: "<p>I can send<br>details.</p><table><tr><td>Mark</td></tr></table>" }
     });
     fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
 
     await waitFor(() => expect(requests).toHaveLength(1));
     expect(requests[0]).toMatchObject({
-      authored_html: "<p>I can send details.</p><table><tr><td>Mark</td></tr></table>"
+      authored_text: "I can send\ndetails.\nMark",
+      authored_html: "<p>I can send<br>details.</p><table><tr><td>Mark</td></tr></table>"
     });
   });
 

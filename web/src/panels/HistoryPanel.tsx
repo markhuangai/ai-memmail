@@ -313,12 +313,14 @@ function PortalComposer({
     setSubmitting(true);
     setError("");
     try {
+      const authoredHtml = mode === "source" ? html : plainTextToHtml(body);
+      const authoredText = mode === "source" ? htmlToText(html) : body;
       await onSend({
         request_id: newRequestId(),
         thread_revision: detail.conversation.revision,
         action,
-        authored_text: body,
-        authored_html: mode === "source" ? html : plainTextToHtml(body),
+        authored_text: authoredText,
+        authored_html: authoredHtml,
         to_recipients: action === "forward" ? listFromText(to) : [],
         cc_recipients: action === "forward" ? listFromText(cc) : [],
         bcc_recipients: action === "forward" ? listFromText(bcc) : [],
@@ -524,7 +526,16 @@ function defaultHtml(mailbox: MailboxConfig): string {
 }
 
 function htmlToText(html: string): string {
-  return new DOMParser().parseFromString(html, "text/html").body.textContent?.trim() ?? "";
+  const body = new DOMParser().parseFromString(html, "text/html").body;
+  body.querySelectorAll("br").forEach((element) => element.replaceWith("\n"));
+  body.querySelectorAll("p, div, section, article, header, footer, li, table, tr").forEach((element) => {
+    element.append("\n");
+  });
+  return body.textContent
+    ?.replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim() ?? "";
 }
 
 function listFromText(value: string): string[] {

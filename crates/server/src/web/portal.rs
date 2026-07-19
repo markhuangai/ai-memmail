@@ -6,7 +6,9 @@ use uuid::Uuid;
 
 use crate::config::{AppConfig, MailboxConfig};
 use crate::html_sanitizer::sanitize_email_html;
-use crate::mail::{outbound_message_id, reply_recipient, ComposedEmail};
+use crate::mail::{
+    outbound_message_id, reply_recipient, validate_composed_email, ComposedEmail, ValidationError,
+};
 use crate::storage::{
     NewPortalMessage, PgStore, PortalConversationDetail, PortalConversationSummary,
     PortalTimelineMessage,
@@ -201,6 +203,7 @@ fn prepare_reply(
         in_reply_to: parent.message_id.clone(),
         references: references.clone(),
     };
+    validate_portal_email(&email)?;
     Ok(PreparedPortalSend {
         email,
         source_conversation_to_touch: Some(detail.conversation.conversation_id),
@@ -251,16 +254,6 @@ async fn prepare_forward(
     let message_id = outbound_message_id(mailbox);
     let child_conversation_id = request.request_id;
     let subject = forward_subject(&detail.conversation.subject);
-    store
-        .create_child_conversation(
-            child_conversation_id,
-            detail.conversation.conversation_id,
-            &detail.conversation.mailbox_id,
-            &message_id,
-            &subject,
-        )
-        .await
-        .map_err(ApiError::from_storage)?;
     let rendered = render_with_quote(&authored, &detail.quote_text, &detail.quote_html);
     let email = ComposedEmail {
         to: request.to_recipients.clone(),
@@ -273,6 +266,17 @@ async fn prepare_forward(
         in_reply_to: None,
         references: vec![],
     };
+    validate_portal_email(&email)?;
+    store
+        .create_child_conversation(
+            child_conversation_id,
+            detail.conversation.conversation_id,
+            &detail.conversation.mailbox_id,
+            &message_id,
+            &subject,
+        )
+        .await
+        .map_err(ApiError::from_storage)?;
     Ok(PreparedPortalSend {
         email,
         source_conversation_to_touch: Some(detail.conversation.conversation_id),
@@ -334,6 +338,21 @@ fn authored_parts(request: &PortalSendRequest) -> Result<AuthoredParts, ApiError
         .filter(|html| !html.visually_empty)
         .map(|html| html.html);
     Ok(AuthoredParts { text, html })
+}
+
+fn validate_portal_email(email: &ComposedEmail) -> Result<(), ApiError> {
+    validate_composed_email(email).map_err(|errors| ApiError {
+        status: StatusCode::BAD_REQUEST,
+        message: validation_message(&errors),
+    })
+}
+
+fn validation_message(errors: &[ValidationError]) -> String {
+    errors
+        .iter()
+        .map(|error| format!("{}: {}", error.field, error.message))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn render_with_quote(

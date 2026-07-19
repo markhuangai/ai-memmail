@@ -160,13 +160,25 @@ async fn pg_store_keeps_forward_replies_in_child_conversation() {
         .await
         .unwrap()
         .unwrap();
+    let child_detail = pg
+        .store
+        .portal_conversation_detail(child_id)
+        .await
+        .unwrap()
+        .unwrap();
 
     assert_eq!(reply.thread_id, forward_message_id);
     assert_ne!(reply.thread_id, source.thread_id);
-    assert!(source_detail
+    assert!(!source_detail
         .messages
         .iter()
         .any(|message| message.kind == "portal_forward"));
+    assert!(!source_detail.quote_text.contains("Please review"));
+    assert!(child_detail
+        .messages
+        .iter()
+        .any(|message| message.kind == "portal_forward"));
+    assert!(child_detail.quote_text.contains("Please review"));
 
     pg.cleanup().await;
 }

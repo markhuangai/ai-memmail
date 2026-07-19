@@ -1,4 +1,5 @@
 use super::ValidationError;
+use lettre::message::Mailbox;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposedEmail {
@@ -21,6 +22,9 @@ pub fn validate_composed_email(message: &ComposedEmail) -> Result<(), Vec<Valida
             message: "at least one recipient is required".to_string(),
         });
     }
+    validate_recipients(&message.to, "to", &mut errors);
+    validate_recipients(&message.cc, "cc", &mut errors);
+    validate_recipients(&message.bcc, "bcc", &mut errors);
     if message.subject.trim().is_empty() {
         errors.push(ValidationError {
             field: "subject".to_string(),
@@ -47,5 +51,23 @@ pub fn validate_composed_email(message: &ComposedEmail) -> Result<(), Vec<Valida
         Ok(())
     } else {
         Err(errors)
+    }
+}
+
+fn validate_recipients(recipients: &[String], field: &str, errors: &mut Vec<ValidationError>) {
+    for (index, recipient) in recipients.iter().enumerate() {
+        if recipient.trim().is_empty() {
+            errors.push(ValidationError {
+                field: format!("{field}[{index}]"),
+                message: "recipient is required".to_string(),
+            });
+            continue;
+        }
+        if recipient.parse::<Mailbox>().is_err() {
+            errors.push(ValidationError {
+                field: format!("{field}[{index}]"),
+                message: "invalid email address".to_string(),
+            });
+        }
     }
 }
