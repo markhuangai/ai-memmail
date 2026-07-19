@@ -38,6 +38,14 @@ impl ProcessingStore for PgStore {
             )
             .await?;
         if inserted.is_some() {
+            let conversation_id = self
+                .upsert_email_conversation(
+                    &key.mailbox_id,
+                    &thread_id,
+                    &message.metadata.subject,
+                )
+                .await?;
+            self.bump_conversation_revision(conversation_id).await?;
             return Ok(ProcessingClaim::Claimed);
         }
 
@@ -93,6 +101,14 @@ impl ProcessingStore for PgStore {
                 )
                 .await?;
             if updated.is_some() {
+                let conversation_id = self
+                    .upsert_email_conversation(
+                        &key.mailbox_id,
+                        &thread_id,
+                        &message.metadata.subject,
+                    )
+                    .await?;
+                self.bump_conversation_revision(conversation_id).await?;
                 return Ok(ProcessingClaim::Claimed);
             }
         }

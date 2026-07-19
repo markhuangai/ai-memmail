@@ -287,10 +287,10 @@ impl PgStore {
             )
             .await?;
         let thread_id = row.and_then(|row| row.get::<_, Option<String>>(0));
-        let thread_id = if thread_id.is_some() {
-            thread_id
-        } else {
-            self.client
+        let thread_id = match thread_id {
+            Some(thread_id) => Some(thread_id),
+            None => self
+                .client
                 .query_opt(
                     "SELECT thread_id
                     FROM sent_messages
@@ -300,7 +300,22 @@ impl PgStore {
                     &[&message.metadata.mailbox_id, &related_ids],
                 )
                 .await?
-                .and_then(|row| row.get::<_, Option<String>>(0))
+                .and_then(|row| row.get::<_, Option<String>>(0)),
+        };
+        let thread_id = match thread_id {
+            Some(thread_id) => Some(thread_id),
+            None => self
+                .client
+                .query_opt(
+                    "SELECT thread_id
+                    FROM portal_messages
+                    WHERE mailbox_id = $1 AND message_id = ANY($2)
+                    ORDER BY created_at ASC
+                    LIMIT 1",
+                    &[&message.metadata.mailbox_id, &related_ids],
+                )
+                .await?
+                .map(|row| row.get::<_, String>(0)),
         };
         Ok(thread_id
             .filter(|thread_id| !thread_id.trim().is_empty())

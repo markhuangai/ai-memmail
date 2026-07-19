@@ -6,9 +6,11 @@ use uuid::Uuid;
 
 use crate::config::{AcceptedCondition, MailboxConfig, SmtpConfig};
 
+mod composed;
 mod signature;
 mod threading;
 
+pub use composed::{validate_composed_email, ComposedEmail};
 pub use signature::{apply_reply_signature, automated_reply_body, AUTOMATED_REPLY_NOTICE};
 pub use threading::{
     extract_authored_text, MessageDirection, QuoteExtraction, ThreadContext, ThreadMessage,
@@ -123,6 +125,16 @@ pub trait MailTransport: Send + Sync {
 
     async fn send(&self, smtp: &SmtpConfig, action: &OutboundAction) -> Result<(), MailError>;
 
+    async fn send_composed(
+        &self,
+        _smtp: &SmtpConfig,
+        _message: &ComposedEmail,
+    ) -> Result<(), MailError> {
+        Err(MailError::Smtp(
+            "composed mail sending is unavailable".to_string(),
+        ))
+    }
+
     async fn mark_seen(&self, mailbox: &MailboxConfig, uid: u64) -> Result<(), MailError>;
 
     async fn fetch_sent(
@@ -150,6 +162,12 @@ pub trait BlockingMailClient: Send + Sync + Clone + 'static {
 
     fn send(&self, smtp: &SmtpConfig, action: &OutboundAction) -> Result<(), MailError>;
 
+    fn send_composed(&self, _smtp: &SmtpConfig, _message: &ComposedEmail) -> Result<(), MailError> {
+        Err(MailError::Smtp(
+            "composed mail sending is unavailable".to_string(),
+        ))
+    }
+
     fn mark_seen(&self, mailbox: &MailboxConfig, uid: u64) -> Result<(), MailError>;
 
     fn fetch_sent(
@@ -176,6 +194,10 @@ impl BlockingMailClient for SystemMailClient {
 
     fn send(&self, smtp: &SmtpConfig, action: &OutboundAction) -> Result<(), MailError> {
         crate::mail_external::send_blocking(smtp, action)
+    }
+
+    fn send_composed(&self, smtp: &SmtpConfig, message: &ComposedEmail) -> Result<(), MailError> {
+        crate::mail_external::send_composed_blocking(smtp, message)
     }
 
     fn mark_seen(&self, mailbox: &MailboxConfig, uid: u64) -> Result<(), MailError> {
@@ -234,6 +256,19 @@ where
         let smtp = smtp.clone();
         let action = action.clone();
         tokio::task::spawn_blocking(move || client.send(&smtp, &action))
+            .await
+            .map_err(|error| MailError::Task(error.to_string()))?
+    }
+
+    async fn send_composed(
+        &self,
+        smtp: &SmtpConfig,
+        message: &ComposedEmail,
+    ) -> Result<(), MailError> {
+        let client = self.client.clone();
+        let smtp = smtp.clone();
+        let message = message.clone();
+        tokio::task::spawn_blocking(move || client.send_composed(&smtp, &message))
             .await
             .map_err(|error| MailError::Task(error.to_string()))?
     }

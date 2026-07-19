@@ -1,0 +1,141 @@
+.conversation-thread {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  overflow: auto;
+}
+
+.thread-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.thread-actions button.active {
+  background: var(--emerald-soft);
+  color: var(--emerald);
+}
+
+.conversation-timeline {
+  display: grid;
+  gap: 14px;
+}
+
+.timeline-message {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+  padding: 14px;
+  background: var(--paper);
+}
+
+.timeline-message.outbound {
+  border-left: 3px solid var(--emerald);
+}
+
+.timeline-message.inbound {
+  border-left: 3px solid #7c8aa5;
+}
+
+.timeline-message header,
+.composer-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.timeline-message header span,
+.composer-head strong {
+  font-weight: 850;
+}
+
+.timeline-message header time,
+.composer-head span {
+  color: var(--muted);
+}
+
+.message-detail-grid.compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0;
+}
+
+.timeline-html {
+  min-height: 180px;
+}
+
+.portal-composer {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--divider);
+  padding-top: 16px;
+}
+
+.portal-composer textarea,
+.signature-source {
+  min-height: 150px;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.portal-composer .primary-action {
+  justify-self: start;
+}
+
+.segmented-control.compact button {
+  min-height: 32px;
+  padding: 0 10px;
+}
+
+.recipient-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.quote-preview {
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+  padding: 10px;
+  background: var(--paper-soft);
+}
+
+.quote-preview summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.quote-preview .message-body {
+  margin-top: 10px;
+  max-height: 240px;
+}
+
+.signature-source-preview {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+  padding: 12px;
+  background: var(--paper-soft);
+}
+
+.signature-source-preview iframe {
+  width: 100%;
+  min-height: 150px;
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+  background: var(--paper);
+}
+
+@media (max-width: 767px) {
+  .recipient-grid,
+  .message-detail-grid.compact {
+    grid-template-columns: 1fr;
+  }
+
+  .timeline-message header,
+  .composer-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

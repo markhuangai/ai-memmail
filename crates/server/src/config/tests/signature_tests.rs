@@ -19,18 +19,24 @@ fn rejects_visually_empty_html_mailbox_signature() {
         content: "<p><br></p>".to_string(),
     });
 
-    assert_invalid_config(config, "signature.content must not be visually empty");
+    assert_invalid_config(
+        config,
+        "signature.content must not be visually empty after sanitizing",
+    );
 }
 
 #[test]
-fn validates_html_mailbox_signature_images() {
+fn rejects_html_signature_when_sanitizing_removes_all_visible_content() {
     let mut config = valid_config();
     config.mailboxes[0].signature = Some(EmailSignatureConfig {
         format: EmailSignatureFormat::Html,
         content: r#"<p><img src="http://example.com/logo.png" alt="Logo"></p>"#.to_string(),
     });
 
-    assert_invalid_config(config, "image src must start with https://");
+    assert_invalid_config(
+        config,
+        "signature.content must not be visually empty after sanitizing",
+    );
 
     let mut config = valid_config();
     config.mailboxes[0].signature = Some(EmailSignatureConfig {
@@ -38,7 +44,10 @@ fn validates_html_mailbox_signature_images() {
         content: r#"<p><img src="https://example.com/logo.png" alt=" "></p>"#.to_string(),
     });
 
-    assert_invalid_config(config, "image alt text must not be empty");
+    assert_invalid_config(
+        config,
+        "signature.content must not be visually empty after sanitizing",
+    );
 
     let mut config = valid_config();
     config.mailboxes[0].signature = Some(EmailSignatureConfig {
@@ -81,14 +90,6 @@ fn validates_html_mailbox_signature_image_attribute_variants() {
     let mut config = valid_config();
     config.mailboxes[0].signature = Some(EmailSignatureConfig {
         format: EmailSignatureFormat::Html,
-        content: r#"<p><img src=https://example.com/logo.png alt=Logo></p>"#.to_string(),
-    });
-
-    assert!(config.validate().is_ok());
-
-    let mut config = valid_config();
-    config.mailboxes[0].signature = Some(EmailSignatureConfig {
-        format: EmailSignatureFormat::Html,
         content: r#"<p><image src="http://example.com/logo.png"></image>Mark</p>"#.to_string(),
     });
 
@@ -96,12 +97,12 @@ fn validates_html_mailbox_signature_image_attribute_variants() {
 }
 
 #[test]
-fn rejects_html_mailbox_signature_images_without_src() {
+fn accepts_html_signature_when_sanitizer_strips_unsafe_markup_but_text_remains() {
     let mut config = valid_config();
     config.mailboxes[0].signature = Some(EmailSignatureConfig {
         format: EmailSignatureFormat::Html,
-        content: r#"<p><img alt="Logo"></p>"#.to_string(),
+        content: r#"<p onclick="x()">Mark<script>alert(1)</script></p>"#.to_string(),
     });
 
-    assert_invalid_config(config, "image src must start with https://");
+    assert!(config.validate().is_ok());
 }

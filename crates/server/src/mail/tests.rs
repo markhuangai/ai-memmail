@@ -4,6 +4,7 @@ use crate::config::{AcceptedCondition, AgentConfig, ImapConfig, MailboxConfig, S
 
 use super::*;
 
+mod composed_tests;
 mod coverage_tests;
 mod handoff_tests;
 mod signature_tests;

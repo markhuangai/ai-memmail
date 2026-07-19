@@ -19,9 +19,9 @@ jobs:
     needs: line-size
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.75.0
+      - uses: dtolnay/rust-toolchain@1.80.0
         with:
-          components: rustfmt
+          components: rustfmt, llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: cargo fmt --all --check
       - run: >-

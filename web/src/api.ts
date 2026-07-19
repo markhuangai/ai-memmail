@@ -2,6 +2,9 @@ import type {
   AppConfig,
   EmailClassificationConfig,
   NewEmailRule,
+  PortalConversationDetail,
+  PortalConversationSummary,
+  PortalSendRequest,
   ProcessedEmail,
   PromptFile,
   StatusResponse,
@@ -111,6 +114,52 @@ export async function createHandoff(
   return payload.handoff ?? null;
 }
 
+export async function loadConversations(
+  limitOrFetch?: number | typeof fetch,
+  fetchImpl?: typeof fetch
+): Promise<PortalConversationSummary[]> {
+  const limit = typeof limitOrFetch === "number" ? limitOrFetch : undefined;
+  const fetcher = typeof limitOrFetch === "function" ? limitOrFetch : fetchImpl;
+  const path =
+    limit === undefined
+      ? "/api/conversations"
+      : `/api/conversations?limit=${encodeURIComponent(String(limit))}`;
+  const payload = await requestJson<{ conversations?: PortalConversationSummary[] }>(
+    path,
+    {},
+    fetcher
+  );
+  return payload.conversations ?? [];
+}
+
+export async function loadConversation(
+  conversationId: string,
+  fetchImpl?: typeof fetch
+): Promise<PortalConversationDetail> {
+  const payload = await requestJson<{ conversation: PortalConversationDetail }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}`,
+    {},
+    fetchImpl
+  );
+  return payload.conversation;
+}
+
+export async function sendPortalMessage(
+  conversationId: string,
+  request: PortalSendRequest,
+  fetchImpl?: typeof fetch
+): Promise<PortalConversationDetail> {
+  const payload = await requestJson<{ conversation: PortalConversationDetail }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+    {
+      method: "POST",
+      body: JSON.stringify(request)
+    },
+    fetchImpl
+  );
+  return payload.conversation;
+}
+
 function requestId(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
     return globalThis.crypto.randomUUID();
@@ -125,6 +174,10 @@ function requestId(): string {
   return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex
     .slice(6, 8)
     .join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
+}
+
+export function newRequestId(): string {
+  return requestId();
 }
 
 export async function loadPromptFile(

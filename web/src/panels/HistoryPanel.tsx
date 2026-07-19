@@ -1,62 +1,114 @@
 import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
-import { Forward, KeyRound, Mail, MessageSquareText, RefreshCw, ShieldAlert, Send } from "lucide-react";
-import type { ProcessedEmail } from "../types";
-import { formatTimestamp, messageKey, statusPillClass, timestampMs } from "../viewUtils";
+import { Forward, Mail, MessageSquareReply, RefreshCw, Send, ShieldAlert } from "lucide-react";
+import { newRequestId } from "../api";
+import { plainTextToHtml } from "../configModel";
+import type {
+  AppConfig,
+  MailboxConfig,
+  PortalConversationDetail,
+  PortalConversationSummary,
+  PortalSendRequest,
+  PortalTimelineMessage
+} from "../types";
+import { formatTimestamp, statusPillClass } from "../viewUtils";
+import { ConfirmDialog } from "./ConfirmDialog";
+
+type ComposerAction = "reply" | "forward";
+type HtmlMode = "visual" | "source";
 
 export function HistoryPanel({
   canLoadMore,
+  config,
+  conversations,
   messageLimit,
-  messages,
   onCreateHandoff,
-  onLoadMore
+  onLoadConversation,
+  onLoadMore,
+  onSendPortalMessage
 }: {
   canLoadMore: boolean;
+  config: AppConfig;
+  conversations: PortalConversationSummary[];
   messageLimit: number;
-  messages: ProcessedEmail[];
-  onCreateHandoff: (message: ProcessedEmail, destination: string) => Promise<void>;
+  onCreateHandoff: (runId: string, destination: string) => Promise<void>;
+  onLoadConversation: (conversationId: string) => Promise<PortalConversationDetail>;
   onLoadMore: () => void;
+  onSendPortalMessage: (
+    conversationId: string,
+    request: PortalSendRequest
+  ) => Promise<PortalConversationDetail>;
 }) {
-  const [selectedKey, setSelectedKey] = useState("");
-  const selected = useMemo(() => {
-    if (messages.length === 0) {
-      return null;
-    }
-    return messages.find((message) => messageKey(message) === selectedKey) ?? messages[0];
-  }, [messages, selectedKey]);
-  const threadMessages = useMemo(() => {
-    if (!selected) {
-      return [];
-    }
-    return messages
-      .filter((message) => message.thread_id === selected.thread_id)
-      .sort((a, b) => timestampMs(a.created_at) - timestampMs(b.created_at));
-  }, [messages, selected]);
+  const [selectedId, setSelectedId] = useState("");
+  const selected = useMemo(
+    () =>
+      conversations.find((conversation) => conversation.conversation_id === selectedId) ??
+      conversations[0] ??
+      null,
+    [conversations, selectedId]
+  );
+  const [detail, setDetail] = useState<PortalConversationDetail | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const [handoffNotice, setHandoffNotice] = useState<{
+    conversationId: string;
+    destination: string;
+  } | null>(null);
 
   useEffect(() => {
-    if (messages.length === 0) {
-      setSelectedKey("");
+    if (!selected) {
+      setSelectedId("");
+      setDetail(null);
       return;
     }
-    if (!messages.some((message) => messageKey(message) === selectedKey)) {
-      setSelectedKey(messageKey(messages[0]));
+    if (!selectedId) {
+      setSelectedId(selected.conversation_id);
     }
-  }, [messages, selectedKey]);
+  }, [selected, selectedId]);
 
-  if (messages.length === 0 || !selected) {
+  useEffect(() => {
+    if (!selected?.conversation_id) {
+      return;
+    }
+    let cancelled = false;
+    setLoadingDetail(true);
+    setDetailError("");
+    onLoadConversation(selected.conversation_id)
+      .then((nextDetail) => {
+        if (!cancelled) {
+          setDetail(nextDetail);
+        }
+      })
+      .catch((cause) => {
+        if (!cancelled) {
+          setDetail(null);
+          setDetailError(cause instanceof Error ? cause.message : "failed to load conversation");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingDetail(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onLoadConversation, selected?.conversation_id]);
+
+  if (conversations.length === 0 || !selected) {
     return (
       <section className="panel">
-        <h2>No processed messages</h2>
+        <h2>No conversations</h2>
       </section>
     );
   }
 
   return (
-    <div className="history-console">
+    <div className="history-console conversation-workspace">
       <section className="panel message-list-panel history-queue">
         <div className="panel-heading">
           <div>
-            <h2>Processed email</h2>
-            <p>{messages.length} loaded / limit {messageLimit}</p>
+            <h2>Conversations</h2>
+            <p>{conversations.length} loaded / limit {messageLimit}</p>
           </div>
           {canLoadMore ? (
             <button type="button" onClick={onLoadMore}>
@@ -66,413 +118,365 @@ export function HistoryPanel({
           ) : null}
         </div>
         <div className="message-list" role="list">
-          {messages.map((message) => {
-            const key = messageKey(message);
-            return (
-              <button
-                className={selected && messageKey(selected) === key ? "message-row active" : "message-row"}
-                key={key}
-                onClick={() => setSelectedKey(key)}
-                type="button"
-              >
-                <span className="message-row-main">
-                  <strong>{message.subject || "(no subject)"}</strong>
-                  <span>{message.from_addr}</span>
+          {conversations.map((conversation) => (
+            <button
+              className={
+                conversation.conversation_id === selected.conversation_id
+                  ? "message-row active"
+                  : "message-row"
+              }
+              key={conversation.conversation_id}
+              onClick={() => setSelectedId(conversation.conversation_id)}
+              type="button"
+            >
+              <span className="message-row-main">
+                <strong>{conversation.subject || "(no subject)"}</strong>
+                <span>{conversation.remote_reply_to ?? conversation.latest_sender}</span>
+              </span>
+              <span className="message-row-badges">
+                <span className={statusPillClass(conversation.latest_status)}>
+                  {conversation.latest_status}
                 </span>
-                <span className="message-row-badges">
-                  <span className={statusPillClass(message.status)}>{message.status}</span>
-                  <HandoffBadge message={message} />
-                </span>
-                <span className="message-row-time">{formatTimestamp(message.updated_at)}</span>
-              </button>
-            );
-          })}
+                {conversation.unsafe_reply_requires_confirmation ? (
+                  <span className="handoff-chip uncertain">Needs confirm</span>
+                ) : null}
+              </span>
+              <span className="message-row-time">{formatTimestamp(conversation.last_message_at)}</span>
+            </button>
+          ))}
         </div>
       </section>
-      <MessageDetail
-        message={selected}
-        onCreateHandoff={onCreateHandoff}
-        onSelectMessage={(message) => setSelectedKey(messageKey(message))}
-        threadMessages={threadMessages}
-      />
+      {loadingDetail ? <section className="panel message-detail-panel">Loading</section> : null}
+      {!loadingDetail && detail ? (
+        <ConversationDetail
+          config={config}
+          detail={detail}
+          handoffNotice={
+            handoffNotice?.conversationId === detail.conversation.conversation_id
+              ? handoffNotice.destination
+              : null
+          }
+          onHandoffComplete={(destination) =>
+            setHandoffNotice({
+              conversationId: detail.conversation.conversation_id,
+              destination
+            })
+          }
+          onCreateHandoff={onCreateHandoff}
+          onReload={() => onLoadConversation(detail.conversation.conversation_id).then(setDetail)}
+          onSend={async (request) => {
+            const result = await onSendPortalMessage(detail.conversation.conversation_id, request);
+            if (request.action === "forward") {
+              setDetail(await onLoadConversation(detail.conversation.conversation_id));
+              return;
+            }
+            setDetail(result);
+          }}
+        />
+      ) : null}
+      {!loadingDetail && detailError ? (
+        <section className="panel message-detail-panel" role="alert">{detailError}</section>
+      ) : null}
     </div>
   );
 }
 
-function MessageDetail({
-  message,
+function ConversationDetail({
+  config,
+  detail,
+  handoffNotice,
   onCreateHandoff,
-  onSelectMessage,
-  threadMessages
+  onHandoffComplete,
+  onReload,
+  onSend
 }: {
-  message: ProcessedEmail;
-  onCreateHandoff: (message: ProcessedEmail, destination: string) => Promise<void>;
-  onSelectMessage: (message: ProcessedEmail) => void;
-  threadMessages: ProcessedEmail[];
+  config: AppConfig;
+  detail: PortalConversationDetail;
+  handoffNotice: string | null;
+  onCreateHandoff: (runId: string, destination: string) => Promise<void>;
+  onHandoffComplete: (destination: string) => void;
+  onReload: () => Promise<void>;
+  onSend: (request: PortalSendRequest) => Promise<void>;
 }) {
+  const mailbox = config.mailboxes.find((candidate) => candidate.id === detail.conversation.mailbox_id) ?? null;
+  const [composerAction, setComposerAction] = useState<ComposerAction>("reply");
   const [handoffOpen, setHandoffOpen] = useState(false);
-  const [destination, setDestination] = useState(message.handoff?.destination ?? "");
-  const [submitting, setSubmitting] = useState(false);
-  const [handoffError, setHandoffError] = useState("");
-
-  useEffect(() => {
-    setDestination(message.handoff?.destination ?? "");
-    setHandoffError("");
-    setSubmitting(false);
-  }, [message]);
-
-  async function submitHandoff(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSubmitting(true);
-    setHandoffError("");
-    try {
-      await onCreateHandoff(message, destination);
-      setHandoffOpen(false);
-    } catch (cause) {
-      setHandoffError(cause instanceof Error ? cause.message : "handoff failed");
-    } finally {
-      setSubmitting(false);
-    }
-  }
+  const firstRunId = useMemo(() => firstInboundRunId(detail.messages), [detail.messages]);
 
   return (
     <>
-      <section className="panel message-detail-panel history-correspondence">
+      <section className="panel message-detail-panel history-correspondence conversation-thread">
         <div className="panel-heading">
           <div>
-            <h2>{message.subject || "(no subject)"}</h2>
-            <p>{message.from_addr}</p>
+            <h2>{detail.conversation.subject || "(no subject)"}</h2>
+            <p>{detail.conversation.remote_reply_to ?? detail.conversation.latest_sender}</p>
           </div>
           <span className="message-detail-badges">
-            <span className={statusPillClass(message.status)}>{message.status}</span>
-            <HandoffBadge message={message} />
+            <span className={statusPillClass(detail.conversation.latest_status)}>
+              {detail.conversation.latest_status}
+            </span>
           </span>
         </div>
-
-        <section className="handoff-panel" aria-label="Thread handoff">
-          <div>
-            <HandoffBadge message={message} />
-            {message.handoff ? (
-              <p>
-                {message.handoff.destination} to {message.handoff.remote_target}
-              </p>
-            ) : (
-              <p>No handoff destination set.</p>
-            )}
-          </div>
-          {handoffOpen ? (
-            <form className="handoff-form" onSubmit={submitHandoff}>
-              <label>
-                Handoff destination
-                <input
-                  type="email"
-                  value={destination}
-                  onChange={(event) => setDestination(event.target.value)}
-                  required
-                />
-              </label>
-              <button type="submit" disabled={submitting}>
-                <Forward aria-hidden="true" />
-                {submitting ? "Sending" : "Forward chain"}
-              </button>
-              <button type="button" onClick={() => setHandoffOpen(false)}>
-                Cancel
-              </button>
-              {handoffError ? <p role="alert">{handoffError}</p> : null}
-            </form>
-          ) : (
-            <button type="button" onClick={() => setHandoffOpen(true)}>
-              <Forward aria-hidden="true" />
-              {message.handoff ? "Forward again" : "Hand off thread"}
-            </button>
-          )}
-        </section>
-
-        <section className="message-section">
-          <h3><Mail aria-hidden="true" /> Inbound</h3>
-          {message.inbound_body ? (
-            <>
-              <pre className="message-body">{message.inbound_body}</pre>
-              {message.inbound_body_truncated ? (
-                <p className="muted">Inbound body truncated for storage.</p>
-              ) : null}
-            </>
-          ) : (
-            <p className="muted">No inbound body recorded.</p>
-          )}
-        </section>
-
-        <section className="message-section">
-          <h3><Send aria-hidden="true" /> Outbound</h3>
-          <dl className="detail-grid message-detail-grid">
-            <div>
-              <dt>Recipients</dt>
-              <dd>{message.outbound_recipients.length ? message.outbound_recipients.join(", ") : "none"}</dd>
-            </div>
-            <div>
-              <dt>Subject</dt>
-              <dd>{message.outbound_subject ?? "none"}</dd>
-            </div>
-            <div>
-              <dt>Reason</dt>
-              <dd>{message.outbound_reason ?? "none"}</dd>
-            </div>
-            <div>
-              <dt>Outbound Message ID</dt>
-              <dd>{message.outbound_message_id ?? "none"}</dd>
-            </div>
-          </dl>
-          {message.outbound_body_html ? (
-            <HtmlOutboundBody
-              authoredBody={message.outbound_body}
-              htmlBody={message.outbound_body_html}
-            />
-          ) : message.outbound_body ? (
-            <pre className="message-body">{message.outbound_body}</pre>
-          ) : message.outbound_body_redacted ? (
-            <p className="muted">Forward body omitted because it can include original inbound email content.</p>
-          ) : (
-            <p className="muted">No outbound body recorded.</p>
-          )}
-        </section>
-
-        <details className="message-section collapsed-section">
-          <summary><ShieldAlert aria-hidden="true" /> Safety and AI</summary>
-          <dl className="detail-grid message-detail-grid">
-            <div>
-              <dt>Safety</dt>
-              <dd>{message.safety_category ?? "not recorded"}</dd>
-            </div>
-            <div>
-              <dt>Agent action</dt>
-              <dd>{message.agent_action ?? "not recorded"}</dd>
-            </div>
-            <div>
-              <dt>Review</dt>
-              <dd>{message.outbound_review_status ?? "not reviewed"}</dd>
-            </div>
-            <div>
-              <dt>Final action</dt>
-              <dd>{message.outbound_action ?? "not recorded"}</dd>
-            </div>
-            <div>
-              <dt>Category</dt>
-              <dd>{message.classification_category ?? "not classified"}</dd>
-            </div>
-            <div>
-              <dt>Topics</dt>
-              <dd>{message.classification_topics.length ? message.classification_topics.join(", ") : "none"}</dd>
-            </div>
-            <div>
-              <dt>Decision source</dt>
-              <dd>{message.decision_source ?? "not recorded"}</dd>
-            </div>
-            <div>
-              <dt>Matched rule</dt>
-              <dd>{message.matched_rule_name ?? "none"}</dd>
-            </div>
-          </dl>
-          <TextBlock label="Classification reason" value={message.classification_reason} />
-          <TextBlock label="Matched rule goal" value={message.matched_rule_goal} />
-          <TextBlock label="Safety reason" value={message.safety_reason} />
-          <TextBlock label="Agent notes" value={message.agent_safety_notes} />
-          <TextBlock label="Review reason" value={message.outbound_review_reason} />
-        </details>
-
-        <details className="message-section collapsed-section">
-          <summary><MessageSquareText aria-hidden="true" /> Email chain</summary>
-          <div className="chain-list" role="list">
-            {threadMessages.map((threadMessage) => {
-              const active = messageKey(threadMessage) === messageKey(message);
-              return (
-                <button
-                  className={active ? "chain-item active" : "chain-item"}
-                  key={messageKey(threadMessage)}
-                  onClick={() => onSelectMessage(threadMessage)}
-                  type="button"
-                >
-                  <span>
-                    <strong>{threadMessage.subject || "(no subject)"}</strong>
-                    <span>{threadMessage.from_addr}</span>
-                  </span>
-                  <span className="message-row-badges">
-                    <span className={statusPillClass(threadMessage.status)}>{threadMessage.status}</span>
-                    <HandoffBadge message={threadMessage} />
-                  </span>
-                  <span>{formatTimestamp(threadMessage.updated_at)}</span>
-                </button>
-              );
-            })}
-          </div>
-        </details>
-
-        <details className="message-section collapsed-section">
-          <summary><MessageSquareText aria-hidden="true" /> Timeline</summary>
-          {message.logs.length === 0 ? (
-            <p className="muted">No log entries recorded.</p>
-          ) : (
-            <div className="table-wrap">
-              <table className="timeline-table">
-                <thead>
-                  <tr>
-                    <th>Time</th>
-                    <th>Level</th>
-                    <th>Action</th>
-                    <th>Status</th>
-                    <th>Detail</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {message.logs.map((entry, index) => (
-                    <tr key={`${entry.created_at}:${entry.action}:${index}`}>
-                      <td>{formatTimestamp(entry.created_at)}</td>
-                      <td>{entry.level}</td>
-                      <td>{entry.action}</td>
-                      <td>{entry.status}</td>
-                      <td>{entry.detail ?? ""}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </details>
-
-        <details className="message-section collapsed-section">
-          <summary><KeyRound aria-hidden="true" /> Diagnostics</summary>
-          <dl className="detail-grid message-detail-grid">
-            <div>
-              <dt>Mailbox</dt>
-              <dd>{message.mailbox_id}</dd>
-            </div>
-            <div>
-              <dt>UID</dt>
-              <dd>{message.uid_validity}:{message.uid}</dd>
-            </div>
-            <div>
-              <dt>Message ID</dt>
-              <dd>{message.message_id ?? "none"}</dd>
-            </div>
-            <div>
-              <dt>Thread</dt>
-              <dd>{message.thread_id}</dd>
-            </div>
-            <div>
-              <dt>In reply to</dt>
-              <dd>{message.in_reply_to ?? "none"}</dd>
-            </div>
-            <div>
-              <dt>References</dt>
-              <dd>{message.references.length ? message.references.join(", ") : "none"}</dd>
-            </div>
-            <div>
-              <dt>Updated</dt>
-              <dd>{formatTimestamp(message.updated_at)}</dd>
-            </div>
-          </dl>
-        </details>
+        <div className="thread-actions">
+          <button
+            className={composerAction === "reply" ? "active" : ""}
+            disabled={!detail.conversation.remote_reply_to}
+            onClick={() => setComposerAction("reply")}
+            type="button"
+          >
+            <MessageSquareReply aria-hidden="true" />
+            Reply
+          </button>
+          <button
+            className={composerAction === "forward" ? "active" : ""}
+            onClick={() => setComposerAction("forward")}
+            type="button"
+          >
+            <Forward aria-hidden="true" />
+            Forward
+          </button>
+          <button type="button" onClick={() => setHandoffOpen((open) => !open)}>
+            <Mail aria-hidden="true" />
+            Hand off
+          </button>
+        </div>
+        {handoffOpen ? (
+          <HandoffForm
+            disabled={!firstRunId}
+            onCreate={async (destination) => {
+              if (!firstRunId) {
+                return;
+              }
+              await onCreateHandoff(firstRunId, destination);
+              await onReload();
+              onHandoffComplete(destination);
+              setHandoffOpen(false);
+            }}
+          />
+        ) : null}
+        {handoffNotice ? (
+          <p className="handoff-chip" role="status">Handed off to {handoffNotice}</p>
+        ) : null}
+        <div className="conversation-timeline" role="list">
+          {detail.messages.map((message) => (
+            <TimelineMessage key={message.id} message={message} />
+          ))}
+        </div>
+        {mailbox ? (
+          <PortalComposer
+            action={composerAction}
+            detail={detail}
+            mailbox={mailbox}
+            onSend={onSend}
+          />
+        ) : (
+          <p className="muted">Mailbox configuration is missing; replies and forwards are disabled.</p>
+        )}
       </section>
-      <EvidencePanel message={message} />
+      <ConversationEvidence detail={detail} />
     </>
   );
 }
 
-function HandoffBadge({ message }: { message: ProcessedEmail }) {
-  if (!message.handoff) {
-    return null;
-  }
-  const label = handoffLabel(message.handoff.state);
-  return <span className={`handoff-chip ${message.handoff.state}`}>{label}</span>;
-}
-
-function HtmlOutboundBody({
-  authoredBody,
-  htmlBody
+function PortalComposer({
+  action,
+  detail,
+  mailbox,
+  onSend
 }: {
-  authoredBody?: string | null;
-  htmlBody: string;
+  action: ComposerAction;
+  detail: PortalConversationDetail;
+  mailbox: MailboxConfig;
+  onSend: (request: PortalSendRequest) => Promise<void>;
 }) {
+  const [mode, setMode] = useState<HtmlMode>("visual");
+  const [body, setBody] = useState(() => defaultBody(mailbox));
+  const [html, setHtml] = useState(() => defaultHtml(mailbox));
+  const [to, setTo] = useState("");
+  const [cc, setCc] = useState("");
+  const [bcc, setBcc] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [confirmUnsafe, setConfirmUnsafe] = useState(false);
+
+  useEffect(() => {
+    setBody(defaultBody(mailbox));
+    setHtml(defaultHtml(mailbox));
+    setTo("");
+    setCc("");
+    setBcc("");
+    setError("");
+    setConfirmUnsafe(false);
+  }, [action, detail.conversation.conversation_id, mailbox]);
+
+  async function submit(unsafeConfirmed = false) {
+    setSubmitting(true);
+    setError("");
+    try {
+      await onSend({
+        request_id: newRequestId(),
+        thread_revision: detail.conversation.revision,
+        action,
+        authored_text: body,
+        authored_html: mode === "source" ? html : plainTextToHtml(body),
+        to_recipients: action === "forward" ? listFromText(to) : [],
+        cc_recipients: action === "forward" ? listFromText(cc) : [],
+        bcc_recipients: action === "forward" ? listFromText(bcc) : [],
+        unsafe_confirmed: unsafeConfirmed
+      });
+      setBody(defaultBody(mailbox));
+      setHtml(defaultHtml(mailbox));
+      setTo("");
+      setCc("");
+      setBcc("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "send failed");
+    } finally {
+      setSubmitting(false);
+      setConfirmUnsafe(false);
+    }
+  }
+
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (action === "reply" && detail.conversation.unsafe_reply_requires_confirmation) {
+      setConfirmUnsafe(true);
+      return;
+    }
+    submit().catch(() => undefined);
+  }
+
   return (
-    <div className="html-body-archive">
-      <iframe
-        className="html-body-preview"
-        referrerPolicy="no-referrer"
-        sandbox=""
-        srcDoc={htmlBody}
-        title="Outbound HTML preview"
-      />
-      {authoredBody ? (
-        <div className="text-block">
-          <span>Authored text</span>
-          <pre className="message-body">{authoredBody}</pre>
+    <form className="portal-composer" onSubmit={onSubmit}>
+      <div className="composer-head">
+        <div>
+          <strong>{action === "reply" ? "Reply" : "Forward"}</strong>
+          <span>{action === "reply" ? detail.conversation.remote_reply_to : "Choose recipients"}</span>
+        </div>
+        <div className="segmented-control compact" role="group" aria-label="Composer mode">
+          <button className={mode === "visual" ? "active" : ""} type="button" onClick={() => setMode("visual")}>
+            Visual
+          </button>
+          <button className={mode === "source" ? "active" : ""} type="button" onClick={() => setMode("source")}>
+            Source
+          </button>
+        </div>
+      </div>
+      {action === "forward" ? (
+        <div className="recipient-grid">
+          <label>To<input value={to} onChange={(event) => setTo(event.target.value)} /></label>
+          <label>Cc<input value={cc} onChange={(event) => setCc(event.target.value)} /></label>
+          <label>Bcc<input value={bcc} onChange={(event) => setBcc(event.target.value)} /></label>
         </div>
       ) : null}
-      <details className="collapsed-section">
-        <summary>HTML source</summary>
-        <pre className="message-body">{htmlBody}</pre>
+      {mode === "visual" ? (
+        <label>
+          Message
+          <textarea value={body} onChange={(event) => setBody(event.target.value)} />
+        </label>
+      ) : (
+        <label>
+          HTML source
+          <textarea value={html} onChange={(event) => setHtml(event.target.value)} />
+        </label>
+      )}
+      <details className="quote-preview" open>
+        <summary>Quoted conversation</summary>
+        <pre className="message-body">{detail.quote_text}</pre>
       </details>
-    </div>
+      <button className="primary-action" disabled={submitting} type="submit">
+        <Send aria-hidden="true" />
+        {submitting ? "Sending" : action === "reply" ? "Send reply" : "Send forward"}
+      </button>
+      {error ? <p role="alert" className="signature-error">{error}</p> : null}
+      {confirmUnsafe ? (
+        <ConfirmDialog
+          cancelLabel="Cancel"
+          confirmLabel="Send reply"
+          danger
+          onCancel={() => setConfirmUnsafe(false)}
+          onConfirm={() => submit(true).catch(() => undefined)}
+          title="Reply to unsafe conversation"
+        >
+          <p>This reply quotes a quarantined or unsafe stored message.</p>
+        </ConfirmDialog>
+      ) : null}
+    </form>
   );
 }
 
-function handoffLabel(state: string): string {
-  if (state === "sending") {
-    return "Handoff pending";
-  }
-  if (state === "uncertain") {
-    return "Handoff uncertain";
-  }
-  return "Handed off";
-}
-
-function TextBlock({ label, value }: { label: string; value?: string | null }) {
-  if (!value) {
-    return null;
-  }
+function TimelineMessage({ message }: { message: PortalTimelineMessage }) {
   return (
-    <div className="text-block">
-      <span>{label}</span>
-      <p>{value}</p>
-    </div>
+    <article className={`timeline-message ${message.direction}`} role="listitem">
+      <header>
+        <span>{messageLabel(message.kind)}</span>
+        <time>{formatTimestamp(message.created_at)}</time>
+      </header>
+      <dl className="detail-grid message-detail-grid compact">
+        <div><dt>From</dt><dd>{message.from_addr}</dd></div>
+        <div><dt>To</dt><dd>{message.to_recipients.length ? message.to_recipients.join(", ") : "none"}</dd></div>
+        <div><dt>Status</dt><dd>{message.status}</dd></div>
+        <div><dt>Message ID</dt><dd>{message.message_id ?? "none"}</dd></div>
+      </dl>
+      {message.html_body ? (
+        <iframe
+          className="html-body-preview timeline-html"
+          referrerPolicy="no-referrer"
+          sandbox=""
+          srcDoc={message.html_body}
+          title={`${message.kind} HTML preview`}
+        />
+      ) : (
+        <pre className="message-body">{message.text_body ?? "No body recorded."}</pre>
+      )}
+      {message.body_truncated ? <p className="muted">Stored body was truncated.</p> : null}
+    </article>
   );
 }
 
-function EvidencePanel({ message }: { message: ProcessedEmail }) {
+function HandoffForm({
+  disabled,
+  onCreate
+}: {
+  disabled: boolean;
+  onCreate: (destination: string) => Promise<void>;
+}) {
+  const [destination, setDestination] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  return (
+    <form
+      className="handoff-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        setSubmitting(true);
+        onCreate(destination).finally(() => setSubmitting(false));
+      }}
+    >
+      <label>Handoff destination<input type="email" value={destination} onChange={(event) => setDestination(event.target.value)} required /></label>
+      <button disabled={disabled || submitting} type="submit"><Forward aria-hidden="true" />Forward chain</button>
+      {disabled ? <p className="muted">No inbound run is available for handoff.</p> : null}
+    </form>
+  );
+}
+
+function ConversationEvidence({ detail }: { detail: PortalConversationDetail }) {
+  const unsafe = detail.conversation.unsafe_reply_requires_confirmation;
   return (
     <aside className="panel evidence-panel" aria-label="Decision evidence">
       <div className="panel-heading">
         <div>
-          <h2>Decision evidence</h2>
-          <p>Recorded fields only</p>
+          <h2>Conversation evidence</h2>
+          <p>{detail.messages.length} messages</p>
         </div>
       </div>
-      <EvidenceSection title="Safety" tone="safe">
-        <EvidenceField label="Safety" value={message.safety_category ?? "not recorded"} />
-        <EvidenceField label="Safety reason" value={message.safety_reason ?? "not recorded"} />
-        <EvidenceField label="Agent action" value={message.agent_action ?? "not recorded"} />
-        <EvidenceField label="Review" value={message.outbound_review_status ?? "not reviewed"} />
-        <EvidenceField label="Review reason" value={message.outbound_review_reason ?? "not recorded"} />
-        <EvidenceField label="Final action" value={message.outbound_action ?? "not recorded"} />
+      <EvidenceSection title="Routing" tone="outbound">
+        <EvidenceField label="Mailbox" value={detail.conversation.mailbox_id} />
+        <EvidenceField label="Thread" value={detail.conversation.thread_id} />
+        <EvidenceField label="Revision" value={String(detail.conversation.revision)} />
       </EvidenceSection>
-      <EvidenceSection title="Classification" tone="classify">
-        <EvidenceField label="Category" value={message.classification_category ?? "not classified"} />
-        <EvidenceField
-          label="Topics"
-          value={message.classification_topics.length ? message.classification_topics.join(", ") : "none"}
-        />
-        <EvidenceField label="Confidence" value={confidenceLabel(message.classification_confidence)} />
-        <EvidenceField label="Classification reason" value={message.classification_reason ?? "not recorded"} />
-        <EvidenceField label="Decision source" value={message.decision_source ?? "not recorded"} />
-        <EvidenceField label="Matched rule" value={message.matched_rule_name ?? "none"} />
-      </EvidenceSection>
-      <EvidenceSection title="Outbound" tone="outbound">
-        <EvidenceField label="Final action" value={message.outbound_action ?? "not recorded"} />
-        <EvidenceField label="Reason" value={message.outbound_reason ?? "not recorded"} />
-        <EvidenceField
-          label="Recipients"
-          value={message.outbound_recipients.length ? message.outbound_recipients.join(", ") : "none"}
-        />
-        <EvidenceField label="Subject" value={message.outbound_subject ?? "none"} />
+      <EvidenceSection title="Safety" tone={unsafe ? "safe" : "classify"}>
+        <EvidenceField label="Reply confirmation" value={unsafe ? "required" : "not required"} />
+        <EvidenceField label="Remote reply to" value={detail.conversation.remote_reply_to ?? "none"} />
       </EvidenceSection>
     </aside>
   );
@@ -496,17 +500,51 @@ function EvidenceSection({
 }
 
 function EvidenceField({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <dt>{label}</dt>
-      <dd>{value}</dd>
-    </div>
-  );
+  return <div><dt>{label}</dt><dd>{value}</dd></div>;
 }
 
-function confidenceLabel(value?: number | null): string {
-  if (value === null || value === undefined) {
-    return "not recorded";
+function defaultBody(mailbox: MailboxConfig): string {
+  if (!mailbox.signature) {
+    return "";
   }
-  return `${Math.round(value * 100)}%`;
+  if (mailbox.signature.format === "plain_text") {
+    return `\n\n${mailbox.signature.content}`;
+  }
+  return `\n\n${htmlToText(mailbox.signature.content)}`;
+}
+
+function defaultHtml(mailbox: MailboxConfig): string {
+  if (!mailbox.signature) {
+    return "<p></p>";
+  }
+  if (mailbox.signature.format === "html") {
+    return `<p></p>${mailbox.signature.content}`;
+  }
+  return `<p></p><pre>${mailbox.signature.content}</pre>`;
+}
+
+function htmlToText(html: string): string {
+  return new DOMParser().parseFromString(html, "text/html").body.textContent?.trim() ?? "";
+}
+
+function listFromText(value: string): string[] {
+  return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function firstInboundRunId(messages: PortalTimelineMessage[]): string | null {
+  const inbound = messages.find((message) => message.id.startsWith("inbound:"));
+  return inbound?.id.slice("inbound:".length) ?? null;
+}
+
+function messageLabel(kind: string): string {
+  if (kind === "ai_reply") {
+    return "AI reply";
+  }
+  if (kind === "portal_reply") {
+    return "Portal reply";
+  }
+  if (kind === "portal_forward") {
+    return "Portal forward";
+  }
+  return "Inbound";
 }

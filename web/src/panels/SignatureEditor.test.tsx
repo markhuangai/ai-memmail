@@ -263,7 +263,7 @@ describe("SignatureEditor", () => {
     await waitFor(() => expect(editor).toHaveTextContent("Loaded"));
   });
 
-  it("removes unsafe or inaccessible images from pasted and loaded HTML", async () => {
+  it("sanitizes preview while preserving loaded source until edited", async () => {
     expect(
       sanitizeSignatureHtml(
         '<p>Mark<img src="http://example.com/logo.png" alt="Logo"><img src="https://example.com/missing-alt.png"><img src="https://example.com/ok.png" alt="Logo"></p>'
@@ -278,13 +278,13 @@ describe("SignatureEditor", () => {
         '<p>Mark<img src="http://example.com/logo.png" alt="Logo"><img src="https://example.com/ok.png" alt="Logo"></p>'
     });
 
-    await waitFor(() =>
-      expect(changes.at(-1)).toEqual({
-        format: "html",
-        content:
-          '<p>Mark<img src="https://example.com/ok.png" alt="Logo"></p>'
-      })
-    );
+    expect(changes).toEqual([]);
     expect(previewSource()).not.toContain("http://example.com/logo.png");
+    expect(previewSource()).toContain("https://example.com/ok.png");
+
+    fireEvent.click(screen.getByRole("button", { name: "Source" }));
+    expect(screen.getByLabelText("HTML source")).toHaveValue(
+      '<p>Mark<img src="http://example.com/logo.png" alt="Logo"><img src="https://example.com/ok.png" alt="Logo"></p>'
+    );
   });
 });

@@ -3,7 +3,7 @@ use std::net::TcpStream;
 
 use chrono::{DateTime, Utc};
 use imap::types::NameAttribute;
-use lettre::message::{header, Mailbox};
+use lettre::message::{header, Mailbox, MultiPart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use native_tls::TlsConnector;
@@ -11,9 +11,9 @@ use native_tls::TlsConnector;
 use crate::config::{MailboxConfig, SmtpConfig};
 use crate::mail::{
     accepted_condition_recipient_filter_values, accepted_conditions_can_prefilter_by_recipient,
-    message_matches_accepted_conditions, parse_inbound_message, validate_outbound_action,
-    InboundMessage, MailError, OutboundAction, SentFetchBatch, SentMessage, SentSyncCursor,
-    ACCEPTED_CONDITION_RECIPIENT_HEADERS,
+    message_matches_accepted_conditions, parse_inbound_message, validate_composed_email,
+    validate_outbound_action, ComposedEmail, InboundMessage, MailError, OutboundAction,
+    SentFetchBatch, SentMessage, SentSyncCursor, ACCEPTED_CONDITION_RECIPIENT_HEADERS,
 };
 
 pub(crate) fn fetch_unseen_blocking(
@@ -317,7 +317,27 @@ pub(crate) fn send_blocking(smtp: &SmtpConfig, action: &OutboundAction) -> Resul
         )
     })?;
 
-    let message = build_message(smtp, action)?;
+    send_built_message(smtp, build_message(smtp, action)?)
+}
+
+pub(crate) fn send_composed_blocking(
+    smtp: &SmtpConfig,
+    message: &ComposedEmail,
+) -> Result<(), MailError> {
+    validate_composed_email(message).map_err(|errors| {
+        MailError::Build(
+            errors
+                .into_iter()
+                .map(|error| format!("{}: {}", error.field, error.message))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    })?;
+
+    send_built_message(smtp, build_composed_message(smtp, message)?)
+}
+
+fn send_built_message(smtp: &SmtpConfig, message: Message) -> Result<(), MailError> {
     let credentials = Credentials::new(smtp.username.clone(), smtp.password.clone());
     let mailer = if smtp.starttls {
         SmtpTransport::starttls_relay(&smtp.host)
@@ -372,6 +392,46 @@ pub(crate) fn build_message(
     }
 }
 
+pub(crate) fn build_composed_message(
+    smtp: &SmtpConfig,
+    message: &ComposedEmail,
+) -> Result<Message, MailError> {
+    let mut builder = Message::builder()
+        .from(parse_mailbox(&smtp.from)?)
+        .subject(message.subject.clone());
+    if let Some(message_id) = &message.message_id {
+        builder = builder.message_id(Some(message_id.clone()));
+    }
+    if let Some(in_reply_to) = &message.in_reply_to {
+        builder = builder.in_reply_to(in_reply_to.clone());
+    }
+    if !message.references.is_empty() {
+        builder = builder.references(message.references.join(" "));
+    }
+    for recipient in &message.to {
+        builder = builder.to(parse_mailbox(recipient)?);
+    }
+    for recipient in &message.cc {
+        builder = builder.cc(parse_mailbox(recipient)?);
+    }
+    for recipient in &message.bcc {
+        builder = builder.bcc(parse_mailbox(recipient)?);
+    }
+    if let Some(html_body) = &message.html_body {
+        builder
+            .multipart(MultiPart::alternative_plain_html(
+                message.text_body.clone(),
+                html_body.clone(),
+            ))
+            .map_err(|error| MailError::Build(error.to_string()))
+    } else {
+        builder = builder.header(header::ContentType::TEXT_PLAIN);
+        builder
+            .body(message.text_body.clone())
+            .map_err(|error| MailError::Build(error.to_string()))
+    }
+}
+
 pub(crate) fn parse_mailbox(value: &str) -> Result<Mailbox, MailError> {
     value
         .parse::<Mailbox>()
@@ -381,7 +441,7 @@ pub(crate) fn parse_mailbox(value: &str) -> Result<Mailbox, MailError> {
 #[cfg(test)]
 mod tests {
     use crate::config::{AcceptedCondition, AgentConfig, ImapConfig, MailboxConfig, SmtpConfig};
-    use crate::mail::{OutboundAction, OutboundActionKind};
+    use crate::mail::{ComposedEmail, OutboundAction, OutboundActionKind};
 
     use super::*;
 
@@ -508,6 +568,40 @@ mod tests {
         assert!(rendered.contains("<p>Answer</p>"));
         assert!(!rendered.contains("multipart/alternative"));
         assert!(!rendered.contains("Content-Type: text/plain"));
+    }
+
+    #[test]
+    fn build_composed_message_uses_multipart_and_hides_bcc_header() {
+        let smtp = SmtpConfig {
+            host: "smtp.example.com".to_string(),
+            port: 587,
+            starttls: true,
+            username: "support@example.com".to_string(),
+            password: "secret".to_string(),
+            from: "support@example.com".to_string(),
+        };
+        let message = ComposedEmail {
+            to: vec!["person@example.com".to_string()],
+            cc: vec!["copy@example.com".to_string()],
+            bcc: vec!["hidden@example.com".to_string()],
+            subject: "Re: Question".to_string(),
+            text_body: "Answer".to_string(),
+            html_body: Some("<p>Answer</p>".to_string()),
+            message_id: Some("<reply@example.com>".to_string()),
+            in_reply_to: Some("<inbound@example.com>".to_string()),
+            references: vec!["<inbound@example.com>".to_string()],
+        };
+
+        let rendered =
+            String::from_utf8(build_composed_message(&smtp, &message).unwrap().formatted())
+                .unwrap();
+
+        assert!(rendered.contains("Content-Type: multipart/alternative;"));
+        assert!(rendered.contains("To: person@example.com\r\n"));
+        assert!(rendered.contains("Cc: copy@example.com\r\n"));
+        assert!(!rendered.contains("Bcc: hidden@example.com"));
+        assert!(rendered.contains("Content-Type: text/plain; charset=utf-8\r\n"));
+        assert!(rendered.contains("Content-Type: text/html; charset=utf-8\r\n"));
     }
 
     fn mailbox_config() -> MailboxConfig {

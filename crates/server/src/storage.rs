@@ -61,6 +61,8 @@ pub const DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL: &str =
 pub const SENT_THREAD_CONTEXT_SQL: &str = include_str!("../migrations/005_sent_thread_context.sql");
 pub const THREAD_HANDOFFS_SQL: &str = include_str!("../migrations/006_thread_handoffs.sql");
 pub const OUTBOUND_HTML_BODY_SQL: &str = include_str!("../migrations/007_outbound_html_body.sql");
+pub const PORTAL_CONVERSATIONS_SQL: &str =
+    include_str!("../migrations/008_portal_conversations.sql");
 pub(crate) const MIGRATION_LOCK_ID: i64 = 4_971_774_501_001;
 pub(crate) const SCHEMA_MIGRATIONS_SQL: &str = "
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -105,6 +107,11 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         version: 7,
         name: "007_outbound_html_body",
         sql: OUTBOUND_HTML_BODY_SQL,
+    },
+    Migration {
+        version: 8,
+        name: "008_portal_conversations",
+        sql: PORTAL_CONVERSATIONS_SQL,
     },
 ];
 pub const PROCESSING_STATUS_PROCESSING: &str = "processing";
@@ -561,6 +568,8 @@ pub struct ProcessedEmailLog {
     pub created_at: String,
 }
 include!("storage/memory_store.rs");
+
+include!("storage/portal_models.rs");
 
 include!("storage/value_helpers.rs");
 
