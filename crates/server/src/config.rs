@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 mod signature;
 
+use crate::html_sanitizer::sanitize_email_html;
 use signature::validate_mailbox_signature;
 
 pub const REDACTED_SECRET: &str = "********";
@@ -209,8 +210,9 @@ impl AppConfig {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
-        self.validate()?;
-        let content = serde_yaml_ng::to_string(self).map_err(|source| ConfigError::Parse {
+        let config = self.sanitized_for_save();
+        config.validate()?;
+        let content = serde_yaml_ng::to_string(&config).map_err(|source| ConfigError::Parse {
             path: path.to_path_buf(),
             source,
         })?;
@@ -277,6 +279,19 @@ impl AppConfig {
         for mailbox in &mut clone.mailboxes {
             mailbox.imap.password = redact(&mailbox.imap.password);
             mailbox.smtp.password = redact(&mailbox.smtp.password);
+        }
+        clone
+    }
+
+    pub fn sanitized_for_save(&self) -> Self {
+        let mut clone = self.clone();
+        for mailbox in &mut clone.mailboxes {
+            let Some(signature) = &mut mailbox.signature else {
+                continue;
+            };
+            if matches!(signature.format, EmailSignatureFormat::Html) {
+                signature.content = sanitize_email_html(&signature.content).html;
+            }
         }
         clone
     }

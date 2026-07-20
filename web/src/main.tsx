@@ -7,6 +7,7 @@ import { App } from "./App";
 import "./styles.css";
 import "./editorStyles.css";
 import "./panelStyles.css";
+import "./conversationStyles.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

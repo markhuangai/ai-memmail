@@ -2,6 +2,7 @@ pub mod ai;
 mod ai_external;
 pub mod classification;
 pub mod config;
+pub mod html_sanitizer;
 pub mod logging;
 pub mod mail;
 mod mail_external;

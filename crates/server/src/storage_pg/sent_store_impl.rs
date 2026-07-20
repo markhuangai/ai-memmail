@@ -280,6 +280,37 @@ impl PgStore {
                 timestamp: row.get(8),
             });
         }
+        let portal_rows = self
+            .client
+            .query(
+                "SELECT message_id, in_reply_to, message_references, to_recipients,
+                    subject, authored_text, (EXTRACT(EPOCH FROM created_at))::BIGINT
+                FROM portal_messages
+                WHERE mailbox_id = $1 AND thread_id = $2
+                    AND action = 'reply'
+                    AND status IN ('sent', 'uncertain')",
+                &[&mailbox.id, &thread_id],
+            )
+            .await?;
+        for row in portal_rows {
+            let message_id: String = row.get(0);
+            if application_message_ids.contains(&message_id) {
+                continue;
+            }
+            application_message_ids.insert(message_id.clone());
+            messages.push(ThreadMessage {
+                direction: MessageDirection::Outbound,
+                message_id: Some(message_id),
+                in_reply_to: row.get(1),
+                references: row.get(2),
+                from_addr: mailbox.address.clone(),
+                recipients: row.get(3),
+                subject: row.get(4),
+                authored_text: row.get(5),
+                body_truncated: false,
+                timestamp: row.get(6),
+            });
+        }
         messages.sort_by_key(|message| message.timestamp);
         for (index, message) in messages.iter_mut().enumerate() {
             message.authored_text =

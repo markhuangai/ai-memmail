@@ -15,7 +15,19 @@ import {
   X
 } from "lucide-react";
 import { summarizeConfig } from "./configModel";
-import { createHandoff, loadConfig, loadEmailClassification, loadMessages, loadStatus, login, logout, saveConfig } from "./api";
+import {
+  createHandoff,
+  loadConfig,
+  loadConversation,
+  loadConversations,
+  loadEmailClassification,
+  loadMessages,
+  loadStatus,
+  login,
+  logout,
+  saveConfig,
+  sendPortalMessage
+} from "./api";
 import { HistoryPanel } from "./panels/HistoryPanel";
 import { Mailboxes } from "./panels/MailboxesPanel";
 import { McpServers } from "./panels/McpServersPanel";
@@ -24,7 +36,15 @@ import { RulesPanel } from "./panels/RulesPanel";
 import { Safety } from "./panels/SafetyPanel";
 import { SettingsPanel } from "./panels/SettingsPanel";
 import { ConfirmDialog } from "./panels/ConfirmDialog";
-import type { AppConfig, EmailClassificationConfig, ProcessedEmail, StatusResponse } from "./types";
+import type {
+  AppConfig,
+  EmailClassificationConfig,
+  PortalConversationDetail,
+  PortalConversationSummary,
+  PortalSendRequest,
+  ProcessedEmail,
+  StatusResponse
+} from "./types";
 import { errorMessage } from "./viewUtils";
 
 type TabId = "overview" | "history" | "rules" | "mailboxes" | "mcp" | "safety" | "settings";
@@ -60,6 +80,7 @@ export function App({
   const [savedConfig, setSavedConfig] = useState<AppConfig | null>(null);
   const [draftConfig, setDraftConfig] = useState<AppConfig | null>(null);
   const [messages, setMessages] = useState<ProcessedEmail[]>([]);
+  const [conversations, setConversations] = useState<PortalConversationSummary[]>([]);
   const [classification, setClassification] = useState<EmailClassificationConfig | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [lastEditedConfigTab, setLastEditedConfigTab] = useState<TabId>("mailboxes");
@@ -102,8 +123,10 @@ export function App({
       setSavedConfig(nextConfig);
       setDraftConfig(nextConfig);
       try {
+        setConversations(await loadConversations(nextMessageLimit));
         setMessages(await loadMessages(nextMessageLimit));
       } catch (cause) {
+        setConversations([]);
         setMessages([]);
         setError(errorMessage(cause));
       }
@@ -117,6 +140,7 @@ export function App({
       setSavedConfig(null);
       setDraftConfig(null);
       setMessages([]);
+      setConversations([]);
       setClassification(null);
     }
   }
@@ -125,6 +149,7 @@ export function App({
     const nextMessageLimit = Math.min(messageLimit + HISTORY_LIMIT_STEP, MAX_HISTORY_LIMIT);
     setError("");
     try {
+      setConversations(await loadConversations(nextMessageLimit));
       setMessages(await loadMessages(nextMessageLimit));
       setMessageLimit(nextMessageLimit);
     } catch (cause) {
@@ -162,6 +187,7 @@ export function App({
     setSavedConfig(null);
     setDraftConfig(null);
     setMessages([]);
+    setConversations([]);
     setClassification(null);
     await refreshFromServer();
   }
@@ -241,11 +267,38 @@ export function App({
     logoutNow().catch((cause) => setError(errorMessage(cause)));
   }
 
-  async function onCreateHandoff(message: ProcessedEmail, destination: string) {
+  async function onCreateConversationHandoff(runId: string, destination: string) {
     setError("");
     try {
-      await createHandoff(message.run_id, destination);
+      await createHandoff(runId, destination);
+      setConversations(await loadConversations(messageLimit));
       setMessages(await loadMessages(messageLimit));
+    } catch (cause) {
+      setError(errorMessage(cause));
+      throw cause;
+    }
+  }
+
+  async function onLoadConversation(conversationId: string): Promise<PortalConversationDetail> {
+    setError("");
+    try {
+      return await loadConversation(conversationId);
+    } catch (cause) {
+      setError(errorMessage(cause));
+      throw cause;
+    }
+  }
+
+  async function onSendPortalMessage(
+    conversationId: string,
+    request: PortalSendRequest
+  ): Promise<PortalConversationDetail> {
+    setError("");
+    try {
+      const detail = await sendPortalMessage(conversationId, request);
+      setConversations(await loadConversations(messageLimit));
+      setMessages(await loadMessages(messageLimit));
+      return detail;
     } catch (cause) {
       setError(errorMessage(cause));
       throw cause;
@@ -354,7 +407,7 @@ export function App({
           </button>
           <div className="topbar-title">
             <h1>{activeTabMeta.label}</h1>
-            <p>{topbarSubtitle(activeTab, status, messages, summary)}</p>
+            <p>{topbarSubtitle(activeTab, status, conversations, summary)}</p>
           </div>
           <div className="topbar-actions">
             <button
@@ -391,11 +444,14 @@ export function App({
             {activeTab === "overview" ? <Overview summary={summary} config={draftConfig} status={status} /> : null}
             {activeTab === "history" ? (
               <HistoryPanel
-                canLoadMore={messages.length >= messageLimit && messageLimit < MAX_HISTORY_LIMIT}
+                canLoadMore={conversations.length >= messageLimit && messageLimit < MAX_HISTORY_LIMIT}
+                config={draftConfig}
+                conversations={conversations}
                 messageLimit={messageLimit}
-                messages={messages}
-                onCreateHandoff={onCreateHandoff}
+                onCreateHandoff={onCreateConversationHandoff}
+                onLoadConversation={onLoadConversation}
                 onLoadMore={loadMoreHistory}
+                onSendPortalMessage={onSendPortalMessage}
               />
             ) : null}
             {activeTab === "rules" ? (
@@ -469,11 +525,11 @@ function configsEqual(first: AppConfig, second: AppConfig): boolean {
 function topbarSubtitle(
   tab: TabId,
   status: StatusResponse,
-  messages: ProcessedEmail[],
+  conversations: PortalConversationSummary[],
   summary: ReturnType<typeof summarizeConfig> | null
 ): string {
   if (tab === "history") {
-    return `${messages.length} processed email${messages.length === 1 ? "" : "s"} loaded`;
+    return `${conversations.length} conversation${conversations.length === 1 ? "" : "s"} loaded`;
   }
   if (tab === "rules") {
     return "Classification labels and mailbox actions";

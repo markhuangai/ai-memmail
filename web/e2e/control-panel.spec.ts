@@ -1,5 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
-import { sampleClassification, sampleConfig, sampleMessages } from "../src/fixtures";
+import {
+  sampleClassification,
+  sampleConfig,
+  sampleConversationDetail,
+  sampleConversations,
+  sampleMessages
+} from "../src/fixtures";
 import type { AppConfig, ProcessedEmail } from "../src/types";
 
 test("control panel login and core workflows", async ({ page }, testInfo) => {
@@ -210,6 +216,15 @@ async function installMockApi(page: Page) {
     messages = [{ ...sampleMessages[0], handoff }, ...sampleMessages.slice(1)];
     await route.fulfill({ json: { handoff } });
   });
+  await page.route(/\/api\/conversations\/[^/]+\/messages$/, async (route) => {
+    await route.fulfill({ json: { conversation: sampleConversationDetail } });
+  });
+  await page.route(/\/api\/conversations\/[^/]+$/, async (route) => {
+    await route.fulfill({ json: { conversation: sampleConversationDetail } });
+  });
+  await page.route(/\/api\/conversations(?:\?[^/]*)?$/, async (route) => {
+    await route.fulfill({ json: { conversations: sampleConversations } });
+  });
   await page.route(/\/api\/messages(?:\?[^/]*)?$/, async (route) => {
     await route.fulfill({ json: { messages } });
   });
@@ -228,7 +243,7 @@ async function loginIfNeeded(page: Page) {
 }
 
 async function createHandoffFromDetail(page: Page, destination: string) {
-  await page.getByRole("button", { name: /hand off thread/i }).click();
+  await page.getByRole("button", { name: /^hand off$/i }).click();
   await page.getByLabel(/handoff destination/i).fill(destination);
   const handoffResponse = page.waitForResponse(
     (response) =>
@@ -238,8 +253,7 @@ async function createHandoffFromDetail(page: Page, destination: string) {
   );
   await page.getByRole("button", { name: /forward chain/i }).click();
   await expect((await handoffResponse).ok()).toBeTruthy();
-  await expect(page.getByText("Handed off").first()).toBeVisible();
-  await expect(page.getByText(new RegExp(`${escapeRegExp(destination)} to `))).toBeVisible();
+  await expect(page.getByText(`Handed off to ${destination}`)).toBeVisible();
 }
 
 async function liveHandoffDestination(page: Page): Promise<string> {

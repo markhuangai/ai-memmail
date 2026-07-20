@@ -17,10 +17,12 @@ use crate::storage::{
     empty_string_as_none, inbound_body_for_storage, log_level_value, migration_checksum,
     outbound_action_value, outbound_body_for_storage, parse_run_id,
     processing_claim_for_existing_status, processing_status_can_reclaim, safety_category_value,
-    validate_applied_migration, AppliedMigration, Migration, NewThreadHandoffDelivery,
-    ProcessedEmail, ProcessedEmailLog, ProcessingClaim, ProcessingStore, SentSyncState,
-    StorageError, ThreadHandoff, ThreadHandoffDelivery, ThreadHandoffSource, ThreadHandoffSummary,
-    MIGRATIONS, MIGRATION_LOCK_ID, PROCESSING_STALE_AFTER_MINUTES, PROCESSING_STATUS_PROCESSING,
+    validate_applied_migration, AppliedMigration, Migration, NewPortalMessage,
+    NewThreadHandoffDelivery, PortalConversationDetail, PortalConversationSummary,
+    PortalMessageRecord, PortalTimelineMessage, ProcessedEmail, ProcessedEmailLog, ProcessingClaim,
+    ProcessingStore, SentSyncState, StorageError, ThreadHandoff, ThreadHandoffDelivery,
+    ThreadHandoffSource, ThreadHandoffSummary, MIGRATIONS, MIGRATION_LOCK_ID,
+    PROCESSING_STALE_AFTER_MINUTES, PROCESSING_STATUS_PROCESSING,
     PROCESSING_STATUS_RETRYABLE_FAILED, PROCESSING_STATUS_SEND_FAILED, SCHEMA_MIGRATIONS_SQL,
 };
 
@@ -34,6 +36,8 @@ include!("storage_pg/core.rs");
 include!("storage_pg/sent_store_impl.rs");
 
 include!("storage_pg/handoff.rs");
+
+include!("storage_pg/portal.rs");
 
 include!("storage_pg/classification.rs");
 

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import { sampleConfig, sampleMessages } from "./fixtures";
+import { sampleConfig, sampleConversations, sampleMessages } from "./fixtures";
 import { classificationResponse, jsonResponse } from "./testHelpers";
 
 describe("App", () => {
@@ -30,6 +30,9 @@ describe("App", () => {
         })
       )
       .mockImplementationOnce(() => jsonResponse({ config: sampleConfig }))
+      .mockImplementationOnce(() =>
+        jsonResponse({ conversations: sampleConversations })
+      )
       .mockImplementationOnce(() => jsonResponse({ messages: sampleMessages }))
       .mockImplementationOnce(() => classificationResponse());
 
@@ -42,7 +45,7 @@ describe("App", () => {
 
     expect(await screen.findByText("MCP servers")).toBeInTheDocument();
     expect(screen.getByText("1/1")).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(fetchMock).toHaveBeenCalledTimes(7);
   });
 
   it("shows save errors and protects draft config on sign out", async () => {

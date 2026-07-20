@@ -1,7 +1,14 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import { sampleConfig, sampleMessages } from "./fixtures";
+import {
+  sampleClassification,
+  sampleConfig,
+  sampleConversationDetail,
+  sampleConversations,
+  sampleMessages
+} from "./fixtures";
+import type { AppConfig, PortalConversationDetail } from "./types";
 import { classificationResponse, jsonResponse } from "./testHelpers";
 
 describe("App history", () => {
@@ -9,353 +16,267 @@ describe("App history", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders processed email history details", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation((path) => {
-      if (path === "/api/status") {
-        return jsonResponse({
-          service: "ai-memmail",
-          authenticated: true,
-          uptime_seconds: 3,
-          enabled_mailboxes: 1
-        });
-      }
-      if (String(path).startsWith("/api/messages")) {
-        return jsonResponse({ messages: sampleMessages });
-      }
-      if (path === "/api/email-classification") {
-        return classificationResponse();
-      }
-      return jsonResponse({ config: sampleConfig });
-    });
+  it("renders conversation history details", async () => {
+    installHistoryMock();
 
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
-    expect(screen.getByRole("heading", { name: "Pricing question" })).toBeInTheDocument();
-    expect(screen.getAllByText("person@example.com").length).toBeGreaterThan(0);
+    expect(await screen.findByRole("heading", { name: "Pricing question" })).toBeInTheDocument();
     expect(screen.getByText("Can you send the current pricing plan?")).toBeInTheDocument();
-    expect(screen.getByText(/This is an automated email reply/i)).toBeInTheDocument();
-    expect(screen.getByText("<auto-42@example.com>")).toBeInTheDocument();
-    const outboundEvidence = screen
-      .getAllByRole("heading", { name: "Outbound" })
-      .map((heading) => heading.closest(".evidence-section"))
-      .find((section) => section !== null);
-    expect(outboundEvidence).not.toBeNull();
-    expect(within(outboundEvidence as HTMLElement).getByText("Final action")).toBeInTheDocument();
-    expect(within(outboundEvidence as HTMLElement).getByText("reply")).toBeInTheDocument();
-    expect(within(outboundEvidence as HTMLElement).queryByText("Agent action")).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: /Suspicious prompt injection sample/i }));
-    expect(screen.getByText("Redacted prompt-injection sample requesting instruction override and secret disclosure.")).toBeInTheDocument();
-    expect(screen.getByText(/Forward body omitted/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Safety and AI"));
-    expect(screen.getAllByText("prompt_injection").length).toBeGreaterThan(0);
+    expect(screen.getByText("AI reply")).toBeInTheDocument();
+    expect(screen.getByLabelText("Decision evidence")).toBeInTheDocument();
+    expect(screen.getByText("Quoted conversation")).toBeInTheDocument();
   });
 
-  it("renders empty processed email history", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation((path) => {
-      if (path === "/api/status") {
-        return jsonResponse({
-          service: "ai-memmail",
-          authenticated: true,
-          uptime_seconds: 3,
-          enabled_mailboxes: 1
-        });
-      }
-      if (String(path).startsWith("/api/messages")) {
-        return jsonResponse({ messages: [] });
-      }
-      if (path === "/api/email-classification") {
-        return classificationResponse();
-      }
-      return jsonResponse({ config: sampleConfig });
-    });
+  it("sends a reply to the remote sender with quoted history", async () => {
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("33333333-3333-4333-8333-333333333333");
+    const requests: unknown[] = [];
+    installHistoryMock({ portalRequests: requests });
 
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
-    expect(screen.getByRole("heading", { name: "No processed messages" })).toBeInTheDocument();
+    fireEvent.change(await screen.findByLabelText("Message"), {
+      target: { value: "I can send more detail.\n\n--\nMark" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
+
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toMatchObject({
+      request_id: "33333333-3333-4333-8333-333333333333",
+      thread_revision: 2,
+      action: "reply",
+      authored_text: "I can send more detail.\n\n--\nMark",
+      unsafe_confirmed: false
+    });
   });
 
-  it("renders archived outbound HTML with sandboxed preview and source", async () => {
-    const htmlMessage = {
-      ...sampleMessages[0],
-      outbound_body: "Thanks for reaching out.",
-      outbound_body_html: "<p>Thanks for reaching out.</p><p><strong>Mark</strong></p>"
-    };
-    vi.spyOn(globalThis, "fetch").mockImplementation((path) => {
-      if (path === "/api/status") {
-        return jsonResponse({
-          service: "ai-memmail",
-          authenticated: true,
-          uptime_seconds: 3,
-          enabled_mailboxes: 1
-        });
-      }
-      if (String(path).startsWith("/api/messages")) {
-        return jsonResponse({ messages: [htmlMessage] });
-      }
-      if (path === "/api/email-classification") {
-        return classificationResponse();
-      }
-      return jsonResponse({ config: sampleConfig });
-    });
+  it("requires confirmation before replying to an unsafe conversation", async () => {
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("44444444-4444-4444-8444-444444444444");
+    const unsafeDetail = unsafeConversationDetail();
+    const requests: unknown[] = [];
+    installHistoryMock({ details: { [unsafeDetail.conversation.conversation_id]: unsafeDetail }, portalRequests: requests });
 
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
-    const preview = screen.getByTitle("Outbound HTML preview");
-    expect(preview).toHaveAttribute("sandbox", "");
-    expect(preview).toHaveAttribute(
-      "srcdoc",
-      "<p>Thanks for reaching out.</p><p><strong>Mark</strong></p>"
+    fireEvent.click(await screen.findByRole("button", { name: /Suspicious prompt injection sample/i }));
+    fireEvent.change(await screen.findByLabelText("Message"), {
+      target: { value: "I reviewed this.\n\n--\nMark" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Reply to unsafe conversation" });
+    expect(dialog).toBeInTheDocument();
+    expect(requests).toHaveLength(0);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Reply to unsafe conversation" })).not.toBeInTheDocument()
     );
-    expect(screen.getByText("Authored text")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("HTML source"));
-    expect(screen.getByText("<p>Thanks for reaching out.</p><p><strong>Mark</strong></p>")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
+    const confirmedDialog = await screen.findByRole("dialog", { name: "Reply to unsafe conversation" });
+    fireEvent.click(within(confirmedDialog).getByRole("button", { name: "Send reply" }));
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toMatchObject({ action: "reply", unsafe_confirmed: true });
   });
 
-  it("loads more processed email history when the current limit is full", async () => {
-    const firstBatch = Array.from({ length: 2 }, (_, index) => ({
-      ...sampleMessages[0],
-      run_id: `run-${index}`,
-      uid: index + 1,
-      thread_id: `<${index + 1}@example.com>`,
-      message_id: `<${index + 1}@example.com>`,
-      subject: `Message ${index + 1}`
-    }));
-    const secondBatch = [
-      ...firstBatch,
-      {
-        ...sampleMessages[0],
-        run_id: "run-3",
-        uid: 3,
-        thread_id: "<3@example.com>",
-        message_id: "<3@example.com>",
-        subject: "Message 3"
-      }
-    ];
-    const messageRequests: string[] = [];
-    vi.spyOn(globalThis, "fetch").mockImplementation((path) => {
-      if (path === "/api/status") {
-        return jsonResponse({
-          service: "ai-memmail",
-          authenticated: true,
-          uptime_seconds: 3,
-          enabled_mailboxes: 1
-        });
-      }
-      if (String(path).startsWith("/api/messages")) {
-        messageRequests.push(String(path));
-        return jsonResponse({
-          messages: messageRequests.length === 1 ? firstBatch : secondBatch
-        });
-      }
-      if (path === "/api/email-classification") {
-        return classificationResponse();
-      }
-      return jsonResponse({ config: sampleConfig });
-    });
-
-    render(<App initialHistoryLimit={2} />);
-
-    fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /load more/i }));
-
-    await waitFor(() => expect(messageRequests).toEqual([
-      "/api/messages?limit=2",
-      "/api/messages?limit=102"
-    ]));
-    expect(screen.getByRole("button", { name: /Message 3/i })).toBeInTheDocument();
-  });
-
-  it("links processed messages in the same email chain", async () => {
-    const followUp = {
-      ...sampleMessages[0],
-      run_id: "7a6a8c50-51f5-4e3d-bf9d-a75d0083ec60",
-      uid: 44,
-      message_id: "<44@example.com>",
-      in_reply_to: "<auto-42@example.com>",
-      references: ["<42@example.com>", "<auto-42@example.com>"],
-      subject: "Re: Pricing question",
-      inbound_body: "escalation to human",
-      status: "forwarded",
-      agent_action: "forward",
-      outbound_action: "forward",
-      outbound_recipients: ["human@example.com"],
-      outbound_subject: "Fwd: Re: Pricing question",
-      outbound_body: null,
-      outbound_body_redacted: true,
-      outbound_message_id: null,
-      outbound_reason: "sender requested human review"
-    };
-    vi.spyOn(globalThis, "fetch").mockImplementation((path) => {
-      if (path === "/api/status") {
-        return jsonResponse({
-          service: "ai-memmail",
-          authenticated: true,
-          uptime_seconds: 3,
-          enabled_mailboxes: 1
-        });
-      }
-      if (String(path).startsWith("/api/messages")) {
-        return jsonResponse({ messages: [sampleMessages[0], followUp] });
-      }
-      if (path === "/api/email-classification") {
-        return classificationResponse();
-      }
-      return jsonResponse({ config: sampleConfig });
+  it("sends source-mode HTML", async () => {
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("66666666-6666-4666-8666-666666666666");
+    const requests: unknown[] = [];
+    installHistoryMock({
+      config: configWithSignature("html", "<table><tr><td>Mark</td></tr></table>"),
+      portalRequests: requests
     });
 
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
-    expect(screen.getByRole("heading", { name: "Pricing question" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /Re: Pricing question/i }).length).toBeGreaterThan(0);
+    fireEvent.click(await screen.findByRole("button", { name: "Source" }));
+    expect(screen.getByLabelText("HTML source")).toHaveValue("<p></p><table><tr><td>Mark</td></tr></table>");
+    fireEvent.change(screen.getByLabelText("HTML source"), {
+      target: { value: "<p>I can send<br>details.</p><table><tr><td>Mark</td></tr></table>" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
 
-    fireEvent.click(screen.getAllByRole("button", { name: /Re: Pricing question/i })[0]);
-    expect(screen.getByRole("heading", { name: "Re: Pricing question" })).toBeInTheDocument();
-    expect(screen.getByText("escalation to human")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Diagnostics"));
-    expect(screen.getByText("<auto-42@example.com>")).toBeInTheDocument();
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toMatchObject({
+      authored_text: "I can send\ndetails.\nMark",
+      authored_html: "<p>I can send<br>details.</p><table><tr><td>Mark</td></tr></table>"
+    });
   });
 
-  it("creates a thread handoff and refreshes the history badge", async () => {
-    vi.spyOn(crypto, "randomUUID").mockReturnValue("22222222-2222-4222-8222-222222222222");
-    const handedOff = {
-      ...sampleMessages[0],
-      handoff: {
-        state: "active",
-        destination: "mark.personal@example.com",
-        remote_target: "person@example.com",
-        last_error: null,
-        updated_at: "2026-07-01 00:04:00+00"
-      }
-    };
-    const messageResponses = [sampleMessages, [handedOff]];
-    const handoffRequests: string[] = [];
-    vi.spyOn(globalThis, "fetch").mockImplementation((path, init) => {
-      if (path === "/api/status") {
-        return jsonResponse({
-          service: "ai-memmail",
-          authenticated: true,
-          uptime_seconds: 3,
-          enabled_mailboxes: 1
-        });
-      }
-      if (String(path).startsWith("/api/messages") && init?.method === "POST") {
-        handoffRequests.push(String(init.body));
-        return jsonResponse({ handoff: handedOff.handoff });
-      }
-      if (String(path).startsWith("/api/messages")) {
-        return jsonResponse({ messages: messageResponses.shift() ?? [handedOff] });
-      }
-      if (path === "/api/email-classification") {
-        return classificationResponse();
-      }
-      return jsonResponse({ config: sampleConfig });
-    });
+  it("sends a normal forward with To Cc and Bcc recipients", async () => {
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("55555555-5555-4555-8555-555555555555");
+    const requests: unknown[] = [];
+    installHistoryMock({ portalRequests: requests });
 
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /hand off thread/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Forward" }));
+    fireEvent.change(screen.getByLabelText("To"), { target: { value: "a@example.com" } });
+    fireEvent.change(screen.getByLabelText("Cc"), { target: { value: "c@example.com" } });
+    fireEvent.change(screen.getByLabelText("Bcc"), { target: { value: "b@example.com" } });
+    fireEvent.change(screen.getByLabelText("Message"), {
+      target: { value: "Please review the conversation." }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send forward" }));
+
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toMatchObject({
+      action: "forward",
+      to_recipients: ["a@example.com"],
+      cc_recipients: ["c@example.com"],
+      bcc_recipients: ["b@example.com"]
+    });
+  });
+
+  it("keeps operational handoff separate from normal forward", async () => {
+    const handoffRequests: unknown[] = [];
+    installHistoryMock({ handoffRequests });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Hand off" }));
     fireEvent.change(screen.getByLabelText(/handoff destination/i), {
       target: { value: "mark.personal@example.com" }
     });
-    fireEvent.click(screen.getByRole("button", { name: /forward chain/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Forward chain" }));
 
     await waitFor(() => expect(handoffRequests).toHaveLength(1));
-    expect(JSON.parse(handoffRequests[0])).toEqual({
-      request_id: "22222222-2222-4222-8222-222222222222",
-      destination: "mark.personal@example.com"
-    });
-    await waitFor(() => expect(screen.getAllByText("Handed off").length).toBeGreaterThan(0));
-    expect(screen.getByText("mark.personal@example.com to person@example.com")).toBeInTheDocument();
+    expect(handoffRequests[0]).toMatchObject({ destination: "mark.personal@example.com" });
+    expect(await screen.findByText("Handed off to mark.personal@example.com")).toBeInTheDocument();
   });
 
-  it("renders history status variants and raw invalid timestamps", async () => {
-    const variantMessages = [
-      {
-        ...sampleMessages[0],
-        uid: 50,
-        subject: "Processing update",
-        status: "processing",
-        outbound_action: null,
-        outbound_recipients: [],
-        outbound_subject: null,
-        outbound_body: null,
-        outbound_body_redacted: false,
-        outbound_reason: null,
-        updated_at: "not-a-date",
-        logs: []
-      },
-      {
-        ...sampleMessages[0],
-        uid: 51,
-        subject: "Retry failed update",
-        status: "retryable_failed"
-      },
-      {
-        ...sampleMessages[0],
-        uid: 52,
-        subject: "Archived update",
-        status: "archived"
+  it("shows detail load errors and disables missing mailbox conversations", async () => {
+    const missingMailboxDetail = {
+      ...sampleConversationDetail,
+      conversation: {
+        ...sampleConversationDetail.conversation,
+        mailbox_id: "missing"
       }
-    ];
-    vi.spyOn(globalThis, "fetch").mockImplementation((path) => {
-      if (path === "/api/status") {
-        return jsonResponse({
-          service: "ai-memmail",
-          authenticated: true,
-          uptime_seconds: 3,
-          enabled_mailboxes: 1
-        });
+    };
+    installHistoryMock({
+      detailFailures: [sampleConversations[1].conversation_id],
+      details: {
+        [sampleConversationDetail.conversation.conversation_id]: missingMailboxDetail
       }
-      if (String(path).startsWith("/api/messages")) {
-        return jsonResponse({ messages: variantMessages });
-      }
-      if (path === "/api/email-classification") {
-        return classificationResponse();
-      }
-      return jsonResponse({ config: sampleConfig });
     });
 
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
-    expect(screen.getByRole("heading", { name: "Processing update" })).toBeInTheDocument();
-    expect(screen.getAllByText("not-a-date").length).toBeGreaterThan(0);
-    expect(screen.getByText("No outbound body recorded.")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Timeline"));
-    expect(screen.getByText("No log entries recorded.")).toBeInTheDocument();
-    expect(screen.getAllByText("processing").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("retryable_failed").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("archived").length).toBeGreaterThan(0);
-  });
-
-  it("keeps config visible when processed message history fails to load", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation((path) => {
-      if (path === "/api/status") {
-        return jsonResponse({
-          service: "ai-memmail",
-          authenticated: true,
-          uptime_seconds: 3,
-          enabled_mailboxes: 1
-        });
-      }
-      if (String(path).startsWith("/api/messages")) {
-        return jsonResponse({ error: "database unavailable" }, { status: 500 });
-      }
-      if (path === "/api/email-classification") {
-        return classificationResponse();
-      }
-      return jsonResponse({ config: sampleConfig });
-    });
-
-    render(<App />);
-
-    expect(await screen.findByText("database unavailable")).toBeInTheDocument();
-    expect(screen.getByText("MCP servers")).toBeInTheDocument();
+    expect(await screen.findByText("Mailbox configuration is missing; replies and forwards are disabled.")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /Suspicious prompt injection sample/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("failed to load detail");
   });
 });
+
+function installHistoryMock({
+  config = sampleConfig,
+  detailFailures = [],
+  details = {},
+  handoffRequests = [],
+  portalRequests = []
+}: {
+  config?: AppConfig;
+  detailFailures?: string[];
+  details?: Record<string, PortalConversationDetail>;
+  handoffRequests?: unknown[];
+  portalRequests?: unknown[];
+} = {}) {
+  const detailMap = {
+    [sampleConversationDetail.conversation.conversation_id]: sampleConversationDetail,
+    ...details
+  };
+  vi.spyOn(globalThis, "fetch").mockImplementation((path, init) => {
+    const url = String(path);
+    if (url === "/api/status") {
+      return Promise.resolve(jsonResponse({
+        service: "ai-memmail",
+        authenticated: true,
+        uptime_seconds: 3,
+        enabled_mailboxes: 1
+      }));
+    }
+    if (url.startsWith("/api/conversations/") && url.endsWith("/messages")) {
+      portalRequests.push(JSON.parse(String(init?.body)));
+      return Promise.resolve(jsonResponse({
+        conversation: detailMap[sampleConversationDetail.conversation.conversation_id]
+      }));
+    }
+    if (url.startsWith("/api/conversations/")) {
+      const id = decodeURIComponent(url.split("/api/conversations/")[1]);
+      if (detailFailures.includes(id)) {
+        return Promise.resolve(jsonResponse({ error: "failed to load detail" }, { status: 500 }));
+      }
+      return Promise.resolve(jsonResponse({ conversation: detailMap[id] ?? sampleConversationDetail }));
+    }
+    if (url.startsWith("/api/conversations")) {
+      return Promise.resolve(jsonResponse({ conversations: sampleConversations }));
+    }
+    if (url.startsWith("/api/messages/") && init?.method === "POST") {
+      handoffRequests.push(JSON.parse(String(init.body)));
+      return Promise.resolve(jsonResponse({
+        handoff: {
+          state: "active",
+          destination: "mark.personal@example.com",
+          remote_target: "person@example.com",
+          last_error: null,
+          updated_at: "2026-07-01 00:04:00+00"
+        }
+      }));
+    }
+    if (url.startsWith("/api/messages")) {
+      return Promise.resolve(jsonResponse({ messages: sampleMessages }));
+    }
+    if (url === "/api/email-classification") {
+      return classificationResponse();
+    }
+    return Promise.resolve(jsonResponse({ config }));
+  });
+}
+
+function configWithSignature(format: "html" | "plain_text", content: string): AppConfig {
+  return {
+    ...sampleConfig,
+    mailboxes: [
+      {
+        ...sampleConfig.mailboxes[0],
+        signature: { format, content }
+      }
+    ]
+  };
+}
+
+function unsafeConversationDetail(): PortalConversationDetail {
+  return {
+    conversation: sampleConversations[1],
+    quote_text:
+      "[1] inbound\nFrom: blocked@example.com\nTo: support@example.com\nSubject: Suspicious prompt injection sample\nMessage-ID: <43@example.com>\n\nRedacted prompt-injection sample requesting instruction override and secret disclosure.",
+    quote_html:
+      "<section><p><strong>inbound</strong><br>From: blocked@example.com</p><pre>Redacted prompt-injection sample requesting instruction override and secret disclosure.</pre></section>",
+    messages: [
+      {
+        id: `inbound:${sampleMessages[1].run_id}`,
+        direction: "inbound",
+        kind: "inbound",
+        status: "quarantined",
+        from_addr: "blocked@example.com",
+        to_recipients: ["support@example.com"],
+        cc_recipients: [],
+        subject: "Suspicious prompt injection sample",
+        text_body: sampleMessages[1].inbound_body,
+        html_body: null,
+        body_truncated: false,
+        message_id: "<43@example.com>",
+        in_reply_to: null,
+        references: [],
+        safety_category: "prompt_injection",
+        created_at: "2026-07-01 00:03:00+00"
+      }
+    ]
+  };
+}

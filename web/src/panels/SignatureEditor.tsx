@@ -89,7 +89,7 @@ export function SignatureEditor({
   const [lastHtmlSignature, setLastHtmlSignature] =
     useState<EmailSignatureConfig | null>(
       signature?.format === "html"
-        ? { ...signature, content: sanitizeSignatureHtml(signature.content) }
+        ? signature
         : null
     );
   const [lastCustomFormat, setLastCustomFormat] = useState<EmailSignatureFormat>(
@@ -114,14 +114,9 @@ export function SignatureEditor({
     if (signature?.format !== "html") {
       return;
     }
-    const sanitizedContent = sanitizeSignatureHtml(signature.content);
-    const nextSignature = { format: "html" as const, content: sanitizedContent };
-    setLastHtmlSignature(nextSignature);
+    setLastHtmlSignature(signature);
     setLastCustomFormat("html");
-    if (sanitizedContent !== signature.content) {
-      onChange(nextSignature);
-    }
-  }, [onChange, signature]);
+  }, [signature]);
 
   function setCustomSignatureEnabled(enabled: boolean) {
     if (!enabled) {
@@ -196,7 +191,7 @@ export function SignatureEditor({
         <HtmlSignatureEditor
           content={
             signature?.format === "html"
-              ? sanitizeSignatureHtml(signature.content)
+              ? signature.content
               : DEFAULT_HTML_SIGNATURE
           }
           onChange={(content) => {
@@ -244,11 +239,13 @@ function HtmlSignatureEditor({
   content: string;
   onChange: (content: string) => void;
 }) {
+  const [editMode, setEditMode] = useState<"visual" | "source">("visual");
   const [linkUrl, setLinkUrl] = useState("");
   const [imageUrl, setImageUrl] = useState("");
   const [imageAlt, setImageAlt] = useState("");
   const [error, setError] = useState("");
   const sanitizedContent = useMemo(() => sanitizeSignatureHtml(content), [content]);
+  const visualSupported = useMemo(() => visualEditorSupportsHtml(content), [content]);
   const editor = useEditor({
     extensions: editorExtensions,
     content: sanitizedContent,
@@ -270,14 +267,11 @@ function HtmlSignatureEditor({
   });
 
   useEffect(() => {
-    if (content !== sanitizedContent) {
-      onChange(sanitizedContent);
-    }
     if (!editor || editor.getHTML() === sanitizedContent) {
       return;
     }
     editor.commands.setContent(sanitizedContent, { emitUpdate: false });
-  }, [content, editor, onChange, sanitizedContent]);
+  }, [editor, sanitizedContent]);
 
   function setLink() {
     if (!editor) {
@@ -317,6 +311,45 @@ function HtmlSignatureEditor({
 
   return (
     <div className="rich-signature-editor">
+      <div className="segmented-control compact" role="group" aria-label="HTML edit mode">
+        <ModeButton
+          active={editMode === "visual"}
+          label="Visual"
+          onClick={() => setEditMode("visual")}
+        />
+        <ModeButton
+          active={editMode === "source"}
+          label="Source"
+          onClick={() => setEditMode("source")}
+        />
+      </div>
+      {editMode === "source" ? (
+        <label>
+          HTML source
+          <textarea
+            className="signature-source"
+            value={content}
+            onChange={(event) => onChange(event.target.value)}
+            spellCheck={false}
+          />
+        </label>
+      ) : null}
+      {editMode === "visual" && !visualSupported ? (
+        <div className="signature-source-preview">
+          <p className="muted">This HTML uses email markup that is preserved in Source.</p>
+          <iframe
+            referrerPolicy="no-referrer"
+            sandbox=""
+            srcDoc={sanitizedContent}
+            title="Read-only signature HTML preview"
+          />
+          <button type="button" onClick={() => setEditMode("source")}>
+            Edit in Source
+          </button>
+        </div>
+      ) : null}
+      {editMode === "visual" && visualSupported ? (
+        <>
       <div className="signature-toolbar" aria-label="HTML signature toolbar" role="toolbar">
         <IconButton active={editor?.isActive("bold") ?? false} label="Bold" onClick={() => editor?.chain().focus().toggleBold().run()}>
           <Bold aria-hidden="true" />
@@ -408,6 +441,8 @@ function HtmlSignatureEditor({
       </div>
       {error ? <p className="signature-error" role="alert">{error}</p> : null}
       <EditorContent editor={editor} />
+        </>
+      ) : null}
     </div>
   );
 }
@@ -446,6 +481,20 @@ function allowedImageUrl(value: string): boolean {
 
 export function sanitizeSignatureHtml(content: string): string {
   const parsed = new DOMParser().parseFromString(content, "text/html");
+  parsed.body.querySelectorAll("script, style, iframe, object, embed").forEach((node) => node.remove());
+  parsed.body.querySelectorAll("*").forEach((node) => {
+    for (const attribute of Array.from(node.attributes)) {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value.trim();
+      if (name.startsWith("on")) {
+        node.removeAttribute(attribute.name);
+        continue;
+      }
+      if ((name === "href" || name === "src") && !allowedEmbeddedUrl(value, name)) {
+        node.removeAttribute(attribute.name);
+      }
+    }
+  });
   parsed.body.querySelectorAll("img").forEach((image) => {
     const src = image.getAttribute("src")?.trim() ?? "";
     const alt = image.getAttribute("alt")?.trim() ?? "";
@@ -457,6 +506,33 @@ export function sanitizeSignatureHtml(content: string): string {
     image.setAttribute("alt", alt);
   });
   return parsed.body.innerHTML;
+}
+
+function visualEditorSupportsHtml(content: string): boolean {
+  const parsed = new DOMParser().parseFromString(content, "text/html");
+  const supportedTags = new Set([
+    "a",
+    "b",
+    "br",
+    "div",
+    "em",
+    "i",
+    "img",
+    "p",
+    "span",
+    "strong",
+    "u"
+  ]);
+  return Array.from(parsed.body.querySelectorAll("*")).every((node) =>
+    supportedTags.has(node.tagName.toLowerCase())
+  );
+}
+
+function allowedEmbeddedUrl(value: string, name: string): boolean {
+  if (name === "src") {
+    return allowedImageUrl(value);
+  }
+  return allowedLinkUrl(value);
 }
 
 function allowedProtocol(value: string, protocols: string[]): boolean {

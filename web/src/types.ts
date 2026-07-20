@@ -179,6 +179,60 @@ export interface ProcessedEmailLog {
   created_at: string;
 }
 
+export interface PortalConversationSummary {
+  conversation_id: string;
+  mailbox_id: string;
+  thread_id: string;
+  subject: string;
+  revision: number;
+  last_message_at: string;
+  latest_sender: string;
+  latest_status: string;
+  remote_reply_to?: string | null;
+  unsafe_reply_requires_confirmation: boolean;
+  source_conversation_id?: string | null;
+  handoff?: ThreadHandoffSummary | null;
+}
+
+export interface PortalConversationDetail {
+  conversation: PortalConversationSummary;
+  messages: PortalTimelineMessage[];
+  quote_text: string;
+  quote_html: string;
+}
+
+export interface PortalTimelineMessage {
+  id: string;
+  direction: "inbound" | "outbound";
+  kind: "inbound" | "ai_reply" | "portal_reply" | "portal_forward" | string;
+  status: string;
+  from_addr: string;
+  to_recipients: string[];
+  cc_recipients: string[];
+  bcc_recipients?: string[];
+  subject: string;
+  text_body?: string | null;
+  html_body?: string | null;
+  body_truncated: boolean;
+  message_id?: string | null;
+  in_reply_to?: string | null;
+  references: string[];
+  safety_category?: string | null;
+  created_at: string;
+}
+
+export interface PortalSendRequest {
+  request_id: string;
+  thread_revision: number;
+  action: "reply" | "forward";
+  authored_text: string;
+  authored_html?: string | null;
+  to_recipients?: string[];
+  cc_recipients?: string[];
+  bcc_recipients?: string[];
+  unsafe_confirmed?: boolean;
+}
+
 export interface PromptFile {
   path: string;
   content: string;

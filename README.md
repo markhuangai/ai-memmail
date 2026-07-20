@@ -16,7 +16,7 @@
   <a href="https://github.com/markhuangai/ai-memmail"><img src="https://img.shields.io/github/stars/markhuangai/ai-memmail?style=flat-square&logo=github" alt="GitHub stars" /></a>
   <a href="https://github.com/markhuangai/ai-memmail/issues"><img src="https://img.shields.io/github/issues/markhuangai/ai-memmail?style=flat-square&logo=github" alt="GitHub issues" /></a>
   <a href="https://github.com/markhuangai/ai-memmail/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="License: MIT" /></a>
-  <img src="https://img.shields.io/badge/Rust-1.75-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.75" />
+  <img src="https://img.shields.io/badge/Rust-1.80-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.80" />
   <a href="https://github.com/markhuangai/ai-memmail/pkgs/container/ai-memmail"><img src="https://img.shields.io/badge/Docker-GHCR-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker image on GHCR" /></a>
 </p>
 

@@ -1,4 +1,10 @@
-import type { AppConfig, EmailClassificationConfig, ProcessedEmail } from "./types";
+import type {
+  AppConfig,
+  EmailClassificationConfig,
+  PortalConversationDetail,
+  PortalConversationSummary,
+  ProcessedEmail
+} from "./types";
 
 export const sampleConfig: AppConfig = {
   version: 1,
@@ -197,6 +203,83 @@ export const sampleMessages: ProcessedEmail[] = [
     ]
   }
 ];
+
+export const sampleConversations: PortalConversationSummary[] = [
+  {
+    conversation_id: "11111111-1111-4111-8111-111111111111",
+    mailbox_id: "support",
+    thread_id: "<42@example.com>",
+    subject: "Pricing question",
+    revision: 2,
+    last_message_at: "2026-07-01 00:01:00+00",
+    latest_sender: "person@example.com",
+    latest_status: "replied",
+    remote_reply_to: "person@example.com",
+    unsafe_reply_requires_confirmation: false,
+    source_conversation_id: null,
+    handoff: null
+  },
+  {
+    conversation_id: "22222222-2222-4222-8222-222222222222",
+    mailbox_id: "support",
+    thread_id: "<43@example.com>",
+    subject: "Suspicious prompt injection sample",
+    revision: 1,
+    last_message_at: "2026-07-01 00:03:00+00",
+    latest_sender: "blocked@example.com",
+    latest_status: "quarantined",
+    remote_reply_to: "blocked@example.com",
+    unsafe_reply_requires_confirmation: true,
+    source_conversation_id: null,
+    handoff: null
+  }
+];
+
+export const sampleConversationDetail: PortalConversationDetail = {
+  conversation: sampleConversations[0],
+  quote_text:
+    "[1] inbound\nFrom: person@example.com\nTo: support@example.com\nSubject: Pricing question\nMessage-ID: <42@example.com>\n\nCan you send the current pricing plan?\n\n[2] ai_reply\nFrom: support\nTo: person@example.com\nSubject: Re: Pricing question\nMessage-ID: <auto-42@example.com>\n\nThanks for reaching out. The current plan is available.",
+  quote_html:
+    "<section><p><strong>inbound</strong><br>From: person@example.com</p><pre>Can you send the current pricing plan?</pre></section><section><p><strong>ai_reply</strong><br>From: support</p><pre>Thanks for reaching out. The current plan is available.</pre></section>",
+  messages: [
+    {
+      id: `inbound:${sampleMessages[0].run_id}`,
+      direction: "inbound",
+      kind: "inbound",
+      status: "replied",
+      from_addr: "person@example.com",
+      to_recipients: ["support@example.com"],
+      cc_recipients: [],
+      subject: "Pricing question",
+      text_body: "Can you send the current pricing plan?",
+      html_body: null,
+      body_truncated: false,
+      message_id: "<42@example.com>",
+      in_reply_to: null,
+      references: [],
+      safety_category: "safe",
+      created_at: "2026-07-01 00:00:00+00"
+    },
+    {
+      id: `ai:${sampleMessages[0].run_id}`,
+      direction: "outbound",
+      kind: "ai_reply",
+      status: "replied",
+      from_addr: "support",
+      to_recipients: ["person@example.com"],
+      cc_recipients: [],
+      subject: "Re: Pricing question",
+      text_body: "Thanks for reaching out. The current plan is available.",
+      html_body: null,
+      body_truncated: false,
+      message_id: "<auto-42@example.com>",
+      in_reply_to: "<42@example.com>",
+      references: ["<42@example.com>"],
+      safety_category: null,
+      created_at: "2026-07-01 00:01:00+00"
+    }
+  ]
+};
 
 export const sampleClassification: EmailClassificationConfig = {
   categories: [

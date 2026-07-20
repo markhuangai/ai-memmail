@@ -32,6 +32,8 @@ use crate::storage::{
 };
 use crate::worker;
 
+mod portal;
+
 const SESSION_COOKIE: &str = "ai_memmail_session";
 const SESSION_TTL_SECONDS: u64 = 86_400;
 const DEFAULT_MESSAGE_LIMIT: i64 = 100;
@@ -155,6 +157,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/messages", get(get_messages))
         .route("/api/messages/:run_id/handoff", post(create_handoff))
+        .route("/api/conversations", get(portal::get_conversations))
+        .route(
+            "/api/conversations/:conversation_id",
+            get(portal::get_conversation),
+        )
+        .route(
+            "/api/conversations/:conversation_id/messages",
+            post(portal::send_portal_message),
+        )
         .route(
             "/api/prompt-file",
             get(get_prompt_file).put(update_prompt_file),
@@ -204,6 +215,7 @@ impl AppState {
     fn replace_config(&self, mut config: AppConfig) -> Result<(), ConfigError> {
         let current = self.config.read().expect("config lock poisoned").clone();
         config.preserve_redacted_secrets(&current);
+        config = config.sanitized_for_save();
         config.save(&self.config_path)?;
         *self.config.write().expect("config lock poisoned") = config;
         Ok(())

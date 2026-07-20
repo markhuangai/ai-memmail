@@ -7,6 +7,8 @@ import {
   createEmailTopic,
   deleteEmailRule,
   loadConfig,
+  loadConversation,
+  loadConversations,
   loadEmailClassification,
   loadMessages,
   loadPromptFile,
@@ -14,9 +16,16 @@ import {
   login,
   saveConfig,
   savePromptFile,
+  sendPortalMessage,
   updateEmailRule
 } from "./api";
-import { sampleClassification, sampleConfig, sampleMessages } from "./fixtures";
+import {
+  sampleClassification,
+  sampleConfig,
+  sampleConversationDetail,
+  sampleConversations,
+  sampleMessages
+} from "./fixtures";
 
 function jsonResponse(body: unknown, init?: ResponseInit) {
   return new Response(JSON.stringify(body), {
@@ -82,6 +91,54 @@ describe("api", () => {
     expect(fetchImpl).toHaveBeenCalledWith(
       "/api/messages?limit=250",
       expect.objectContaining({ credentials: "same-origin" })
+    );
+  });
+
+  it("loads conversation summaries and details", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ conversations: sampleConversations }))
+      .mockResolvedValueOnce(jsonResponse({ conversation: sampleConversationDetail }));
+
+    await expect(loadConversations(25, fetchImpl as typeof fetch)).resolves.toEqual(sampleConversations);
+    await expect(
+      loadConversation(sampleConversations[0].conversation_id, fetchImpl as typeof fetch)
+    ).resolves.toEqual(sampleConversationDetail);
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      "/api/conversations?limit=25",
+      expect.objectContaining({ credentials: "same-origin" })
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      `/api/conversations/${sampleConversations[0].conversation_id}`,
+      expect.objectContaining({ credentials: "same-origin" })
+    );
+  });
+
+  it("posts portal messages with request metadata", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ conversation: sampleConversationDetail })
+    );
+    const request = {
+      request_id: "33333333-3333-4333-8333-333333333333",
+      thread_revision: 2,
+      action: "reply" as const,
+      authored_text: "Thanks",
+      authored_html: "<p>Thanks</p>",
+      unsafe_confirmed: false
+    };
+
+    await expect(
+      sendPortalMessage(sampleConversations[0].conversation_id, request, fetchImpl as typeof fetch)
+    ).resolves.toEqual(sampleConversationDetail);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `/api/conversations/${sampleConversations[0].conversation_id}/messages`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(request)
+      })
     );
   });
 

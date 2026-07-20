@@ -5,7 +5,7 @@ RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-FROM rust:1.75-bookworm AS server-build
+FROM rust:1.80-bookworm AS server-build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
