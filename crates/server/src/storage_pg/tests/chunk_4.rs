@@ -182,3 +182,93 @@ async fn pg_store_keeps_forward_replies_in_child_conversation() {
 
     pg.cleanup().await;
 }
+
+#[tokio::test]
+async fn pg_store_reuses_child_thread_id_for_forward_retry() {
+    let Some(pg) = TestPgStore::create().await else {
+        return;
+    };
+    pg.store.migrate().await.unwrap();
+    let original = message(95);
+    pg.store
+        .claim_message(&uuid::Uuid::new_v4().to_string(), &original)
+        .await
+        .unwrap();
+    let source = pg
+        .store
+        .list_portal_conversations(10)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let request_id = uuid::Uuid::new_v4();
+    let child_id = request_id;
+    let first_thread_id = "<portal-forward-first@example.com>".to_string();
+    let retry_thread_id = "<portal-forward-retry@example.com>".to_string();
+
+    let inserted_thread_id = pg
+        .store
+        .create_child_conversation(
+            child_id,
+            source.conversation_id,
+            "support",
+            &first_thread_id,
+            "Fwd: Question",
+        )
+        .await
+        .unwrap();
+    let retried_thread_id = pg
+        .store
+        .create_child_conversation(
+            child_id,
+            source.conversation_id,
+            "support",
+            &retry_thread_id,
+            "Fwd: Question",
+        )
+        .await
+        .unwrap();
+    let (record, inserted) = pg
+        .store
+        .begin_portal_message(&NewPortalMessage {
+            portal_message_id: uuid::Uuid::new_v4(),
+            conversation_id: child_id,
+            request_id,
+            mailbox_id: "support".to_string(),
+            thread_id: retried_thread_id.clone(),
+            action: "forward".to_string(),
+            to_recipients: vec!["reviewer@example.com".to_string()],
+            cc_recipients: vec![],
+            bcc_recipients: vec![],
+            subject: "Fwd: Question".to_string(),
+            authored_text: "Please review".to_string(),
+            authored_html: None,
+            rendered_text: "Please review\n\n---------- Conversation history ---------\nBody".to_string(),
+            rendered_html: None,
+            quoted_text: "Body".to_string(),
+            quoted_html: None,
+            message_id: retried_thread_id.clone(),
+            in_reply_to: None,
+            references: vec![],
+            reply_target: None,
+            source_conversation_id: Some(source.conversation_id),
+            child_conversation_id: Some(child_id),
+            unsafe_confirmed: false,
+        })
+        .await
+        .unwrap();
+    let child_detail = pg
+        .store
+        .portal_conversation_detail(child_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(inserted_thread_id, first_thread_id);
+    assert_eq!(retried_thread_id, first_thread_id);
+    assert!(inserted);
+    assert_eq!(record.message_id, first_thread_id);
+    assert_eq!(child_detail.conversation.thread_id, first_thread_id);
+
+    pg.cleanup().await;
+}

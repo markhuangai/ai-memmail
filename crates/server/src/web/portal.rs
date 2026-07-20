@@ -251,32 +251,33 @@ async fn prepare_forward(
             message: "forward requires at least one recipient".to_string(),
         });
     }
-    let message_id = outbound_message_id(mailbox);
+    let generated_message_id = outbound_message_id(mailbox);
     let child_conversation_id = request.request_id;
     let subject = forward_subject(&detail.conversation.subject);
     let rendered = render_with_quote(&authored, &detail.quote_text, &detail.quote_html);
-    let email = ComposedEmail {
+    let mut email = ComposedEmail {
         to: request.to_recipients.clone(),
         cc: request.cc_recipients.clone(),
         bcc: request.bcc_recipients.clone(),
         subject: subject.clone(),
         text_body: rendered.text.clone(),
         html_body: rendered.html.clone(),
-        message_id: Some(message_id.clone()),
+        message_id: Some(generated_message_id.clone()),
         in_reply_to: None,
         references: vec![],
     };
     validate_portal_email(&email)?;
-    store
+    let message_id = store
         .create_child_conversation(
             child_conversation_id,
             detail.conversation.conversation_id,
             &detail.conversation.mailbox_id,
-            &message_id,
+            &generated_message_id,
             &subject,
         )
         .await
         .map_err(ApiError::from_storage)?;
+    email.message_id = Some(message_id.clone());
     Ok(PreparedPortalSend {
         email,
         source_conversation_to_touch: Some(detail.conversation.conversation_id),

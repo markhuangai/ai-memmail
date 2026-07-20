@@ -31,13 +31,23 @@ impl PgStore {
         mailbox_id: &str,
         thread_id: &str,
         subject: &str,
-    ) -> Result<(), StorageError> {
-        self.client
-            .execute(
-                "INSERT INTO email_conversations
-                (conversation_id, mailbox_id, thread_id, source_conversation_id, subject, last_message_at)
-                VALUES ($1, $2, $3, $4, $5, now())
-                ON CONFLICT (mailbox_id, thread_id) DO NOTHING",
+    ) -> Result<String, StorageError> {
+        let row = self
+            .client
+            .query_one(
+                "WITH inserted AS (
+                    INSERT INTO email_conversations
+                        (conversation_id, mailbox_id, thread_id, source_conversation_id, subject, last_message_at)
+                    VALUES ($1, $2, $3, $4, $5, now())
+                    ON CONFLICT DO NOTHING
+                    RETURNING thread_id
+                )
+                SELECT thread_id FROM inserted
+                UNION ALL
+                SELECT thread_id
+                FROM email_conversations
+                WHERE conversation_id = $1
+                LIMIT 1",
                 &[
                     &conversation_id,
                     &mailbox_id,
@@ -47,7 +57,7 @@ impl PgStore {
                 ],
             )
             .await?;
-        Ok(())
+        Ok(row.get(0))
     }
 
     pub async fn list_portal_conversations(
