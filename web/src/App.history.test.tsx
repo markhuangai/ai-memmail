@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import {
   sampleClassification,
@@ -10,6 +10,36 @@ import {
 } from "./fixtures";
 import type { AppConfig, PortalConversationDetail } from "./types";
 import { classificationResponse, jsonResponse } from "./testHelpers";
+
+const jsdomRect: DOMRect = {
+  bottom: 0,
+  height: 0,
+  left: 0,
+  right: 0,
+  top: 0,
+  width: 0,
+  x: 0,
+  y: 0,
+  toJSON: () => ({})
+};
+
+const jsdomRectList: DOMRectList = {
+  0: jsdomRect,
+  length: 1,
+  item: (index: number) => (index === 0 ? jsdomRect : null),
+  [Symbol.iterator]: () => [jsdomRect][Symbol.iterator]()
+};
+
+beforeAll(() => {
+  Object.defineProperty(Range.prototype, "getBoundingClientRect", {
+    configurable: true,
+    value: () => jsdomRect
+  });
+  Object.defineProperty(Range.prototype, "getClientRects", {
+    configurable: true,
+    value: () => jsdomRectList
+  });
+});
 
 describe("App history", () => {
   beforeEach(() => {
@@ -37,8 +67,9 @@ describe("App history", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
-    fireEvent.change(await screen.findByLabelText("Message"), {
-      target: { value: "I can send more detail.\n\n--\nMark" }
+    fireEvent.click(await screen.findByRole("button", { name: "Source" }));
+    fireEvent.change(screen.getByLabelText("HTML source"), {
+      target: { value: "<p>I can send more detail.<br><br>--<br>Mark</p>" }
     });
     fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
 
@@ -62,8 +93,9 @@ describe("App history", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
     fireEvent.click(await screen.findByRole("button", { name: /Suspicious prompt injection sample/i }));
-    fireEvent.change(await screen.findByLabelText("Message"), {
-      target: { value: "I reviewed this.\n\n--\nMark" }
+    fireEvent.click(await screen.findByRole("button", { name: "Source" }));
+    fireEvent.change(screen.getByLabelText("HTML source"), {
+      target: { value: "<p>I reviewed this.<br><br>--<br>Mark</p>" }
     });
     fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
 
@@ -92,6 +124,10 @@ describe("App history", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
+    expect(await screen.findByTitle("Read-only message HTML preview")).toHaveAttribute(
+      "srcdoc",
+      "<p></p><table><tbody><tr><td>Mark</td></tr></tbody></table>"
+    );
     fireEvent.click(await screen.findByRole("button", { name: "Source" }));
     expect(screen.getByLabelText("HTML source")).toHaveValue("<p></p><table><tr><td>Mark</td></tr></table>");
     fireEvent.change(screen.getByLabelText("HTML source"), {
@@ -106,6 +142,56 @@ describe("App history", () => {
     });
   });
 
+  it("preserves configured HTML signature when sending from visual mode", async () => {
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("77777777-7777-4777-8777-777777777777");
+    const requests: unknown[] = [];
+    installHistoryMock({
+      config: configWithSignature(
+        "html",
+        '<p><a href="https://markhuang.ai" target="_blank" rel="noopener noreferrer"><img src="https://markhuang.ai/logo.png" alt="Mark Huang logo" width="58" height="58" style="width: 58px; height: 58px;"></a><br><span style="color: #191d24; font-family: Consolas, \'Liberation Mono\', Menlo, monospace; font-size: 17px;"><strong>Mark Huang</strong></span><br><span style="color: #5c6370; font-family: Arial, Helvetica, sans-serif; font-size: 12px;">AI architect &amp; senior full-stack developer</span><br><a href="https://markhuang.ai" target="_blank" rel="noopener noreferrer"><span style="color: #9c5916; font-family: Arial, Helvetica, sans-serif; font-size: 12px;"><strong>markhuang.ai</strong></span></a><br><br><a href="https://badges.marquiswhoswho.com/Badge/honoredlistee/fba934616c19403ba14cb0df04d2804f448f6eb34f394af498e7a192320a2a3b" target="_blank" rel="noopener noreferrer"><img src="https://badges.marquiswhoswho.com/Badge/honoredlistee/fba934616c19403ba14cb0df04d2804f448f6eb34f394af498e7a192320a2a3b" alt="Marquis Who\'s Who Honored Listee 2026 badge" width="88" height="91" style="width: 88px; height: 91px;"></a></p>'
+      ),
+      portalRequests: requests
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
+    expect(await screen.findByRole("toolbar", { name: "Message formatting toolbar" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
+
+    await waitFor(() => expect(requests).toHaveLength(1));
+    const request = requests[0] as { authored_html?: string; authored_text?: string };
+    expect(request.authored_html).toContain('<img src="https://markhuang.ai/logo.png"');
+    expect(request.authored_html).toContain('style="color: #191d24; font-family: Consolas, ');
+    expect(request.authored_html).toContain('<strong>Mark Huang</strong>');
+    expect(request.authored_html).toContain("https://badges.marquiswhoswho.com/Badge/honoredlistee/");
+    expect(request.authored_html).not.toContain("&lt;img");
+    expect(request.authored_text).toContain("Mark Huang\nAI architect & senior full-stack developer\nmarkhuang.ai");
+  });
+
+  it("escapes plain-text signatures when composing HTML", async () => {
+    const requests: unknown[] = [];
+    installHistoryMock({
+      config: configWithSignature("plain_text", "--\nMark <mark@example.com> & Co"),
+      portalRequests: requests
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Source" }));
+    expect(screen.getByLabelText("HTML source")).toHaveValue(
+      "<p></p><p>--<br>Mark &lt;mark@example.com&gt; &amp; Co</p>"
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
+
+    await waitFor(() => expect(requests).toHaveLength(1));
+    const request = requests[0] as { authored_html?: string; authored_text?: string };
+    expect(request.authored_html).toContain("Mark &lt;mark@example.com&gt; &amp; Co");
+    expect(request.authored_html).not.toContain("Mark <mark@example.com> & Co");
+    expect(request.authored_text).toContain("Mark <mark@example.com> & Co");
+  });
+
   it("sends a normal forward with To Cc and Bcc recipients", async () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue("55555555-5555-4555-8555-555555555555");
     const requests: unknown[] = [];
@@ -118,8 +204,9 @@ describe("App history", () => {
     fireEvent.change(screen.getByLabelText("To"), { target: { value: "a@example.com" } });
     fireEvent.change(screen.getByLabelText("Cc"), { target: { value: "c@example.com" } });
     fireEvent.change(screen.getByLabelText("Bcc"), { target: { value: "b@example.com" } });
-    fireEvent.change(screen.getByLabelText("Message"), {
-      target: { value: "Please review the conversation." }
+    fireEvent.click(screen.getByRole("button", { name: "Source" }));
+    fireEvent.change(screen.getByLabelText("HTML source"), {
+      target: { value: "<p>Please review the conversation.</p>" }
     });
     fireEvent.click(screen.getByRole("button", { name: "Send forward" }));
 

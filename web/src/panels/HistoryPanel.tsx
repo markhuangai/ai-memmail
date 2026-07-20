@@ -12,9 +12,9 @@ import type {
 } from "../types";
 import { formatTimestamp, statusPillClass } from "../viewUtils";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { RichHtmlEditor, sanitizeSignatureHtml } from "./SignatureEditor";
 
 type ComposerAction = "reply" | "forward";
-type HtmlMode = "visual" | "source";
 
 export function HistoryPanel({
   canLoadMore,
@@ -289,8 +289,6 @@ function PortalComposer({
   mailbox: MailboxConfig;
   onSend: (request: PortalSendRequest) => Promise<void>;
 }) {
-  const [mode, setMode] = useState<HtmlMode>("visual");
-  const [body, setBody] = useState(() => defaultBody(mailbox));
   const [html, setHtml] = useState(() => defaultHtml(mailbox));
   const [to, setTo] = useState("");
   const [cc, setCc] = useState("");
@@ -300,7 +298,6 @@ function PortalComposer({
   const [confirmUnsafe, setConfirmUnsafe] = useState(false);
 
   useEffect(() => {
-    setBody(defaultBody(mailbox));
     setHtml(defaultHtml(mailbox));
     setTo("");
     setCc("");
@@ -313,8 +310,8 @@ function PortalComposer({
     setSubmitting(true);
     setError("");
     try {
-      const authoredHtml = mode === "source" ? html : plainTextToHtml(body);
-      const authoredText = mode === "source" ? htmlToText(html) : body;
+      const authoredHtml = html;
+      const authoredText = htmlToText(sanitizeSignatureHtml(html));
       await onSend({
         request_id: newRequestId(),
         thread_revision: detail.conversation.revision,
@@ -326,7 +323,6 @@ function PortalComposer({
         bcc_recipients: action === "forward" ? listFromText(bcc) : [],
         unsafe_confirmed: unsafeConfirmed
       });
-      setBody(defaultBody(mailbox));
       setHtml(defaultHtml(mailbox));
       setTo("");
       setCc("");
@@ -355,14 +351,6 @@ function PortalComposer({
           <strong>{action === "reply" ? "Reply" : "Forward"}</strong>
           <span>{action === "reply" ? detail.conversation.remote_reply_to : "Choose recipients"}</span>
         </div>
-        <div className="segmented-control compact" role="group" aria-label="Composer mode">
-          <button className={mode === "visual" ? "active" : ""} type="button" onClick={() => setMode("visual")}>
-            Visual
-          </button>
-          <button className={mode === "source" ? "active" : ""} type="button" onClick={() => setMode("source")}>
-            Source
-          </button>
-        </div>
       </div>
       {action === "forward" ? (
         <div className="recipient-grid">
@@ -371,17 +359,19 @@ function PortalComposer({
           <label>Bcc<input value={bcc} onChange={(event) => setBcc(event.target.value)} /></label>
         </div>
       ) : null}
-      {mode === "visual" ? (
-        <label>
-          Message
-          <textarea value={body} onChange={(event) => setBody(event.target.value)} />
-        </label>
-      ) : (
-        <label>
-          HTML source
-          <textarea value={html} onChange={(event) => setHtml(event.target.value)} />
-        </label>
-      )}
+      <RichHtmlEditor
+        content={html}
+        labels={{
+          editMode: "Composer mode",
+          editSource: "Edit in Source",
+          editor: "Message",
+          previewTitle: "Read-only message HTML preview",
+          source: "HTML source",
+          toolbar: "Message formatting toolbar",
+          unsupportedMessage: "This HTML uses email markup that is preserved in Source."
+        }}
+        onChange={setHtml}
+      />
       <details className="quote-preview" open>
         <summary>Quoted conversation</summary>
         <pre className="message-body">{detail.quote_text}</pre>
@@ -505,16 +495,6 @@ function EvidenceField({ label, value }: { label: string; value: string }) {
   return <div><dt>{label}</dt><dd>{value}</dd></div>;
 }
 
-function defaultBody(mailbox: MailboxConfig): string {
-  if (!mailbox.signature) {
-    return "";
-  }
-  if (mailbox.signature.format === "plain_text") {
-    return `\n\n${mailbox.signature.content}`;
-  }
-  return `\n\n${htmlToText(mailbox.signature.content)}`;
-}
-
 function defaultHtml(mailbox: MailboxConfig): string {
   if (!mailbox.signature) {
     return "<p></p>";
@@ -522,7 +502,7 @@ function defaultHtml(mailbox: MailboxConfig): string {
   if (mailbox.signature.format === "html") {
     return `<p></p>${mailbox.signature.content}`;
   }
-  return `<p></p><pre>${mailbox.signature.content}</pre>`;
+  return `<p></p><p>${plainTextToHtml(mailbox.signature.content)}</p>`;
 }
 
 function htmlToText(html: string): string {

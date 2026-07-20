@@ -188,7 +188,7 @@ export function SignatureEditor({
       ) : null}
 
       {signature && mode === "html" ? (
-        <HtmlSignatureEditor
+        <RichHtmlEditor
           content={
             signature?.format === "html"
               ? signature.content
@@ -232,11 +232,13 @@ function ModeButton({
   );
 }
 
-function HtmlSignatureEditor({
+export function RichHtmlEditor({
   content,
+  labels = defaultRichHtmlEditorLabels,
   onChange
 }: {
   content: string;
+  labels?: RichHtmlEditorLabels;
   onChange: (content: string) => void;
 }) {
   const [editMode, setEditMode] = useState<"visual" | "source">("visual");
@@ -252,7 +254,7 @@ function HtmlSignatureEditor({
     immediatelyRender: false,
     editorProps: {
       attributes: {
-        "aria-label": "HTML signature editor",
+        "aria-label": labels.editor,
         class: "signature-editor-surface"
       }
     },
@@ -311,7 +313,7 @@ function HtmlSignatureEditor({
 
   return (
     <div className="rich-signature-editor">
-      <div className="segmented-control compact" role="group" aria-label="HTML edit mode">
+      <div className="segmented-control compact" role="group" aria-label={labels.editMode}>
         <ModeButton
           active={editMode === "visual"}
           label="Visual"
@@ -325,7 +327,7 @@ function HtmlSignatureEditor({
       </div>
       {editMode === "source" ? (
         <label>
-          HTML source
+          {labels.source}
           <textarea
             className="signature-source"
             value={content}
@@ -336,21 +338,21 @@ function HtmlSignatureEditor({
       ) : null}
       {editMode === "visual" && !visualSupported ? (
         <div className="signature-source-preview">
-          <p className="muted">This HTML uses email markup that is preserved in Source.</p>
+          <p className="muted">{labels.unsupportedMessage}</p>
           <iframe
             referrerPolicy="no-referrer"
             sandbox=""
             srcDoc={sanitizedContent}
-            title="Read-only signature HTML preview"
+            title={labels.previewTitle}
           />
           <button type="button" onClick={() => setEditMode("source")}>
-            Edit in Source
+            {labels.editSource}
           </button>
         </div>
       ) : null}
       {editMode === "visual" && visualSupported ? (
         <>
-      <div className="signature-toolbar" aria-label="HTML signature toolbar" role="toolbar">
+      <div className="signature-toolbar" aria-label={labels.toolbar} role="toolbar">
         <IconButton active={editor?.isActive("bold") ?? false} label="Bold" onClick={() => editor?.chain().focus().toggleBold().run()}>
           <Bold aria-hidden="true" />
         </IconButton>
@@ -446,6 +448,26 @@ function HtmlSignatureEditor({
     </div>
   );
 }
+
+interface RichHtmlEditorLabels {
+  editMode: string;
+  editSource: string;
+  editor: string;
+  previewTitle: string;
+  source: string;
+  toolbar: string;
+  unsupportedMessage: string;
+}
+
+const defaultRichHtmlEditorLabels: RichHtmlEditorLabels = {
+  editMode: "HTML edit mode",
+  editSource: "Edit in Source",
+  editor: "HTML signature editor",
+  previewTitle: "Read-only signature HTML preview",
+  source: "HTML source",
+  toolbar: "HTML signature toolbar",
+  unsupportedMessage: "This HTML uses email markup that is preserved in Source."
+};
 
 function IconButton({
   active,
