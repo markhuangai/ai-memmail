@@ -30,6 +30,8 @@ pub(crate) fn capture_at_level<T>(
     level: super::LogLevel,
     operation: impl FnOnce() -> T,
 ) -> (T, Vec<serde_json::Value>) {
+    // A persistent dispatcher prevents untraced test threads from caching disabled callsites.
+    super::init_tracing(super::LogLevel::Error);
     let output = Capture::default();
     let subscriber = tracing_subscriber::fmt()
         .json()
