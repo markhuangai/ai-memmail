@@ -68,7 +68,6 @@ fn question_classification() -> EmailClassification {
 
 fn marketing_classification() -> EmailClassification {
     EmailClassification {
-
         category: "marketing_vendor".to_string(),
         topics: vec!["general".to_string()],
         reason: "offers a paid promotion service".to_string(),
@@ -110,9 +109,7 @@ fn test_taxonomy() -> EmailTaxonomy {
     }
 }
 
-fn resolved_classification(
-    classification: &EmailClassification,
-) -> ResolvedEmailClassification {
+fn resolved_classification(classification: &EmailClassification) -> ResolvedEmailClassification {
     let category = match classification.category.as_str() {
         "marketing_vendor" => ("marketing_vendor", 2),
         _ => ("question", 1),
@@ -271,11 +268,13 @@ async fn run_once_logs_mailbox_count() {
     let decisions = fake_decisions(safe_scan(), reply_action());
     run_once_with(&config(), &logger, "run-test", &mail, &decisions).await;
     let events = logger.events();
-    assert_eq!(events.len(), 2);
+    assert_eq!(events.len(), 3);
     assert_eq!(events[0].action, "worker_poll_plan");
     assert_eq!(events[0].status, "mailboxes=1");
     assert_eq!(events[1].action, "imap_fetch");
-    assert_eq!(events[1].status, "messages=0");
+    assert_eq!(events[1].status, "started");
+    assert_eq!(events[2].action, "imap_fetch");
+    assert_eq!(events[2].status, "messages=0");
 }
 
 #[tokio::test]
@@ -326,8 +325,7 @@ async fn marketing_vendor_message_uses_seeded_auto_decline_rule() {
     let mail = FakeMail::new(vec![message]);
     let mut rule_action = reply_action();
     rule_action.body =
-        "Thanks for reaching out, but I am not interested in paid marketing services."
-            .to_string();
+        "Thanks for reaching out, but I am not interested in paid marketing services.".to_string();
     rule_action.reason = "matched marketing vendor auto-decline rule".to_string();
     let mut decisions = fake_decisions(safe_scan(), forward_action());
     decisions.classification = marketing_classification();
@@ -458,8 +456,7 @@ async fn taxonomy_failure_leaves_message_unseen() {
     let logger = crate::logging::MemoryLogger::default();
     let mail = FakeMail::new(vec![inbound(67, "person@example.com", "Hello", "Question")]);
     let decisions = fake_decisions(safe_scan(), reply_action());
-    let processing =
-        FakeProcessingStore::new(vec![FakeClaimOutcome::Claimed]).with_fail_taxonomy();
+    let processing = FakeProcessingStore::new(vec![FakeClaimOutcome::Claimed]).with_fail_taxonomy();
 
     run_once_with_store(
         &config(),
@@ -495,8 +492,7 @@ async fn missing_classifier_prompt_uses_agent_without_taxonomy() {
     let mail = FakeMail::new(vec![inbound(68, "person@example.com", "Hello", "Question")]);
     let mut decisions = fake_decisions(safe_scan(), reply_action());
     decisions.missing_classifier_prompt = true;
-    let processing =
-        FakeProcessingStore::new(vec![FakeClaimOutcome::Claimed]).with_fail_taxonomy();
+    let processing = FakeProcessingStore::new(vec![FakeClaimOutcome::Claimed]).with_fail_taxonomy();
 
     run_once_with_store(
         &config(),
@@ -631,8 +627,7 @@ async fn classification_resolve_failure_leaves_message_unseen() {
     let logger = crate::logging::MemoryLogger::default();
     let mail = FakeMail::new(vec![inbound(71, "person@example.com", "Hello", "Question")]);
     let decisions = fake_decisions(safe_scan(), reply_action());
-    let processing =
-        FakeProcessingStore::new(vec![FakeClaimOutcome::Claimed]).with_fail_resolve();
+    let processing = FakeProcessingStore::new(vec![FakeClaimOutcome::Claimed]).with_fail_resolve();
 
     run_once_with_store(
         &config(),

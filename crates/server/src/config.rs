@@ -19,13 +19,57 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("failed to parse config {path}: {source}")]
+    #[error("failed to parse config {path}: {detail}", detail = safe_yaml_error(source))]
     Parse {
         path: PathBuf,
-        source: serde_yaml_ng::Error,
+        source: yaml_serde::Error,
     },
     #[error("invalid config: {0}")]
     Invalid(String),
+}
+
+fn safe_yaml_error(source: &yaml_serde::Error) -> String {
+    let raw = source.to_string();
+    let field = raw
+        .split_once(": ")
+        .map(|(field, _)| field)
+        .filter(|field| {
+            let root = field.split(['.', '[']).next().unwrap_or("");
+            [
+                "version",
+                "database",
+                "logging",
+                "prompts",
+                "ai",
+                "mcp_servers",
+                "mailboxes",
+                "banned_senders",
+            ]
+            .contains(&root)
+                && field
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "_.[]".contains(c))
+        })
+        .unwrap_or("configuration");
+    let cause = if raw.contains("missing field") {
+        "missing required field"
+    } else if raw.contains("invalid type") {
+        "invalid field type"
+    } else if raw.contains("unknown variant") {
+        "unsupported field option"
+    } else if raw.contains("duplicate field") {
+        "duplicate field"
+    } else {
+        "invalid YAML syntax or field value"
+    };
+    match source.location() {
+        Some(location) => format!(
+            "{field}: {cause} at line {} column {} (input values omitted)",
+            location.line(),
+            location.column()
+        ),
+        None => format!("{field}: {cause} (input values omitted)"),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -203,7 +247,7 @@ impl AppConfig {
             path: path.to_path_buf(),
             source,
         })?;
-        serde_yaml_ng::from_str(&content).map_err(|source| ConfigError::Parse {
+        yaml_serde::from_str(&content).map_err(|source| ConfigError::Parse {
             path: path.to_path_buf(),
             source,
         })
@@ -212,7 +256,7 @@ impl AppConfig {
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
         let config = self.sanitized_for_save();
         config.validate()?;
-        let content = serde_yaml_ng::to_string(&config).map_err(|source| ConfigError::Parse {
+        let content = yaml_serde::to_string(&config).map_err(|source| ConfigError::Parse {
             path: path.to_path_buf(),
             source,
         })?;
@@ -476,8 +520,13 @@ fn validate_accepted_conditions(mailbox: &MailboxConfig) -> Result<(), ConfigErr
                 )));
             }
             Regex::new(pattern).map_err(|error| {
+                let cause = match error {
+                    regex::Error::Syntax(_) => "regex syntax error",
+                    regex::Error::CompiledTooBig(_) => "compiled regex exceeds size limit",
+                    _ => "regex compilation failed",
+                };
                 ConfigError::Invalid(format!(
-                    "{field}.subject_regex[{pattern_index}] is invalid: {error}"
+                    "{field}.subject_regex[{pattern_index}] is invalid: {cause} (pattern omitted)"
                 ))
             })?;
         }

@@ -257,7 +257,7 @@ describe("App history", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^history$/i }));
     expect(await screen.findByText("Mailbox configuration is missing; replies and forwards are disabled.")).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: /Suspicious prompt injection sample/i }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("failed to load detail");
+    expect(await screen.findByText("failed to load detail", { selector: 'section[role="alert"]' })).toBeInTheDocument();
   });
 });
 

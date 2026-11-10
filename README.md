@@ -16,14 +16,14 @@
   <a href="https://github.com/markhuangai/ai-memmail"><img src="https://img.shields.io/github/stars/markhuangai/ai-memmail?style=flat-square&logo=github" alt="GitHub stars" /></a>
   <a href="https://github.com/markhuangai/ai-memmail/issues"><img src="https://img.shields.io/github/issues/markhuangai/ai-memmail?style=flat-square&logo=github" alt="GitHub issues" /></a>
   <a href="https://github.com/markhuangai/ai-memmail/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="License: MIT" /></a>
-  <img src="https://img.shields.io/badge/Rust-1.80-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.80" />
+  <img src="https://img.shields.io/badge/Rust-1.99.1-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.99.1" />
   <a href="https://github.com/markhuangai/ai-memmail/pkgs/container/ai-memmail"><img src="https://img.shields.io/badge/Docker-GHCR-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker image on GHCR" /></a>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/IMAP%2FSMTP-email-111827?style=flat-square" alt="IMAP and SMTP email" />
   <img src="https://img.shields.io/badge/MCP-Dense--Mem-0f766e?style=flat-square" alt="Dense-Mem MCP" />
-  <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL 18" />
+  <img src="https://img.shields.io/badge/PostgreSQL-18-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL 18" />
   <img src="https://img.shields.io/badge/React-TypeScript-61DAFB?style=flat-square&logo=react&logoColor=111827" alt="React TypeScript" />
   <img src="https://visitor-badge.laobi.icu/badge?page_id=markhuangai.ai-memmail&style=flat-square" alt="Visitors" />
 </p>
@@ -222,7 +222,7 @@ Processing order:
 
 Default classification labels are seeded in PostgreSQL. The initial categories
 are `marketing_vendor`, `greeting`, `question`, `project_opportunity`, and
-`other`; initial topics include `dense_mem`, `ai_memmail`, `gitvibe`,
+`other`; initial topics include `dense_mem`, `ai_memmail`,
 `agentool`, `ai_memory`, and `general`. The worker/web API seeds one enabled
 per-mailbox rule that auto-declines `marketing_vendor` outreach. Operators can
 edit rules in the control panel without changing YAML or mail-server labels.
@@ -352,7 +352,37 @@ Every action log includes at least:
 - `level`
 
 Logs are emitted to stdout and persisted as PostgreSQL action events. The
-default retention period is 180 days.
+default retention period is 180 days. Keep `logging.level: info` to retain
+operation starts, outcomes, safe effective IMAP settings, and migration evidence.
+DEBUG exchanges are supplementary; credentials and mail/configuration payloads
+are omitted. Migration events are stdout-only and include version, checksum,
+per-statement affected-row counts, duration, and commit or rollback outcome.
+
+Collect logs without Compose prefixes so each structured line remains JSON:
+
+```bash
+docker compose logs --no-color --no-log-prefix app > app.log
+jq -R --arg run_id 'RUN_ID' \
+  'fromjson? | select(tostring | contains($run_id))' app.log
+jq -R 'fromjson? | select(.span.migration_version == 9)' app.log
+rg 'level=fatal action=startup status=failed' app.log
+```
+
+The existing action event is encoded in the JSON `fields.event` string; run ID
+filtering also finds correlation spans. An IMAP `started` event without an
+outcome isolates a stalled operation; a `failed` event supplies its cause,
+mailbox, folder, TLS mode, port, and duration. Check connectivity/settings for
+transport errors and credentials for authentication denial. A handoff rejection
+or context-limit decision states why forwarding was chosen; follow its run ID
+through `smtp_send` or `thread_handoff` to the send outcome. A migration
+`rolled_back` event supplies the SQLSTATE/cause; `applied` supplies the committed
+row counts. Startup configuration errors use the text marker above and safe
+field/location details, without echoing configuration values. These procedures
+do not require business-table queries.
+
+Offline diagnostic tests capture the real JSON logger at INFO. To retain their
+safe synthetic events for inspection, set `AI_MEMMAIL_DIAGNOSTIC_LOG_PATH` to an
+absolute scratch-file path while running the backend or PostgreSQL tests.
 
 ## Testing Policy
 
@@ -363,7 +393,8 @@ v1 requires the following local gates:
 - frontend unit test coverage of at least 90%
 - Playwright E2E tests for the control panel
 
-Run all deterministic unit gates:
+Use Rust 1.99.1 (with `rustfmt` and `llvm-tools-preview`), Node 26 LTS,
+`cargo-llvm-cov`, and Docker. Run all deterministic unit gates:
 
 ```bash
 scripts/check-unit.sh
@@ -374,7 +405,9 @@ Run individual gates:
 ```bash
 scripts/check-backend.sh
 scripts/check-frontend.sh
-cd web && npm run e2e
+cd web
+npx playwright install --with-deps chromium
+E2E_LIVE=0 npm run e2e
 ```
 
 Run the opt-in live mail E2E directly:
@@ -397,13 +430,59 @@ AI_MEMMAIL_TEST_PG_PORT=5432 \
 AI_MEMMAIL_TEST_PG_USER=postgres \
 AI_MEMMAIL_TEST_PG_PASSWORD=postgres \
 AI_MEMMAIL_TEST_PG_DATABASE=postgres \
-  cargo test -p ai-memmail-server storage_pg -- --nocapture
+  cargo test --workspace --locked storage_pg::tests:: -- --nocapture
 ```
 
-Live mail, AI, and MCP behavior is covered by the opt-in live E2E because it
-depends on local credentials and external services. GitHub CI runs deterministic
-unit checks only. Live AI, Postgres storage integration, and E2E tests are local
-only and use untracked credentials from `config/config.yaml`.
+Use a disposable PostgreSQL 18 database: the integration suite creates isolated
+databases, including version-008 upgrade fixtures and a forced migration failure.
+It applies migration 009 twice, verifies rollback on failure, and checks that
+unaffected rules, message data, historical snapshots, and timestamps survive.
+
+Every PR runs the same non-live gates on `ubuntu-latest`: backend and frontend
+coverage, PostgreSQL 18 integration, desktop/mobile Chromium E2E, dependency
+scans, and a Docker build without publishing. CodeQL analyzes Rust,
+JavaScript/TypeScript, and Actions. `CI required` and `CodeQL` aggregate all
+required job results; a failed or skipped dependency fails the aggregate.
+Live mail, AI, and MCP E2E stays opt-in with untracked credentials. Loopback IMAP
+and HTTP regression tests run offline in the backend gate.
+
+Run the dependency checks locally with `cargo-audit` and OSV Scanner v2 installed:
+
+```bash
+npm audit --prefix web --package-lock-only --ignore-scripts --audit-level=low
+cargo audit --deny warnings
+osv-scanner scan source --lockfile=Cargo.lock --lockfile=web/package-lock.json
+docker build -t ai-memmail-check .
+```
+
+Dependabot uses GitHub's free dependency updates. Its daily 09:00 UTC schedule
+groups Cargo, npm, Docker, and Actions into one routine-update PR, limited to one
+open routine PR. Security updates may produce separate grouped Cargo/npm PRs;
+GitHub does not combine security updates across ecosystems. PostgreSQL stays on
+major 18. The schedule starts when `.github/dependabot.yml` reaches `main`.
+
+The IMAP dependency is pinned to upstream commit
+`d1f2606421c9211f992c1c565a32d8f770476aeb` after release 0.12.0 because that
+commit removes unmaintained `pin-utils` (RUSTSEC-2026-0441). This is an explicit
+exception to released-only dependencies. Move back to a fixed registry release
+when upstream publishes one; keep the protocol regressions and scans enabled.
+
+## Upgrading from version 008
+
+Stop every old application instance before starting the new image. Startup
+applies migration 009 atomically under the existing migration lock. It disables
+all rules linked to the retired `gitvibe` topic, including mixed-topic rules,
+removes that topic ID from historical classification arrays, and deletes the
+topic and its rule links. Review the disabled rules before re-enabling them:
+their remaining topics may describe a broader set of messages.
+
+This intentionally removes structured historical associations with that topic.
+Emails, bodies, actions, other labels, reasons, confidence, rule snapshots,
+logs, and message timestamps remain. Historical migrations retain their original
+checksums. Starting an old binary after this migration could reseed the retired
+topic, so keep old instances stopped throughout the upgrade. If migration fails,
+startup stops and the transaction rolls back; correct the logged cause before
+restarting. Production upgrade and backup execution remain operator actions.
 
 ## Docker
 
@@ -420,9 +499,3 @@ assets needed to run ai-memmail.
 `scripts/live-e2e.sh` builds a local `AI_MEMMAIL_APP_IMAGE` tag before starting
 the app container so the container E2E path tests the current checkout instead
 of the published image.
-
-## Git Vibe
-
-This repository uses Git Vibe for planning, validation, and review automation.
-Project-specific role prompts live in `.git-vibe/role-group/`, and the main
-configuration is `.github/git-vibe.yml`.

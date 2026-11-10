@@ -1,5 +1,6 @@
 use super::*;
 
+mod codec_tests;
 mod signature_tests;
 
 fn valid_config() -> AppConfig {
@@ -310,7 +311,7 @@ fn does_not_preserve_redacted_mcp_rename_when_match_is_ambiguous() {
 
 #[test]
 fn prompt_config_defaults_classifier_and_rule_paths() {
-    let prompts: PromptConfig = serde_yaml_ng::from_str(
+    let prompts: PromptConfig = yaml_serde::from_str(
         r#"
 root: prompts
 safety_scan: safety.md
@@ -327,7 +328,7 @@ safety_scan: safety.md
 
 #[test]
 fn mailbox_config_defaults_accepted_conditions() {
-    let mailbox: MailboxConfig = serde_yaml_ng::from_str(
+    let mailbox: MailboxConfig = yaml_serde::from_str(
         r#"
 id: support
 address: support@example.com
@@ -362,7 +363,7 @@ smtp:
 
 #[test]
 fn mailbox_config_parses_html_signature() {
-    let mailbox: MailboxConfig = serde_yaml_ng::from_str(
+    let mailbox: MailboxConfig = yaml_serde::from_str(
         r#"
 id: support
 address: support@example.com
@@ -418,10 +419,13 @@ fn rejects_invalid_accepted_condition_regex() {
         .accepted_conditions
         .push(AcceptedCondition {
             recipients: vec![],
-            subject_regex: vec!["(".to_string()],
+            subject_regex: vec!["(synthetic-private-credential".to_string()],
         });
 
-    assert_invalid_config(config, "accepted_conditions[0].subject_regex[0] is invalid");
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("accepted_conditions[0].subject_regex[0] is invalid"));
+    assert!(error.contains("regex syntax error"));
+    assert!(!error.contains("synthetic-private-credential"));
 }
 
 #[test]

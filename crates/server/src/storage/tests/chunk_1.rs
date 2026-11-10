@@ -73,7 +73,10 @@ fn migration_versions_are_strictly_increasing() {
 #[test]
 fn migration_checksum_is_stable_sha256_hex() {
     let checksum = migration_checksum("SELECT 1;");
-    assert_eq!(checksum.len(), 64);
+    assert_eq!(
+        checksum,
+        "17db4fd369edb9244b9f91d9aeed145c3d04ad8ba6e95d06247f07a63527d11a"
+    );
     assert_eq!(checksum, migration_checksum("SELECT 1;"));
     assert_ne!(checksum, migration_checksum("SELECT 2;"));
 }

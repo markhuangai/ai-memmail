@@ -13,7 +13,10 @@ pub struct SanitizedHtml {
 
 pub fn sanitize_email_html(input: &str) -> SanitizedHtml {
     let html = email_html_builder().clean(input).to_string();
-    let text = html2text::from_read(html.as_bytes(), 80)
+    let text = html2text::config::plain()
+        .allow_width_overflow()
+        .string_from_read(html.as_bytes(), 80)
+        .expect("sanitized UTF-8 in memory renders with width overflow enabled")
         .lines()
         .map(str::trim_end)
         .collect::<Vec<_>>()
@@ -179,5 +182,44 @@ mod tests {
         assert!(sanitized.html.contains("border-collapse:collapse"));
         assert!(sanitized.html.contains("color:red"));
         assert!(!sanitized.html.contains("position"));
+    }
+
+    #[test]
+    fn sanitizer_preserves_rich_signature_and_visible_plain_text() {
+        let sanitized = sanitize_email_html(
+            r#"<table><tr><td><strong>Mark</strong><br><a href="mailto:mark@example.com">Email</a></td><td><img src="https://example.com/logo.png" alt="Company logo"></td></tr></table>"#,
+        );
+        assert!(sanitized.html.contains("<strong>Mark</strong>"));
+        assert!(sanitized.html.contains("mailto:mark@example.com"));
+        assert!(sanitized.html.contains("https://example.com/logo.png"));
+        assert!(sanitized.text.contains("Mark"));
+        assert!(sanitized.text.contains("Email"));
+        assert!(!sanitized.visually_empty);
+    }
+
+    #[test]
+    fn sanitizer_renders_deep_nesting_wide_tables_unicode_and_malformed_html() {
+        let inputs = [
+            format!(
+                "{}visible{}",
+                "<blockquote>".repeat(100),
+                "</blockquote>".repeat(100)
+            ),
+            format!(
+                "<table><tr>{}</tr></table>",
+                "<td>visible界</td>".repeat(100)
+            ),
+            "<p><b>visible<div><table><td>more".to_string(),
+            format!("<pre>{}</pre>", "visible界".repeat(100)),
+            r#"<table><tr><td colspan="999999999">visible</td></tr></table>"#.to_string(),
+        ];
+        for input in inputs {
+            let sanitized = sanitize_email_html(&input);
+            assert_eq!(
+                sanitized.text.matches('v').count(),
+                input.matches("visible").count()
+            );
+            assert!(!sanitized.visually_empty);
+        }
     }
 }

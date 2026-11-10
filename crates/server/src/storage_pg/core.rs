@@ -69,32 +69,64 @@ impl PgStore {
             .collect())
     }
 
+    #[tracing::instrument(skip(self, migration), fields(migration_version = migration.version, migration_name = migration.name))]
     async fn apply_pending_migration(
         &self,
         migration: &Migration,
         checksum: &str,
     ) -> Result<(), StorageError> {
-        self.client.batch_execute("BEGIN").await?;
-        let result: Result<(), StorageError> = async {
-            self.client.batch_execute(migration.sql).await?;
-            self.client
-                .execute(
-                    "INSERT INTO schema_migrations (version, name, checksum)
-                    VALUES ($1, $2, $3)",
-                    &[&migration.version, &migration.name, &checksum],
-                )
-                .await?;
-            Ok(())
-        }
-        .await;
-
+        let started = std::time::Instant::now();
+        tracing::info!(status = "started", "schema migration started");
+        self.client.batch_execute("BEGIN").await.map_err(|error| {
+            tracing::error!(status = "begin_failed", cause = %migration_error_cause(&error), "schema migration failed");
+            error
+        })?;
+        let result: Result<Vec<u64>, StorageError> =
+            async {
+                let affected_rows = self
+                    .client
+                    .simple_query(migration.sql)
+                    .await?
+                    .into_iter()
+                    .filter_map(|message| match message {
+                        tokio_postgres::SimpleQueryMessage::CommandComplete(rows) => Some(rows),
+                        _ => None,
+                    })
+                    .collect();
+                self.client.execute(
+                "INSERT INTO schema_migrations (version, name, checksum) VALUES ($1, $2, $3)",
+                &[&migration.version, &migration.name, &checksum],
+            ).await?;
+                Ok(affected_rows)
+            }
+            .await;
         match result {
-            Ok(()) => {
-                self.client.batch_execute("COMMIT").await?;
+            Ok(affected_rows) => {
+                self.client.batch_execute("COMMIT").await.map_err(|error| {
+                    tracing::error!(status = "commit_failed", cause = %migration_error_cause(&error), duration_ms = started.elapsed().as_millis() as u64, "schema migration commit failed");
+                    error
+                })?;
+                tracing::info!(
+                    status = "applied",
+                    ?affected_rows,
+                    duration_ms = started.elapsed().as_millis() as u64,
+                    "schema migration committed"
+                );
                 Ok(())
             }
             Err(error) => {
-                let _ = self.client.batch_execute("ROLLBACK").await;
+                let cause = match &error {
+                    StorageError::Connect(error) => migration_error_cause(error),
+                    other => other.to_string(),
+                };
+                match self.client.batch_execute("ROLLBACK").await {
+                    Ok(()) => {
+                        tracing::error!(status = "rolled_back", %cause, duration_ms = started.elapsed().as_millis() as u64, "schema migration failed and rolled back")
+                    }
+                    Err(rollback_error) => {
+                        tracing::error!(status = "rollback_failed", %cause, rollback_cause = %migration_error_cause(&rollback_error), duration_ms = started.elapsed().as_millis() as u64, "schema migration and rollback failed")
+                    }
+                }
                 Err(error)
             }
         }
@@ -212,13 +244,15 @@ impl PgStore {
                 created_at: row.get(35),
                 updated_at: row.get(36),
                 logs,
-                handoff: row.get::<_, Option<String>>(37).map(|state| ThreadHandoffSummary {
-                    state,
-                    destination: row.get(38),
-                    remote_target: row.get(39),
-                    last_error: row.get(40),
-                    updated_at: row.get(41),
-                }),
+                handoff: row
+                    .get::<_, Option<String>>(37)
+                    .map(|state| ThreadHandoffSummary {
+                        state,
+                        destination: row.get(38),
+                        remote_target: row.get(39),
+                        last_error: row.get(40),
+                        updated_at: row.get(41),
+                    }),
             });
         }
         Ok(emails)
@@ -321,5 +355,11 @@ impl PgStore {
             .filter(|thread_id| !thread_id.trim().is_empty())
             .unwrap_or_else(|| message.metadata.thread_id()))
     }
+}
 
+fn migration_error_cause(error: &tokio_postgres::Error) -> String {
+    match error.as_db_error() {
+        Some(db) => format!("{}: {}", db.code().code(), db.message()),
+        None => error.to_string(),
+    }
 }

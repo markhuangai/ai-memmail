@@ -181,7 +181,7 @@ fn handoff_action_sets_reply_to_and_thread_headers() {
         timestamp: 1,
     });
 
-    let action = handoff_action(
+    let action = thread_handoff_action(
         &mailbox,
         &context,
         "mark.personal@example.com",
