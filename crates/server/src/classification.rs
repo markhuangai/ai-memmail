@@ -165,10 +165,6 @@ pub fn default_topics() -> Vec<(&'static str, &'static str)> {
             "ai-memmail: the email-processing agent, control panel, IMAP/SMTP workflow, history, prompts, and rules.",
         ),
         (
-            "gitvibe",
-            "GitVibe: maintainer-gated AI development automation for GitHub issues, PRs, labels, workflows, and reviews.",
-        ),
-        (
             "agentool",
             "agentool: production-ready Vercel AI SDK tools for agents, file operations, shell, search, memory, and context compaction.",
         ),

@@ -95,6 +95,7 @@ async fn update_processing_status(
     }
 }
 
+#[tracing::instrument(skip_all, fields(run_id = %run_id, mailbox_id = %mailbox.id, operation = "UID STORE"))]
 async fn mark_seen(
     mailbox: &MailboxConfig,
     logger: &dyn ActionLogger,
@@ -104,6 +105,20 @@ async fn mark_seen(
     status: &'static str,
 ) {
     let started = Instant::now();
+    logger
+        .log(message_event(
+            LogLevel::Info,
+            run_id,
+            message,
+            "imap_mark_seen",
+            "started",
+            Duration::default(),
+            Some(format!(
+                "folder={} tls={} port={}",
+                mailbox.imap.folder, mailbox.imap.tls, mailbox.imap.port
+            )),
+        ))
+        .await;
     match mail.mark_seen(mailbox, message.metadata.uid).await {
         Ok(()) => {
             logger

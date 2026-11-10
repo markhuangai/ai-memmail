@@ -1,0 +1,38 @@
+version: 2
+
+multi-ecosystem-groups:
+  all-dependencies:
+    schedule:
+      interval: daily
+      time: "09:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 1
+
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    patterns: ["*"]
+    multi-ecosystem-group: all-dependencies
+    groups:
+      security-updates:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /web
+    patterns: ["*"]
+    multi-ecosystem-group: all-dependencies
+    groups:
+      security-updates:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /
+    patterns: ["*"]
+    multi-ecosystem-group: all-dependencies
+    ignore:
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: github-actions
+    directory: /
+    patterns: ["*"]
+    multi-ecosystem-group: all-dependencies

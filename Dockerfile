@@ -1,11 +1,11 @@
-FROM node:24-bookworm AS web-build
+FROM node:26.13.0-bookworm AS web-build
 WORKDIR /app/web
 COPY web/package*.json ./
 RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-FROM rust:1.80-bookworm AS server-build
+FROM rust:1.99.1-bookworm AS server-build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates

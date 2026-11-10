@@ -18,13 +18,12 @@ use uuid::Uuid;
 
 use crate::classification::{EmailClassificationConfig, NewEmailRule};
 use crate::config::{AppConfig, ConfigError, MailboxConfig};
-use crate::logging::{ActionEvent, LogLevel};
-#[cfg(test)]
-use crate::mail::ThreadMessage;
+use crate::logging::{ActionEvent, ActionLogger, LogLevel, StdoutLogger};
 use crate::mail::{
-    outbound_message_id, reply_recipient, thread_handoff_body, LiveMailTransport, MailError,
-    MailTransport, MessageDirection, OutboundAction, OutboundActionKind, ThreadContext,
+    reply_recipient, thread_handoff_action, LiveMailTransport, MailError, MailTransport,
 };
+#[cfg(test)]
+use crate::mail::{MessageDirection, ThreadContext, ThreadMessage};
 use crate::prompts;
 use crate::storage::{
     NewThreadHandoffDelivery, PgStore, ProcessedEmail, ProcessingStore, StorageError,
@@ -156,14 +155,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/logout", post(logout))
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/messages", get(get_messages))
-        .route("/api/messages/:run_id/handoff", post(create_handoff))
+        .route("/api/messages/{run_id}/handoff", post(create_handoff))
         .route("/api/conversations", get(portal::get_conversations))
         .route(
-            "/api/conversations/:conversation_id",
+            "/api/conversations/{conversation_id}",
             get(portal::get_conversation),
         )
         .route(
-            "/api/conversations/:conversation_id/messages",
+            "/api/conversations/{conversation_id}/messages",
             post(portal::send_portal_message),
         )
         .route(
@@ -175,7 +174,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/email-topics", post(create_email_topic))
         .route("/api/email-rules", post(create_email_rule))
         .route(
-            "/api/email-rules/:id",
+            "/api/email-rules/{id}",
             put(update_email_rule).delete(delete_email_rule),
         )
         .with_state(state)

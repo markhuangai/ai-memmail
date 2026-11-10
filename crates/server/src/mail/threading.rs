@@ -1,3 +1,6 @@
+use super::{outbound_message_id, MailError, OutboundAction, OutboundActionKind};
+use crate::config::MailboxConfig;
+
 use regex::Regex;
 use serde::Serialize;
 
@@ -88,4 +91,88 @@ fn quote_marker_index(body: &str) -> Option<usize> {
                 .map(|found| found.start())
         })
         .min()
+}
+
+pub fn thread_handoff_body(thread_context: &ThreadContext) -> Result<String, MailError> {
+    const HANDOFF_BODY_MAX_BYTES: usize = 5 * 1024 * 1024;
+
+    if thread_context.messages.is_empty() {
+        return Err(MailError::Build(
+            "thread handoff requires at least one stored message".to_string(),
+        ));
+    }
+
+    let mut body = String::from(
+        "ai-memmail is handing this conversation to a personal inbox.\n\
+        Replying to this email should address the latest remote sender.\n\n\
+        ---------- Conversation handoff ---------",
+    );
+    for (index, message) in thread_context.messages.iter().enumerate() {
+        if message.body_truncated {
+            return Err(MailError::Build(
+                "thread handoff cannot use truncated stored message bodies".to_string(),
+            ));
+        }
+        let direction = match message.direction {
+            MessageDirection::Inbound => "Inbound",
+            MessageDirection::Outbound => "Outbound",
+        };
+        body.push_str(&format!(
+            "\n\n[{}] {direction}\nFrom: {}\nTo: {}\nSubject: {}\nMessage-ID: {}\nIn-Reply-To: {}\nReferences: {}\n\n{}",
+            index + 1,
+            message.from_addr,
+            if message.recipients.is_empty() {
+                "(none)".to_string()
+            } else {
+                message.recipients.join(", ")
+            },
+            message.subject,
+            message.message_id.as_deref().unwrap_or("(none)"),
+            message.in_reply_to.as_deref().unwrap_or("(none)"),
+            if message.references.is_empty() {
+                "(none)".to_string()
+            } else {
+                message.references.join(" ")
+            },
+            message.authored_text
+        ));
+        if body.len() > HANDOFF_BODY_MAX_BYTES {
+            return Err(MailError::Build(
+                "thread handoff transcript exceeds 5 MiB".to_string(),
+            ));
+        }
+    }
+    Ok(body)
+}
+
+pub(crate) fn thread_handoff_action(
+    mailbox: &MailboxConfig,
+    thread_context: &ThreadContext,
+    destination: &str,
+    remote_target: &str,
+) -> Result<OutboundAction, MailError> {
+    let latest = thread_context
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.direction == MessageDirection::Inbound)
+        .ok_or_else(|| MailError::Build("thread handoff has no inbound message".to_string()))?;
+    let mut references = latest.references.clone();
+    if let Some(message_id) = &latest.message_id {
+        if !references.iter().any(|reference| reference == message_id) {
+            references.push(message_id.clone());
+        }
+    }
+    Ok(OutboundAction {
+        kind: OutboundActionKind::Forward,
+        recipients: vec![destination.to_string()],
+        subject: latest.subject.clone(),
+        body: thread_handoff_body(thread_context)?,
+        html_body: None,
+        reason: "thread handed off for manual handling".to_string(),
+        reply_to: Some(remote_target.to_string()),
+        message_id: Some(outbound_message_id(mailbox)),
+        in_reply_to: latest.message_id.clone(),
+        references,
+    })
 }

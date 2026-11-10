@@ -1,3 +1,4 @@
+#[tracing::instrument(skip_all, fields(run_id = %run_id, mailbox_id = %mailbox.id))]
 async fn route_active_thread_handoff(
     mailbox: &MailboxConfig,
     logger: &dyn ActionLogger,
@@ -35,8 +36,24 @@ async fn route_active_thread_handoff(
         return;
     }
 
+    logger
+        .log(message_event(
+            LogLevel::Info,
+            run_id,
+            message,
+            "thread_handoff",
+            "started",
+            Duration::default(),
+            None,
+        ))
+        .await;
     let handoff_context = handoff_context_with_current(thread_context, message);
-    let action = match thread_handoff_action(mailbox, &handoff_context, handoff) {
+    let action = match thread_handoff_action(
+        mailbox,
+        &handoff_context,
+        &handoff.destination,
+        &handoff.remote_target,
+    ) {
         Ok(action) => action,
         Err(error) => {
             forward_context_limit_message(
@@ -108,7 +125,15 @@ async fn route_active_thread_handoff(
                 Some(&OutboundActionKind::Forward),
             )
             .await;
-            mark_seen(mailbox, logger, run_id, mail, message, PROCESSING_STATUS_HANDED_OFF).await;
+            mark_seen(
+                mailbox,
+                logger,
+                run_id,
+                mail,
+                message,
+                PROCESSING_STATUS_HANDED_OFF,
+            )
+            .await;
         }
         Err(error) => {
             let detail = error.to_string();
@@ -143,37 +168,6 @@ async fn route_active_thread_handoff(
                 .await;
         }
     }
-}
-
-fn thread_handoff_action(
-    mailbox: &MailboxConfig,
-    thread_context: &ThreadContext,
-    handoff: &crate::storage::ThreadHandoff,
-) -> Result<OutboundAction, MailError> {
-    let latest = thread_context
-        .messages
-        .iter()
-        .rev()
-        .find(|message| message.direction == MessageDirection::Inbound)
-        .ok_or_else(|| MailError::Build("thread handoff has no inbound message".to_string()))?;
-    let mut references = latest.references.clone();
-    if let Some(message_id) = &latest.message_id {
-        if !references.iter().any(|reference| reference == message_id) {
-            references.push(message_id.clone());
-        }
-    }
-    Ok(OutboundAction {
-        kind: OutboundActionKind::Forward,
-        recipients: vec![handoff.destination.clone()],
-        subject: latest.subject.clone(),
-        body: thread_handoff_body(thread_context)?,
-        html_body: None,
-        reason: "thread handed off for manual handling".to_string(),
-        reply_to: Some(handoff.remote_target.clone()),
-        message_id: Some(outbound_message_id(mailbox)),
-        in_reply_to: latest.message_id.clone(),
-        references,
-    })
 }
 
 fn handoff_context_with_current(

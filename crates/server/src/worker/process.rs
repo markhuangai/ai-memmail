@@ -1,3 +1,4 @@
+#[tracing::instrument(skip_all, fields(run_id = %run_id, mailbox_id = %mailbox.id))]
 async fn process_mailbox(
     config: &AppConfig,
     mailbox: &MailboxConfig,
@@ -8,6 +9,20 @@ async fn process_mailbox(
     processing: &dyn ProcessingStore,
 ) {
     let started = Instant::now();
+    logger
+        .log(mailbox_event(
+            LogLevel::Info,
+            run_id,
+            &mailbox.id,
+            "imap_fetch",
+            "started",
+            Duration::default(),
+            Some(format!(
+                "folder={} tls={} port={} limit=10",
+                mailbox.imap.folder, mailbox.imap.tls, mailbox.imap.port
+            )),
+        ))
+        .await;
     match mail.fetch_unseen(mailbox, 10).await {
         Ok(messages) => {
             let fetched_count = messages.len();
@@ -136,7 +151,7 @@ async fn process_message(
                 mail,
                 processing,
                 &message,
-                "AI input exceeded the configured context limit",
+                &error.to_string(),
             )
             .await;
             return;
@@ -205,14 +220,11 @@ async fn process_message(
         return;
     }
 
-    let thread_context = match load_thread_context_or_retry(
-        mailbox, logger, run_id, processing, &message,
-    )
-    .await
-    {
-        Some(context) => context,
-        None => return,
-    };
+    let thread_context =
+        match load_thread_context_or_retry(mailbox, logger, run_id, processing, &message).await {
+            Some(context) => context,
+            None => return,
+        };
     if thread_context.has_truncated_body() {
         forward_context_limit_message(
             mailbox,
@@ -366,7 +378,7 @@ async fn process_message(
                         mail,
                         processing,
                         &message,
-                        "AI input exceeded the configured context limit",
+                        &error.to_string(),
                     )
                     .await;
                     return;

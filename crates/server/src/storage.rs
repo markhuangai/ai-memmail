@@ -63,6 +63,8 @@ pub const THREAD_HANDOFFS_SQL: &str = include_str!("../migrations/006_thread_han
 pub const OUTBOUND_HTML_BODY_SQL: &str = include_str!("../migrations/007_outbound_html_body.sql");
 pub const PORTAL_CONVERSATIONS_SQL: &str =
     include_str!("../migrations/008_portal_conversations.sql");
+pub const REMOVE_GITVIBE_TOPIC_SQL: &str =
+    include_str!("../migrations/009_remove_gitvibe_topic.sql");
 pub(crate) const MIGRATION_LOCK_ID: i64 = 4_971_774_501_001;
 pub(crate) const SCHEMA_MIGRATIONS_SQL: &str = "
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -112,6 +114,11 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         version: 8,
         name: "008_portal_conversations",
         sql: PORTAL_CONVERSATIONS_SQL,
+    },
+    Migration {
+        version: 9,
+        name: "009_remove_gitvibe_topic",
+        sql: REMOVE_GITVIBE_TOPIC_SQL,
     },
 ];
 pub const PROCESSING_STATUS_PROCESSING: &str = "processing";

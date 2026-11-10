@@ -36,7 +36,7 @@ async fn classify_message_for_rules(
                 mail,
                 processing,
                 message,
-                "AI input exceeded the configured context limit",
+                &error.to_string(),
             )
             .await;
             return None;
@@ -101,7 +101,7 @@ async fn classify_message_for_rules(
                 mail,
                 processing,
                 message,
-                "AI input exceeded the configured context limit",
+                &error.to_string(),
             )
             .await;
             return None;

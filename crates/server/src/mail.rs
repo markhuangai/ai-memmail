@@ -12,8 +12,10 @@ mod threading;
 
 pub use composed::{validate_composed_email, ComposedEmail};
 pub use signature::{apply_reply_signature, automated_reply_body, AUTOMATED_REPLY_NOTICE};
+pub(crate) use threading::thread_handoff_action;
 pub use threading::{
-    extract_authored_text, MessageDirection, QuoteExtraction, ThreadContext, ThreadMessage,
+    extract_authored_text, thread_handoff_body, MessageDirection, QuoteExtraction, ThreadContext,
+    ThreadMessage,
 };
 
 pub const ACCEPTED_CONDITION_RECIPIENT_HEADERS: &[&str] =
@@ -246,18 +248,14 @@ where
     ) -> Result<Vec<InboundMessage>, MailError> {
         let client = self.client.clone();
         let mailbox = mailbox.clone();
-        tokio::task::spawn_blocking(move || client.fetch_unseen(&mailbox, limit))
-            .await
-            .map_err(|error| MailError::Task(error.to_string()))?
+        blocking_mail_task(move || client.fetch_unseen(&mailbox, limit)).await
     }
 
     async fn send(&self, smtp: &SmtpConfig, action: &OutboundAction) -> Result<(), MailError> {
         let client = self.client.clone();
         let smtp = smtp.clone();
         let action = action.clone();
-        tokio::task::spawn_blocking(move || client.send(&smtp, &action))
-            .await
-            .map_err(|error| MailError::Task(error.to_string()))?
+        blocking_mail_task(move || client.send(&smtp, &action)).await
     }
 
     async fn send_composed(
@@ -268,17 +266,13 @@ where
         let client = self.client.clone();
         let smtp = smtp.clone();
         let message = message.clone();
-        tokio::task::spawn_blocking(move || client.send_composed(&smtp, &message))
-            .await
-            .map_err(|error| MailError::Task(error.to_string()))?
+        blocking_mail_task(move || client.send_composed(&smtp, &message)).await
     }
 
     async fn mark_seen(&self, mailbox: &MailboxConfig, uid: u64) -> Result<(), MailError> {
         let client = self.client.clone();
         let mailbox = mailbox.clone();
-        tokio::task::spawn_blocking(move || client.mark_seen(&mailbox, uid))
-            .await
-            .map_err(|error| MailError::Task(error.to_string()))?
+        blocking_mail_task(move || client.mark_seen(&mailbox, uid)).await
     }
 
     async fn fetch_sent(
@@ -291,12 +285,23 @@ where
         let client = self.client.clone();
         let mailbox = mailbox.clone();
         let cursor = cursor.cloned();
-        tokio::task::spawn_blocking(move || {
+        blocking_mail_task(move || {
             client.fetch_sent(&mailbox, cursor.as_ref(), backfill_cutoff, limit)
         })
         .await
-        .map_err(|error| MailError::Task(error.to_string()))?
     }
+}
+
+async fn blocking_mail_task<T: Send + 'static>(
+    task: impl FnOnce() -> Result<T, MailError> + Send + 'static,
+) -> Result<T, MailError> {
+    let span = tracing::Span::current();
+    let dispatch = tracing::dispatcher::get_default(Clone::clone);
+    tokio::task::spawn_blocking(move || {
+        tracing::dispatcher::with_default(&dispatch, || span.in_scope(task))
+    })
+    .await
+    .map_err(|error| MailError::Task(error.to_string()))?
 }
 
 impl MessageMetadata {
@@ -459,58 +464,6 @@ pub fn forward_body(intro: &str, message: &InboundMessage) -> String {
         message.metadata.uid,
         message.plain_text
     )
-}
-
-pub fn thread_handoff_body(thread_context: &ThreadContext) -> Result<String, MailError> {
-    const HANDOFF_BODY_MAX_BYTES: usize = 5 * 1024 * 1024;
-
-    if thread_context.messages.is_empty() {
-        return Err(MailError::Build(
-            "thread handoff requires at least one stored message".to_string(),
-        ));
-    }
-
-    let mut body = String::from(
-        "ai-memmail is handing this conversation to a personal inbox.\n\
-        Replying to this email should address the latest remote sender.\n\n\
-        ---------- Conversation handoff ---------",
-    );
-    for (index, message) in thread_context.messages.iter().enumerate() {
-        if message.body_truncated {
-            return Err(MailError::Build(
-                "thread handoff cannot use truncated stored message bodies".to_string(),
-            ));
-        }
-        let direction = match message.direction {
-            MessageDirection::Inbound => "Inbound",
-            MessageDirection::Outbound => "Outbound",
-        };
-        body.push_str(&format!(
-            "\n\n[{}] {direction}\nFrom: {}\nTo: {}\nSubject: {}\nMessage-ID: {}\nIn-Reply-To: {}\nReferences: {}\n\n{}",
-            index + 1,
-            message.from_addr,
-            if message.recipients.is_empty() {
-                "(none)".to_string()
-            } else {
-                message.recipients.join(", ")
-            },
-            message.subject,
-            message.message_id.as_deref().unwrap_or("(none)"),
-            message.in_reply_to.as_deref().unwrap_or("(none)"),
-            if message.references.is_empty() {
-                "(none)".to_string()
-            } else {
-                message.references.join(" ")
-            },
-            message.authored_text
-        ));
-        if body.len() > HANDOFF_BODY_MAX_BYTES {
-            return Err(MailError::Build(
-                "thread handoff transcript exceeds 5 MiB".to_string(),
-            ));
-        }
-    }
-    Ok(body)
 }
 
 pub fn reply_references(metadata: &MessageMetadata) -> Vec<String> {

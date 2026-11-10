@@ -60,7 +60,10 @@ impl MemoryProcessingStore {
         self.handoffs
             .lock()
             .expect("memory handoff store poisoned")
-            .insert((handoff.mailbox_id.clone(), handoff.thread_id.clone()), handoff);
+            .insert(
+                (handoff.mailbox_id.clone(), handoff.thread_id.clone()),
+                handoff,
+            );
     }
 
     pub fn handoff_delivery(
@@ -148,7 +151,10 @@ pub(crate) fn validate_applied_migration(
 }
 
 pub(crate) fn migration_checksum(sql: &str) -> String {
-    format!("{:x}", Sha256::digest(sql.as_bytes()))
+    Sha256::digest(sql.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[async_trait::async_trait]

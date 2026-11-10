@@ -4,45 +4,175 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
 
 jobs:
   line-size:
-    runs-on: docker-runner
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: scripts/check-line-size.sh
 
   backend:
-    runs-on: docker-runner
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: line-size
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.80.0
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: rustfmt, llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - run: cargo fmt --all --check
-      - run: >-
-          cargo test --workspace -- --skip storage_pg::tests::
-      - run: >-
-          cargo llvm-cov --workspace --lib --fail-under-lines 90
-          --ignore-filename-regex 'rustc-.*library|src/main.rs|src/.*/tests.rs|src/.*/tests/.*|src/[^/]+/tests.rs|src/ai.rs|src/ai_external.rs|src/mail_external.rs|src/storage_pg.rs|src/storage_pg/.*|src/web.rs|src/web/.*|src/worker.rs|src/worker/.*'
-          -- --skip storage_pg::tests::
+      - run: scripts/check-backend.sh
+
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: line-size
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      AI_MEMMAIL_RUN_POSTGRES_TESTS: "1"
+      AI_MEMMAIL_TEST_PG_HOST: 127.0.0.1
+      AI_MEMMAIL_TEST_PG_PORT: "5432"
+      AI_MEMMAIL_TEST_PG_USER: postgres
+      AI_MEMMAIL_TEST_PG_PASSWORD: postgres
+      AI_MEMMAIL_TEST_PG_DATABASE: postgres
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - run: "cargo test --workspace --locked storage_pg::tests::"
 
   frontend:
-    runs-on: docker-runner
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: line-size
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 24
-      - working-directory: web
-        run: npm ci
-      - working-directory: web
-        run: npm run test:coverage
-      - working-directory: web
-        run: npm run build
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: scripts/check-frontend.sh
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: line-size
+    defaults:
+      run:
+        working-directory: web
+    env:
+      E2E_LIVE: "0"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-failure
+          path: web/test-results/
+          retention-days: 7
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: line-size
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: taiki-e/install-action@cargo-audit
+      - run: npm audit --prefix web --package-lock-only --ignore-scripts --audit-level=low
+      - run: cargo audit --deny warnings
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+      - run: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.7.1
+      - run: osv-scanner scan source --lockfile=Cargo.lock --lockfile=web/package-lock.json
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: line-size
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  codeql-analysis:
+    name: CodeQL analysis (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: line-size
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [rust, javascript-typescript, actions]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99.1
+        if: matrix.language == 'rust'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    needs: codeql-analysis
+    if: always()
+    steps:
+      - env:
+          ANALYSIS_RESULT: ${{ needs.codeql-analysis.result }}
+        run: test "$ANALYSIS_RESULT" = success
+
+  ci-required:
+    name: CI required
+    runs-on: ubuntu-latest
+    needs: [line-size, backend, postgres, frontend, e2e, security, docker, codeql]
+    if: always()
+    steps:
+      - env:
+          CI_NEEDS_RESULTS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<< "$CI_NEEDS_RESULTS"

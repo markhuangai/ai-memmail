@@ -5,6 +5,7 @@ async fn create_handoff(
     Json(request): Json<HandoffRequest>,
 ) -> Result<Json<HandoffResponse>, ApiError> {
     require_auth(&state, &headers)?;
+    tracing::info!(run_id = %run_id, request_id = %request.request_id, action = "thread_handoff", status = "started", "thread handoff requested");
     let config = state.config.read().expect("config lock poisoned").clone();
     let store = PgStore::connect(&config.database)
         .await
@@ -37,8 +38,11 @@ async fn create_handoff(
         .load_thread_context_by_id(mailbox, &source.thread_id)
         .await
         .map_err(ApiError::from_storage)?;
-    let action = handoff_action(mailbox, &thread_context, &destination, &remote_target)
-        .map_err(ApiError::from_mail_build)?;
+    let action = thread_handoff_action(mailbox, &thread_context, &destination, &remote_target)
+        .map_err(|error| {
+            tracing::warn!(run_id = %run_id, action = "thread_handoff", status = "rejected", %error, "thread handoff rejected");
+            ApiError::from_mail_build(error)
+        })?;
     let delivery = store
         .begin_thread_handoff_delivery(&NewThreadHandoffDelivery {
             request_id: request.request_id,
@@ -134,38 +138,6 @@ fn validate_handoff_target(destination: &str, remote_target: &str) -> Result<(),
     Ok(())
 }
 
-fn handoff_action(
-    mailbox: &MailboxConfig,
-    thread_context: &ThreadContext,
-    destination: &str,
-    remote_target: &str,
-) -> Result<OutboundAction, MailError> {
-    let latest = thread_context
-        .messages
-        .iter()
-        .rev()
-        .find(|message| message.direction == MessageDirection::Inbound)
-        .ok_or_else(|| MailError::Build("thread handoff has no inbound message".to_string()))?;
-    let mut references = latest.references.clone();
-    if let Some(message_id) = &latest.message_id {
-        if !references.iter().any(|reference| reference == message_id) {
-            references.push(message_id.clone());
-        }
-    }
-    Ok(OutboundAction {
-        kind: OutboundActionKind::Forward,
-        recipients: vec![destination.to_string()],
-        subject: latest.subject.clone(),
-        body: thread_handoff_body(thread_context)?,
-        html_body: None,
-        reason: "thread handed off for manual handling".to_string(),
-        reply_to: Some(remote_target.to_string()),
-        message_id: Some(outbound_message_id(mailbox)),
-        in_reply_to: latest.message_id.clone(),
-        references,
-    })
-}
-
 async fn handoff_summary(
     store: &PgStore,
     source: &ThreadHandoffSource,
@@ -189,22 +161,24 @@ async fn log_handoff_event(
     status: &str,
     detail: Option<String>,
 ) -> Result<(), ApiError> {
+    let event = ActionEvent {
+        level: if status == "sent" {
+            LogLevel::Info
+        } else {
+            LogLevel::Error
+        },
+        run_id: source.run_id.to_string(),
+        mailbox_id: Some(source.mailbox_id.clone()),
+        message_uid_validity: Some(source.uid_validity),
+        message_uid: Some(source.uid),
+        action: "thread_handoff".to_string(),
+        status: status.to_string(),
+        duration_ms: 0,
+        detail,
+    };
+    StdoutLogger.log(event.clone()).await;
     store
-        .insert_action_log(&ActionEvent {
-            level: if status == "sent" {
-                LogLevel::Info
-            } else {
-                LogLevel::Error
-            },
-            run_id: source.run_id.to_string(),
-            mailbox_id: Some(source.mailbox_id.clone()),
-            message_uid_validity: Some(source.uid_validity),
-            message_uid: Some(source.uid),
-            action: "thread_handoff".to_string(),
-            status: status.to_string(),
-            duration_ms: 0,
-            detail,
-        })
+        .insert_action_log(&event)
         .await
         .map_err(ApiError::from_storage)
 }

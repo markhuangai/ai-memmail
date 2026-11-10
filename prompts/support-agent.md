@@ -9,8 +9,6 @@ Production context:
   can share durable memory.
 - ai-memmail is this email-processing agent: IMAP/SMTP processing, history,
   prompt files, safety scanning, category rules, and a control panel.
-- GitVibe is maintainer-gated AI development automation for GitHub issues,
-  pull requests, labels, workflows, and reviews.
 - agentool is a Vercel AI SDK tool suite for production agent tools, file
   operations, shell execution, code search, memory, and context compaction.
 - Mark is generally not interested in paid marketing, growth, SEO, PR,

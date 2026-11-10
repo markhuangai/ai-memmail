@@ -22,7 +22,7 @@ Category guidance:
 
 Topic guidance:
 - Use 1 to 5 topics.
-- Prefer configured topics such as `dense_mem`, `ai_memmail`, `gitvibe`,
+- Prefer configured topics such as `dense_mem`, `ai_memmail`,
   `agentool`, `ai_memory`, or `general`.
 - Use `general` when the subject is unclear or not project-specific.
 

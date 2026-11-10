@@ -56,7 +56,7 @@ async fn agent_decision_or_retry(
                 mail,
                 processing,
                 message,
-                "AI input exceeded the configured context limit",
+                &error.to_string(),
             )
             .await;
             None

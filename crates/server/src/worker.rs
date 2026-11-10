@@ -14,9 +14,8 @@ use crate::logging::{
 };
 use crate::mail::{
     apply_reply_signature, forward_body, message_matches_accepted_conditions, reply_recipient,
-    reply_references, thread_handoff_body, InboundMessage, LiveMailTransport, MailError,
-    MailTransport, MessageDirection, OutboundAction, OutboundActionKind, ThreadContext,
-    ThreadMessage,
+    reply_references, thread_handoff_action, InboundMessage, LiveMailTransport, MailTransport,
+    MessageDirection, OutboundAction, OutboundActionKind, ThreadContext, ThreadMessage,
 };
 use crate::safety::{
     decide, sender_is_banned, suspicious_forward_intro, suspicious_forward_subject, SafetyDecision,

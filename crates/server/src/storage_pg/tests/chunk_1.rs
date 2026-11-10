@@ -10,7 +10,7 @@ use crate::mail::{MessageMetadata, SentMessage};
 use crate::storage::{
     DEFAULT_EMAIL_RULE_SEED_UNIQUENESS_SQL, EMAIL_CLASSIFICATION_RULES_SQL,
     HISTORY_BODY_THREADING_SQL, INIT_SQL, OUTBOUND_HTML_BODY_SQL, PORTAL_CONVERSATIONS_SQL,
-    SENT_THREAD_CONTEXT_SQL, THREAD_HANDOFFS_SQL,
+    REMOVE_GITVIBE_TOPIC_SQL, SENT_THREAD_CONTEXT_SQL, THREAD_HANDOFFS_SQL,
 };
 
 #[tokio::test]
@@ -31,7 +31,7 @@ async fn pg_store_migrates_idempotently_and_tracks_checksum() {
         )
         .await
         .unwrap();
-    assert_eq!(rows.len(), 8);
+    assert_eq!(rows.len(), 9);
     assert_eq!(rows[0].get::<_, i32>(0), 1);
     assert_eq!(rows[0].get::<_, String>(1), "001_init");
     assert_eq!(rows[0].get::<_, String>(2), migration_checksum(INIT_SQL));
@@ -82,6 +82,13 @@ async fn pg_store_migrates_idempotently_and_tracks_checksum() {
     assert_eq!(
         rows[7].get::<_, String>(2),
         migration_checksum(PORTAL_CONVERSATIONS_SQL)
+    );
+
+    assert_eq!(rows[8].get::<_, i32>(0), 9);
+    assert_eq!(rows[8].get::<_, String>(1), "009_remove_gitvibe_topic");
+    assert_eq!(
+        rows[8].get::<_, String>(2),
+        migration_checksum(REMOVE_GITVIBE_TOPIC_SQL)
     );
 
     pg.cleanup().await;

@@ -5,6 +5,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::EnvFilter;
 
+#[cfg(test)]
+pub(crate) mod test_capture;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LogLevel {
@@ -120,16 +123,22 @@ pub fn action_event(
     }
 }
 
-pub fn init_tracing(level: LogLevel) {
-    let filter = EnvFilter::new(match level {
+pub(crate) fn tracing_filter(level: LogLevel) -> EnvFilter {
+    let level = match level {
         LogLevel::Debug => "debug",
         LogLevel::Info => "info",
         LogLevel::Warn => "warn",
         LogLevel::Error | LogLevel::Fatal => "error",
-    });
+    };
+    // html5ever's DEBUG token diagnostics include the original HTML payload.
+    let parser_level = if level == "debug" { "info" } else { level };
+    EnvFilter::new(format!("{level},html5ever={parser_level}"))
+}
+
+pub fn init_tracing(level: LogLevel) {
     let _ = tracing_subscriber::fmt()
         .json()
-        .with_env_filter(filter)
+        .with_env_filter(tracing_filter(level))
         .try_init();
 }
 
@@ -156,7 +165,12 @@ mod tests {
 
     #[tokio::test]
     async fn stdout_logger_accepts_all_levels() {
-        init_tracing(LogLevel::Debug);
+        init_tracing(LogLevel::Error);
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(std::io::sink)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
         let logger = StdoutLogger;
         for level in [
             LogLevel::Debug,
@@ -175,6 +189,28 @@ mod tests {
                 ))
                 .await;
         }
+    }
+
+    #[test]
+    fn debug_logging_keeps_application_events_without_html_payloads() {
+        init_tracing(LogLevel::Error);
+        let (_, events) = test_capture::capture_at_level(LogLevel::Debug, || {
+            assert!(!tracing::enabled!(target: "html5ever::tree_builder", tracing::Level::DEBUG));
+            let sanitized =
+                crate::html_sanitizer::sanitize_email_html("<p>private-html-sentinel</p>");
+            assert_eq!(sanitized.text, "private-html-sentinel");
+            futures_executor::block_on(StdoutLogger.log(action_event(
+                LogLevel::Debug,
+                "debug-privacy",
+                "safe_diagnostic",
+                "ok",
+                Duration::default(),
+            )));
+        });
+        let text = serde_json::to_string(&events).unwrap();
+        assert!(events.iter().any(|event| event["level"] == "DEBUG"));
+        assert!(text.contains("safe_diagnostic"));
+        assert!(!text.contains("private-html-sentinel"));
     }
 
     #[tokio::test]
