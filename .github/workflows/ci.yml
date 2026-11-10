@@ -25,7 +25,7 @@ jobs:
     needs: line-size
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           components: rustfmt, llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
@@ -53,7 +53,7 @@ jobs:
       AI_MEMMAIL_TEST_PG_DATABASE: postgres
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: dtolnay/rust-toolchain@1.120.0
       - run: "cargo test --workspace --locked storage_pg::tests::"
 
   frontend:
@@ -104,7 +104,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 26
-      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: taiki-e/install-action@cargo-audit
       - run: npm audit --prefix web --package-lock-only --ignore-scripts --audit-level=low
       - run: cargo audit --deny warnings
@@ -144,7 +144,7 @@ jobs:
         language: [rust, javascript-typescript, actions]
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: dtolnay/rust-toolchain@1.120.0
         if: matrix.language == 'rust'
       - uses: actions/setup-node@v7
         with:
