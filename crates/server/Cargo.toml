@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-ammonia = "=4.2.4"
+ammonia = "=4.2.5"
 async-trait = "=0.1.92"
 axum = { version = "=0.8.9", features = ["json"] }
 chrono = "=0.4.45"
@@ -30,7 +30,7 @@ postgres-protocol = "=0.6.12"
 tower-http = { version = "=0.7.1", features = ["fs", "trace"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt", "json"] }
-ureq = { version = "=3.5.1", features = ["json"] }
+ureq = { version = "=3.5.2", features = ["json"] }
 uuid = { version = "=1.29.2", features = ["serde", "v4"] }
 
 futures-util = { version = "=0.3.34", features = ["io"] }
